@@ -58,6 +58,22 @@ CLI de Supabase la levanta y le aplica las migraciones del repo; Prisma solo la 
 Nada de lo que hagas en local toca staging ni producción: esos entornos los actualiza únicamente
 GitHub Actions al mergear (ver [docs/CI_CD.md](./docs/CI_CD.md)).
 
+### Dos grupos de comandos
+
+Toda la CLI de Supabase se divide en dos: lo que corre contra tu Docker y lo que necesita un
+proyecto remoto vinculado con `supabase link`.
+
+| Grupo                                  | Qué toca                     | Quién lo usa                                          |
+| -------------------------------------- | ---------------------------- | ----------------------------------------------------- |
+| **Local** (todo lo de esta sección)     | Solo tu Postgres en Docker   | Cualquier dev, sin permisos ni credenciales, cuando quiera |
+| **Vinculado** (`--linked`, `db push`…) | Testing o Producción en la nube | Nadie a mano — lo hace GitHub Actions. Ver [más abajo](#comandos-que-requieren-supabase-link) |
+
+Los comandos locales son **libres y sin riesgo**: lo peor que puede pasar es que borres tus propios
+datos de prueba. Ninguno pide login ni token.
+
+Regla práctica: si un comando lleva `--local`, o si no lleva ninguna bandera de destino, es del
+primer grupo. Si lleva `--linked`, `--project-ref` o `--db-url`, es del segundo.
+
 ### Levantar y apagar la base de datos
 
 ```bash
@@ -124,11 +140,36 @@ npx prisma generate
 
 ### Comandos de apoyo
 
-| Comando                             | Qué hace                                           |
-| ----------------------------------- | -------------------------------------------------- |
-| `npx supabase migration list`       | Historial de migraciones y cuáles están aplicadas   |
-| `npx supabase db lint`              | Busca errores de tipado en la base local            |
-| `npx supabase db diff`              | Muestra cambios hechos en la DB que aún no están en una migración |
+Todos llevan destino explícito: **`--local` apunta a tu Docker**. Sin esa bandera, `migration list` y
+`db lint` intentan hablar con el proyecto remoto vinculado y fallan si no hay `link`.
+
+| Comando                                 | Qué hace                                                          |
+| --------------------------------------- | ----------------------------------------------------------------- |
+| `npx supabase migration list --local`   | Historial de migraciones y cuáles están aplicadas en local         |
+| `npx supabase db lint --local`          | Busca errores de tipado en la base local                           |
+| `npx supabase db diff`                  | Cambios hechos en la DB local que aún no están en una migración (`--local` es el default) |
+
+### Comandos que requieren `supabase link`
+
+**No los necesitas para trabajar.** Se listan para que quede claro qué queda fuera del día a día y
+por qué. Vincular el repo a un proyecto de la nube (`npx supabase link --project-ref <id>`, previo
+`npx supabase login`) es un paso de mantenimiento, no de onboarding.
+
+| Comando                                | Qué hace                                              | Quién lo corre                          |
+| -------------------------------------- | ----------------------------------------------------- | --------------------------------------- |
+| `supabase login` / `link`              | Autentica la CLI y vincula el repo a un proyecto remoto | Solo quien mantiene la base (DBA)       |
+| `supabase db push`                     | Aplica migraciones a un entorno remoto                 | **Nadie a mano.** Lo hace GitHub Actions |
+| `supabase db pull`                     | Trae el esquema del remoto y lo escribe como migración | Solo para generar un baseline           |
+| `supabase migration list --linked`     | Compara el historial local contra el del remoto        | Diagnóstico de drift                    |
+| `supabase migration repair`            | Reescribe el historial de migraciones del remoto       | Último recurso, con el equipo enterado  |
+
+> **`supabase db pull` ≠ `npx prisma db pull`.** El de Supabase lee un proyecto *remoto* y genera SQL
+> de migración; el de Prisma lee tu *base local* (`DATABASE_URL`) y regenera `schema.prisma`. El que
+> usas a diario es el de Prisma.
+
+Por qué `db push` está vedado en local: dos personas aplicando migraciones a mano desde sus laptops
+desincronizan el historial del remoto. El merge es el único disparador —
+ver [docs/CI_CD.md](./docs/CI_CD.md).
 
 ## Estructura
 
