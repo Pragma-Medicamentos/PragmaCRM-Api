@@ -11,11 +11,7 @@
     "tsc": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "jest",
-    "test:integration": "jest --config jest.integration.config.js --runInBand",
-    "db:generate": "prisma generate",
-    "db:start": "supabase start",
-    "db:reset": "supabase db reset --no-seed",
-    "db:new": "supabase migration new"
+    "test:integration": "jest --config jest.integration.config.js --runInBand"
   },
   "keywords": [],
   "author": "Pragma Medicamentos",
@@ -24,6 +20,7 @@
     "@types/express": "^4.17.18",
     "@types/jest": "^30.0.0",
     "@types/node": "^20.8.0",
+    "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
     "@typescript-eslint/eslint-plugin": "^8.70.0",
     "@typescript-eslint/parser": "^8.70.0",
@@ -31,6 +28,7 @@
     "globals": "^17.12.0",
     "jest": "^30.5.1",
     "prettier": "^3.9.6",
+    "prisma": "^7.10.0",
     "rimraf": "^5.0.5",
     "supertest": "^7.2.2",
     "ts-jest": "^29.4.12",
@@ -38,9 +36,12 @@
     "typescript": "^5.2.2"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
     "dotenv": "^16.3.1",
     "env-var": "^7.4.1",
     "express": "^4.18.2",
+    "pg": "^8.23.0",
     "pino": "^10.3.1",
     "zod": "^4.5.4"
   }

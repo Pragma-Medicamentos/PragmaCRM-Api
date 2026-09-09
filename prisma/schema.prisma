@@ -1,0 +1,24 @@
+// Prisma se usa SOLO como cliente de acceso a datos. El esquema no se edita a
+// mano: se sincroniza desde la base de datos con `npx prisma db pull` despues
+// de que las migraciones (supabase/migrations) hayan sido aplicadas.
+//
+// El flujo de un cambio de esquema es:
+//   1. npx supabase migration new <nombre>  -> crea la migracion SQL
+//   2. npx supabase db reset --no-seed      -> la aplica desde cero en local
+//   3. npx prisma db pull                   -> actualiza este archivo
+//   4. npx prisma generate                  -> regenera el cliente tipado
+//
+// Los modelos apareceran aqui tras el primer `db pull` (baseline pendiente,
+// ver docs/CI_CD.md).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Sin `url`: desde Prisma 7 la cadena de conexion no vive aqui. Las migraciones
+// la leen de prisma.config.ts y el runtime la recibe via el adapter PrismaPg
+// (src/lib/prisma.ts).
+datasource db {
+  provider = "postgresql"
+}

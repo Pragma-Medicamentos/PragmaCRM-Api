@@ -5,6 +5,11 @@ const globals = require('globals');
 /** @type {import('eslint').Linter.FlatConfig[]} */
 module.exports = [
   {
+    // Codigo generado por `prisma generate`: no se edita a mano, asi que
+    // tampoco se lintea.
+    ignores: ['src/generated/**'],
+  },
+  {
     files: ['**/*.ts'],
     languageOptions: {
       parser: tsParser,
