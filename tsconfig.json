@@ -9,6 +9,7 @@
     "module": "commonjs",
     "rootDir": "src",
     "types": [
+      "jest",
       "node"
     ],
 
