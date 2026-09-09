@@ -1,24 +1,344 @@
-// Prisma se usa SOLO como cliente de acceso a datos. El esquema no se edita a
-// mano: se sincroniza desde la base de datos con `npx prisma db pull` despues
-// de que las migraciones (supabase/migrations) hayan sido aplicadas.
-//
-// El flujo de un cambio de esquema es:
-//   1. npx supabase migration new <nombre>  -> crea la migracion SQL
-//   2. npx supabase db reset --no-seed      -> la aplica desde cero en local
-//   3. npx prisma db pull                   -> actualiza este archivo
-//   4. npx prisma generate                  -> regenera el cliente tipado
-//
-// Los modelos apareceran aqui tras el primer `db pull` (baseline pendiente,
-// ver docs/CI_CD.md).
-
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  previewFeatures = ["partialIndexes"]
 }
 
-// Sin `url`: desde Prisma 7 la cadena de conexion no vive aqui. Las migraciones
-// la leen de prisma.config.ts y el runtime la recibe via el adapter PrismaPg
-// (src/lib/prisma.ts).
 datasource db {
   provider = "postgresql"
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model app_user {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  erp_user_id     Int?              @unique(where: raw("(deleted_at IS NULL)"))
+  clerk_user_id   String?           @unique(where: raw("(deleted_at IS NULL)"))
+  role            String
+  name            String
+  email           String?
+  active          Boolean           @default(true)
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime          @default(now()) @db.Timestamptz(6)
+  deleted_at      DateTime?         @db.Timestamptz(6)
+  goal            goal[]
+  product_request product_request[]
+  prospect        prospect[]
+  route_user      route_user[]
+  sale            sale[]
+  upload          upload[]
+  visit           visit[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model balance_snapshot {
+  id              BigInt   @id @default(autoincrement())
+  upload_id       String?  @db.Uuid
+  erp_sale_id     Int?
+  pending_balance Decimal? @db.Decimal(14, 2)
+  payment         String?
+  captured_at     DateTime @default(now()) @db.Timestamptz(6)
+  sale            sale?    @relation(fields: [erp_sale_id], references: [erp_sale_id], onDelete: NoAction, onUpdate: NoAction)
+  upload          upload?  @relation(fields: [upload_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([erp_sale_id, captured_at(sort: Desc)], map: "balance_snapshot_sale_idx")
+  @@index([upload_id])
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model customer {
+  id                 String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  erp_customer_id    Int?                      @unique(where: raw("(deleted_at IS NULL)"))
+  personality        String?
+  potential          String?
+  name               String
+  trade_name         String?
+  establishment_type String?
+  address            String?
+  municipality       String?
+  zone               String?
+  phone              String?
+  mobile             String?
+  location           Unsupported("geography")?
+  place_id           String?
+  attends            String?
+  credit             Boolean                   @default(false)
+  credit_limit       Decimal?                  @db.Decimal(14, 2)
+  origin             String?
+  active             Boolean                   @default(true)
+  created_at         DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime                  @default(now()) @db.Timestamptz(6)
+  deleted_at         DateTime?                 @db.Timestamptz(6)
+  product_request    product_request[]
+  route_customer     route_customer[]
+  sale               sale[]
+  scheduled_visit    scheduled_visit[]
+  visit              visit[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model goal {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String    @db.Uuid
+  year        Int       @db.SmallInt
+  month       Int       @db.SmallInt
+  goal_amount Decimal   @db.Decimal(14, 2)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @db.Timestamptz(6)
+  deleted_at  DateTime? @db.Timestamptz(6)
+  app_user    app_user  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([user_id, year, month], map: "goal_unique_key", where: raw("(deleted_at IS NULL)"))
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model product {
+  erp_product_id Int           @id
+  code           String?
+  name           String
+  product_group  String?
+  last_seen_at   DateTime?     @db.Timestamptz(6)
+  created_at     DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime      @default(now()) @db.Timestamptz(6)
+  deleted_at     DateTime?     @db.Timestamptz(6)
+  sale_detail    sale_detail[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model product_request {
+  id                 String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  visit_id           String?         @db.Uuid
+  customer_id        String?         @db.Uuid
+  user_id            String?         @db.Uuid
+  quoted_product_id  String?         @db.Uuid
+  requested_quantity Decimal?        @db.Decimal(12, 3)
+  requested_at       DateTime        @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime        @default(now()) @db.Timestamptz(6)
+  deleted_at         DateTime?       @db.Timestamptz(6)
+  customer           customer?       @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  quoted_product     quoted_product? @relation(fields: [quoted_product_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  app_user           app_user?       @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  visit              visit?          @relation(fields: [visit_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([visit_id], where: raw("(deleted_at IS NULL)"))
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model prospect {
+  id              String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id         String                    @db.Uuid
+  name            String
+  trade_name      String?
+  address         String?
+  phone           String?
+  location        Unsupported("geography")?
+  status          String?
+  created_at      DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime                  @default(now()) @db.Timestamptz(6)
+  deleted_at      DateTime?                 @db.Timestamptz(6)
+  app_user        app_user                  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  scheduled_visit scheduled_visit[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model quoted_product {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name            String
+  code            String?
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime          @default(now()) @db.Timestamptz(6)
+  deleted_at      DateTime?         @db.Timestamptz(6)
+  product_request product_request[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model route {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String
+  municipality   String?
+  zone           String?
+  active         Boolean          @default(true)
+  created_at     DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime         @default(now()) @db.Timestamptz(6)
+  deleted_at     DateTime?        @db.Timestamptz(6)
+  route_customer route_customer[]
+  route_user     route_user[]
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model route_customer {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  route_id    String    @db.Uuid
+  customer_id String    @db.Uuid
+  sort_order  Int?      @db.SmallInt
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @db.Timestamptz(6)
+  deleted_at  DateTime? @db.Timestamptz(6)
+  customer    customer  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  route       route     @relation(fields: [route_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  visit       visit[]
+
+  @@unique([route_id, customer_id], map: "route_customer_unique_key", where: raw("(deleted_at IS NULL)"))
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model route_user {
+  id              String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  route_id        String            @db.Uuid
+  user_id         String            @db.Uuid
+  day             Int?              @db.SmallInt
+  status          String?
+  created_at      DateTime          @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime          @default(now()) @db.Timestamptz(6)
+  deleted_at      DateTime?         @db.Timestamptz(6)
+  route           route             @relation(fields: [route_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  app_user        app_user          @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  scheduled_visit scheduled_visit[]
+  visit           visit[]
+
+  @@unique([route_id, user_id, day], map: "route_user_unique_key", where: raw("(deleted_at IS NULL)"))
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model sale {
+  erp_sale_id      Int                @id
+  customer_id      String?            @db.Uuid
+  upload_id        String?            @db.Uuid
+  user_id          String?            @db.Uuid
+  visit_id         String?            @db.Uuid
+  erp_created_at   DateTime?          @db.Timestamptz(6)
+  last_payment_at  DateTime?          @db.Timestamptz(6)
+  total            Decimal?           @db.Decimal(14, 2)
+  net_total        Decimal?           @db.Decimal(14, 2)
+  vat              Decimal?           @db.Decimal(14, 2)
+  pending_balance  Decimal?           @db.Decimal(14, 2)
+  payment          String?
+  payment_id       Int?               @db.SmallInt
+  erp_status       Int?               @db.SmallInt
+  document         String?
+  remarks          String?
+  absent           Boolean            @default(false)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime           @default(now()) @db.Timestamptz(6)
+  deleted_at       DateTime?          @db.Timestamptz(6)
+  balance_snapshot balance_snapshot[]
+  customer         customer?          @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  upload           upload?            @relation(fields: [upload_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  app_user         app_user?          @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  visit            visit?             @relation(fields: [visit_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  sale_detail      sale_detail[]
+
+  @@index([customer_id, erp_created_at], map: "sale_customer_date_idx", where: raw("(deleted_at IS NULL)"))
+  @@index([erp_created_at], where: raw("(deleted_at IS NULL)"))
+  @@index([customer_id, erp_created_at], map: "sale_pending_balance_idx", where: raw("((pending_balance > (0)::numeric) AND (deleted_at IS NULL))"))
+  @@index([upload_id])
+  @@index([user_id, erp_created_at], map: "sale_user_date_idx", where: raw("(deleted_at IS NULL)"))
+  @@index([visit_id], where: raw("(deleted_at IS NULL)"))
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model sale_detail {
+  sale_detail_id  Int      @id
+  erp_sale_id     Int
+  product_id      Int?
+  quantity        Decimal? @db.Decimal(12, 4)
+  unit_of_measure String?
+  factor          Decimal? @db.Decimal(10, 2)
+  price           Decimal? @db.Decimal(14, 4)
+  total           Decimal? @db.Decimal(14, 2)
+  tax_total       Decimal? @db.Decimal(14, 4)
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime @default(now()) @db.Timestamptz(6)
+  sale            sale     @relation(fields: [erp_sale_id], references: [erp_sale_id], onDelete: Cascade, onUpdate: NoAction)
+  product         product? @relation(fields: [product_id], references: [erp_product_id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([erp_sale_id])
+  @@index([product_id])
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model sale_staging {
+  id           BigInt    @id @default(autoincrement())
+  upload_id    String    @db.Uuid
+  erp_sale_id  Int?
+  payload      Json
+  status       String    @default("pending")
+  error        String?
+  processed_at DateTime? @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  upload       upload    @relation(fields: [upload_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([upload_id, status], map: "sale_staging_upload_status_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model scheduled_visit {
+  id            String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  route_user_id String     @db.Uuid
+  visit_date    DateTime   @db.Date
+  customer_id   String?    @db.Uuid
+  prospect_id   String?    @db.Uuid
+  stop_type     String     @default("visit")
+  reason        String?
+  created_at    DateTime   @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime   @default(now()) @db.Timestamptz(6)
+  deleted_at    DateTime?  @db.Timestamptz(6)
+  customer      customer?  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  prospect      prospect?  @relation(fields: [prospect_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  route_user    route_user @relation(fields: [route_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([customer_id, visit_date], map: "scheduled_visit_customer_date_idx", where: raw("(deleted_at IS NULL)"))
+  @@index([prospect_id], where: raw("((prospect_id IS NOT NULL) AND (deleted_at IS NULL))"))
+  @@index([route_user_id, visit_date], map: "scheduled_visit_route_user_date_idx", where: raw("(deleted_at IS NULL)"))
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model upload {
+  id               String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  uploaded_by      String?            @db.Uuid
+  range_from       DateTime?          @db.Date
+  range_to         DateTime?          @db.Date
+  sales_received   Int                @default(0)
+  inserted         Int                @default(0)
+  updated          Int                @default(0)
+  failed           Int                @default(0)
+  status           String             @default("pending")
+  uploaded_at      DateTime           @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime           @default(now()) @db.Timestamptz(6)
+  balance_snapshot balance_snapshot[]
+  sale             sale[]
+  sale_staging     sale_staging[]
+  app_user         app_user?          @relation(fields: [uploaded_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+/// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+model visit {
+  id                String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customer_id       String                    @db.Uuid
+  user_id           String                    @db.Uuid
+  route_user_id     String?                   @db.Uuid
+  route_customer_id String?                   @db.Uuid
+  started_at        DateTime?                 @db.Timestamptz(6)
+  finished_at       DateTime?                 @db.Timestamptz(6)
+  checkin_location  Unsupported("geography")?
+  distance_meters   Decimal?                  @db.Decimal(8, 2)
+  visit_type        String?
+  successful        Boolean?
+  no_order_reason   String?
+  notes             String?
+  created_at        DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime                  @default(now()) @db.Timestamptz(6)
+  deleted_at        DateTime?                 @db.Timestamptz(6)
+  product_request   product_request[]
+  sale              sale[]
+  customer          customer                  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  route_customer    route_customer?           @relation(fields: [route_customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  route_user        route_user?               @relation(fields: [route_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  app_user          app_user                  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([customer_id, started_at(sort: Desc)], map: "visit_customer_started_idx", where: raw("(deleted_at IS NULL)"))
+  @@index([route_user_id], where: raw("(deleted_at IS NULL)"))
+  @@index([user_id, started_at], map: "visit_user_started_idx", where: raw("(deleted_at IS NULL)"))
 }

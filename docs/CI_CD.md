@@ -105,26 +105,13 @@ en runtime: las migraciones son DDL y requieren el rol privilegiado.
 
 ---
 
-## ⚠️ Pendiente: baseline del esquema
+## Baseline del esquema
 
-**La base de datos remota ya existe, pero `supabase/migrations/` está vacío.** Mientras eso siga
-así, `validate-migrations` pasa trivialmente y los deploys no aplican nada. El siguiente paso es
-generar la migración baseline:
-
-```bash
-# 1. Vincular el repo al proyecto remoto (una sola vez)
-npx supabase link --project-ref <PROJECT_ID>
-
-# 2. Traer el esquema actual como primera migración
-npx supabase db pull
-
-# 3. Confirmar que reaplica limpio desde cero
-npx supabase db reset --no-seed
-
-# 4. Sincronizar el cliente de Prisma con ese esquema
-npx prisma db pull
-npx prisma generate
-```
+La base de datos se creó originalmente desde el dashboard de Supabase, sin historial de
+migraciones. Ese esquema quedó capturado en la migración baseline
+`supabase/migrations/20260909045944_baseline_remote_schema.sql`, generada con `supabase db pull`
+contra el proyecto vinculado. A partir de ahí, **Git es la fuente de verdad del esquema** y todo
+cambio entra como una migración nueva.
 
 Antes del primer deploy automatizado, verificar que el historial remoto esté en sync:
 `npx supabase migration list --linked` contra Testing y Prod.
