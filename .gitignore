@@ -1,13 +1,16 @@
-
-
-
-
-
 .env
+.env.test
+*.pem
 
-mongo/
-postgres/
 node_modules/
 dist/
 build/
 coverage/
+
+# Cliente de Prisma generado (se regenera con `npx prisma generate`)
+src/generated/
+/generated/prisma
+
+# Estado local de la CLI de Supabase
+supabase/.temp/
+supabase/.branches/
