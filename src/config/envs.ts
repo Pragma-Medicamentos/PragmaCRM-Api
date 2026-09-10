@@ -13,4 +13,14 @@ export const envs = {
   DATABASE_URL: get('DATABASE_URL').required().asString(),
 
   LOG_LEVEL: get('LOG_LEVEL').default('info').asString(),
+
+  // Las tres CLERK_* las lee @clerk/express de process.env; aqui solo se validan.
+  CLERK_PUBLISHABLE_KEY: get('CLERK_PUBLISHABLE_KEY').required().asString(),
+  CLERK_SECRET_KEY: get('CLERK_SECRET_KEY').required().asString(),
+  // Opcional: con ella la verificacion de firma es local, sin descargar el JWKS.
+  CLERK_JWT_KEY: get('CLERK_JWT_KEY').asString(),
+  // Claim `azp`: sin esta lista sirve aqui un token emitido para otra app.
+  CLERK_AUTHORIZED_PARTIES: get('CLERK_AUTHORIZED_PARTIES')
+    .default('')
+    .asArray(','),
 };

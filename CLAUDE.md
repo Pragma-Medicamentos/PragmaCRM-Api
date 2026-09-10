@@ -349,15 +349,32 @@ En este repositorio, las constantes que sean configurables por entorno van en `s
 
 ### 5.9 Autenticación y autorización
 
-- **Clerk es dueño de la autenticación. Supabase solo hace autorización.**
+- **Clerk es dueño de la autenticación. La API es dueña de la autorización.**
 - **No se usa `auth.users` de Supabase.** La tabla `app_user` guarda `clerk_user_id text UNIQUE`, que contiene el claim `sub` del JWT de Clerk. Ese es el vínculo.
-- Las políticas RLS se escriben contra `auth.jwt() ->> 'sub'`.
+- **De Supabase se usa solo la base de datos.** Ni Supabase Auth, ni la Data API (PostgREST), ni `supabase-js` en los clientes.
 - **Se requiere webhook de sincronización** para los eventos `user.created` y `user.updated` de Clerk, para mantener la tabla `app_user` alineada.
 - Esta decisión resolvió una de las discrepancias del DER: la tabla de usuarios no tenía campos de contraseña ni credenciales. Ya no los necesita.
 
-**Nota de rendimiento:** una política RLS mal escrita (que evalúe la resolución del `sub` por fila en lugar de como InitPlan) degrada más que la ausencia de cualquier índice. Verificar con `EXPLAIN ANALYZE` ejecutando como rol `Vendedor`, no como `postgres`.
+**Decisión confirmada (9 de septiembre de 2026): toda validación ocurre en la API. Ningún cliente consulta Supabase directamente.**
 
-**Estado en este repositorio:** la API **todavía no implementa autenticación** — no hay middleware de Clerk ni de API key, y todas las rutas son públicas. Cuando se agregue, va como middleware aplicado por grupo de rutas en `src/presentation/routes.ts` (ver 8.1).
+Web y móvil hablan únicamente con PragmaCRM-Api, que consulta Postgres con `DATABASE_URL` como rol `postgres`. Ese rol **bypassea RLS** por diseño de Postgres. Consecuencias, todas importantes:
+
+| Punto | Estado tras la decisión |
+|---|---|
+| Control de acceso vigente | El middleware de la API (`requireAuth` + `requireRole`), no las políticas |
+| Integración *Third-Party Auth* Clerk↔Supabase | **No hace falta.** Solo aplica si un cliente consultara Supabase directo |
+| Políticas RLS contra `auth.jwt() ->> 'sub'` | Fuera del camino de ejecución. Defensa en profundidad, no control de acceso |
+| `supabase-js`, `SUPABASE_URL`, anon key en web/móvil | No se usan. Los clientes solo necesitan el SDK de Clerk y la URL de la API |
+
+**Superficie de la Data API: ya está cerrada.** La migración baseline no otorga `SELECT`/`INSERT`/`UPDATE`/`DELETE` a `anon` ni a `authenticated` sobre ninguna tabla (solo `postgres` los tiene), y todas las tablas tienen RLS habilitado con **cero políticas** — que en Postgres significa denegar todo. La decisión no exige ningún cambio de esquema para ser segura.
+
+**Lo que sí queda pendiente de limpiar** (migración aparte, sin urgencia): el baseline otorga `MAINTAIN, REFERENCES, TRIGGER, TRUNCATE` a `anon` y `authenticated` en todas las tablas. No son alcanzables por la Data API y `anon` no es un rol de login, así que no hay explotación práctica, pero `TRUNCATE` **no lo restringe RLS** — es un privilegio de tabla. Son residuos de la captura del esquema desde el dashboard y conviene revocarlos.
+
+**Nota de rendimiento (si algún día se escriben políticas):** una política RLS mal escrita (que evalúe la resolución del `sub` por fila en lugar de como InitPlan) degrada más que la ausencia de cualquier índice. Envolver siempre en `(select auth.jwt() ->> 'sub')` y verificar con `EXPLAIN ANALYZE` ejecutando como rol `Vendedor`, no como `postgres`.
+
+**Nota de deprecación**, por si alguien retoma el camino directo a Supabase en el futuro: el método antiguo de integrar Clerk con Supabase — *JWT template* firmando con el `JWT secret` de Supabase — está deprecado desde el 1 de abril de 2025. El mecanismo vigente es Third-Party Auth, donde Supabase valida el token de Clerk contra el JWKS de Clerk sin compartir secretos.
+
+**Estado en este repositorio:** implementado. Ver la sección **Autenticación** en 8.1.
 
 ---
 
@@ -693,7 +710,7 @@ Base: 350+ clientes, ~5 vendedores, 15+ visitas diarias por vendedor, 22 días h
 | Capa | Tecnología | Nota |
 |---|---|---|
 | Base de datos | **PostgreSQL 17** con **PostGIS** | `geography(Point,4326)` para todas las ubicaciones |
-| Plataforma de datos | **Supabase** | Solo autorización y RLS. No se usa `auth.users` |
+| Plataforma de datos | **Supabase** | Solo la base de datos. No se usa `auth.users` ni la Data API — ver 5.9 |
 | Autenticación | **Clerk** | Dueño de la identidad. Vínculo por claim `sub` → `app_user.clerk_user_id` |
 | **Backend (este repo)** | **Node.js + TypeScript + Express 4, Prisma 7 como cliente** | Ver 8.1 |
 | Frontend web | Dashboard administrativo, responsive (escritorio y tablet) | RNF-10 |
@@ -716,6 +733,7 @@ API REST del CRM. Node.js + TypeScript + Express, PostgreSQL vía Supabase, Pris
 
 ```bash
 npm run dev          # Servidor de desarrollo con hot-reload (ts-node-dev)
+npm run dev:token -- <email>  # Token de Clerk para probar endpoints con curl (solo dev)
 npm run build        # Compila TypeScript a dist/
 npm run start        # Build + ejecuta el output compilado
 npm run lint         # ESLint
@@ -821,7 +839,26 @@ Toda respuesta usa el envelope `ApiResponse<T>`: `{ success, message, data?, err
 
 ### Autenticación
 
-**No hay autenticación todavía en la API.** No existen middlewares de Clerk, de API key ni de sesión: todas las rutas son públicas. La decisión de arquitectura está en 5.9; la implementación va como middleware aplicado por grupo de rutas en `routes.ts`.
+Implementada con `@clerk/express`. La decisión de arquitectura está en 5.9.
+
+- `clerkMiddleware()` se monta **global** en `server.ts`, antes de las rutas. Verifica firma, `exp` y `azp` del JWT y deja el resultado en el request. **No rechaza nada por sí mismo**: una petición sin token sigue llegando a las rutas públicas.
+- `requireAuth` (`presentation/middleware/auth.ts`) es quien exige sesión: lee el claim `sub` con `getAuth`, lo resuelve contra `app_user` vía `services/auth.service.ts` y deja el usuario en `req.authUser` (`AuthenticatedUser`, en `domain/types/auth.types.ts`).
+- `requireRole(...roles)` se encadena después. Los roles son la constante `ROLES` — `app_user.role` es `text` libre, así que la API es el único lugar donde ese dominio queda acotado.
+- Los guards se aplican **por grupo de rutas** en `routes.ts`, nunca dentro del controlador:
+  ```ts
+  router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
+  ```
+- Códigos: **401** solo por token ausente/inválido. **403** para todo lo demás — usuario no enlazado, `active = false`, `role` desconocido, rol insuficiente. La regla para el cliente es: 401 se arregla volviendo a iniciar sesión, 403 no.
+- `/api/v1/me` devuelve usuario y rol; es como web y móvil resuelven su estado inicial. Sin `requireRole`: lo llaman los dos roles.
+- `/api/health` sigue pública.
+
+**Probar endpoints protegidos:** `npm run dev:token -- <email>` (`src/scripts/dev-token.ts`) crea una sesión contra la instancia de desarrollo de Clerk y emite un token real para curl. Se niega a correr con `sk_live_` o `STAGE=prod`. Para tests automatizados no se usa: ahí se mockea `getAuth` — ver `presentation/middleware/__tests__/auth.test.ts`.
+
+**Lo que no está hecho** (tareas aparte): webhook `user.created` / `user.updated` — hoy `clerk_user_id` se carga a mano — y las políticas RLS en Supabase.
+
+**Este middleware es el control de acceso del sistema, no una capa más.** Por decisión confirmada (ver 5.9) toda validación ocurre en la API: ningún cliente consulta Supabase directamente. La API se conecta como rol `postgres`, que bypassea RLS, así que **no hay una segunda línea de defensa en la base**. Un endpoint montado sin `requireAuth` queda público, sin nada detrás que lo tape.
+
+Regla operativa: en `routes.ts`, todo grupo de rutas nuevo lleva `requireAuth` salvo que se justifique lo contrario en el PR. Hoy la única excepción es `/api/health`.
 
 ### Ramas y CI
 
