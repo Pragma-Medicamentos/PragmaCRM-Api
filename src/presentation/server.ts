@@ -4,10 +4,12 @@ import express, {
   Response,
   Router,
 } from 'express';
+import { clerkMiddleware } from '@clerk/express';
 import { logger } from '../lib/adapters/logger';
 import { handleError } from '../lib/handleError';
 import { ApiResponse } from '../domain/interfaces';
 import { requestMetadata } from './middleware/requestMetadata';
+import { envs } from '../config/envs';
 
 interface Options {
   port: number;
@@ -40,6 +42,15 @@ export class Server {
     this.app.use(requestMetadata);
     this.app.use(express.json({ limit: '1mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+    //* Verifica el JWT pero NO rechaza nada: quien exige sesion es requireAuth.
+    this.app.use(
+      clerkMiddleware({
+        ...(envs.CLERK_AUTHORIZED_PARTIES.length > 0 && {
+          authorizedParties: envs.CLERK_AUTHORIZED_PARTIES,
+        }),
+      })
+    );
 
     //* Routes
     this.app.use(this.routes);

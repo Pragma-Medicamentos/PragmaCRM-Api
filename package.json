@@ -4,7 +4,9 @@
   "description": "API del CRM de Pragma Medicamentos",
   "main": "index.js",
   "scripts": {
-    "dev": "tsnd --respawn --clear src/app.ts",
+    "dev": "tsnd --respawn --clear --files src/app.ts",
+    "dev:debug": "tsnd --inspect --respawn --clear --files src/app.ts",
+    "dev:token": "ts-node --transpile-only src/scripts/dev-token.ts",
     "build": "rimraf ./dist && tsc",
     "start": "npm run build && node dist/app.js",
     "lint": "eslint src/",
@@ -38,6 +40,7 @@
     "typescript": "^5.2.2"
   },
   "dependencies": {
+    "@clerk/express": "^2.1.67",
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "dotenv": "^16.3.1",

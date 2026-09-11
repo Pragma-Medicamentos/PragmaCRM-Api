@@ -43,6 +43,7 @@ curl http://localhost:3000/api/health
 | Script                     | Qué hace                                    |
 | -------------------------- | ------------------------------------------- |
 | `npm run dev`              | Servidor con hot-reload                     |
+| `npm run dev:token`        | Emite un token de Clerk para probar con curl |
 | `npm run build`            | Compila a `dist/`                           |
 | `npm run start`            | Build + ejecuta el compilado                |
 | `npm run lint`             | ESLint sobre `src/`                         |
@@ -170,6 +171,105 @@ por qué. Vincular el repo a un proyecto de la nube (`npx supabase link --projec
 Por qué `db push` está vedado en local: dos personas aplicando migraciones a mano desde sus laptops
 desincronizan el historial del remoto. El merge es el único disparador —
 ver [docs/CI_CD.md](./docs/CI_CD.md).
+
+## Autenticación
+
+Clerk es el proveedor de identidad; la API solo **verifica** el token que emite y resuelve el rol
+contra la base. No hay contraseñas ni sesiones propias.
+
+Web y móvil **no consultan Supabase directamente**: todo pasa por esta API. Por lo tanto el control
+de acceso del sistema es el middleware de aquí abajo — no hay políticas RLS respaldándolo. Un
+endpoint montado sin `requireAuth` queda público. Ver [CLAUDE.md](./CLAUDE.md) sección 5.9.
+
+Para levantar la API hacen falta `CLERK_PUBLISHABLE_KEY` y `CLERK_SECRET_KEY` (Dashboard de Clerk →
+API Keys). Sin ellas el arranque falla — ver `.env.template`.
+
+### Cómo llama un cliente
+
+El token va en el header `Authorization`. En web y móvil se obtiene con `getToken()` del SDK de
+Clerk:
+
+```bash
+curl http://localhost:3000/api/v1/me -H "Authorization: Bearer <token>"
+```
+
+```json
+{
+  "success": true,
+  "message": "Sesión válida",
+  "data": {
+    "id": "…uuid de app_user…",
+    "clerkUserId": "user_2ab…",
+    "role": "Administrador",
+    "name": "…",
+    "email": "…"
+  }
+}
+```
+
+`/api/v1/me` es el endpoint con el que web y móvil resuelven su estado inicial: quién es el usuario
+y qué rol tiene. Lo pueden llamar los dos roles.
+
+### Cómo se protege un endpoint
+
+Los guards se aplican **por grupo de rutas** en `src/presentation/routes.ts`:
+
+```ts
+router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
+```
+
+- `requireAuth` — exige sesión de Clerk y deja el usuario resuelto en `req.authUser`.
+- `requireRole(...roles)` — se encadena **después** de `requireAuth`.
+
+### Códigos de respuesta
+
+| Situación                                              | Código |
+| ------------------------------------------------------ | ------ |
+| Sin token, token expirado o firma inválida              | 401    |
+| Token válido, `clerk_user_id` sin registro en `app_user` | 403    |
+| Usuario con `active = false` o borrado (`deleted_at`)   | 403    |
+| `app_user.role` fuera de `Administrador` / `Vendedor`   | 403    |
+| Rol válido pero sin permiso sobre el endpoint           | 403    |
+
+La distinción importa para el cliente: **401 se resuelve volviendo a iniciar sesión; 403 no** — es
+un problema de aprovisionamiento que resuelve un administrador.
+
+### Probar un endpoint protegido sin frontend
+
+Mientras web y móvil no existan, no hay quién inicie sesión y por tanto no hay token. Para eso está
+`npm run dev:token`, que crea una sesión en la instancia de **desarrollo** de Clerk y devuelve un
+token de sesión real — el mismo que emitiría el SDK en la app:
+
+```bash
+# 1. Crea el usuario en el dashboard de Clerk (Users → Create user), luego:
+npm run dev:token -- juan@pragma.com
+```
+
+Imprime el `clerk_user_id`, el `UPDATE` para enlazarlo (ver abajo) y un `curl` listo para pegar. Para
+capturar solo el token:
+
+```bash
+TOKEN=$(npm run --silent dev:token -- juan@pragma.com --quiet)
+curl http://localhost:3000/api/v1/me -H "Authorization: Bearer $TOKEN"
+```
+
+El token dura 600 s por defecto (`--expires <segundos>` para cambiarlo; Clerk puede recortarlo, así
+que el script informa la vigencia real que quedó en el `exp`, no la pedida).
+
+> El script se niega a correr con una llave `sk_live_` o con `STAGE=prod`. Crear sesiones desde el
+> backend está restringido por Clerk a instancias de desarrollo — no existe forma de usarlo contra
+> producción, ni por accidente.
+
+### Enlazar un usuario a mano
+
+Mientras no exista el webhook `user.created`, el vínculo se carga manualmente. El `clerk_user_id` es
+el ID del usuario en el Dashboard de Clerk (`user_2ab…`), que es el claim `sub` del token:
+
+```sql
+UPDATE public.app_user
+   SET clerk_user_id = 'user_2ab…'
+ WHERE email = 'persona@pragma.com';
+```
 
 ## Estructura
 
