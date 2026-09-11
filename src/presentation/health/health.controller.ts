@@ -3,8 +3,8 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { ApiResponse } from '../../domain/interfaces';
 
-// La version se lee de package.json en runtime desde el cwd (rootDir es src,
-// por eso no se importa el archivo directamente).
+// The version is read from package.json at runtime from the cwd (rootDir is
+// src, which is why the file is not imported directly).
 const { version } = JSON.parse(
   readFileSync(join(process.cwd(), 'package.json'), 'utf-8')
 ) as { version: string };

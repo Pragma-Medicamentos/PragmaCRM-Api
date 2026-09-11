@@ -2,8 +2,8 @@ import request from 'supertest';
 import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
 
-// setup() monta middlewares y rutas sin abrir un puerto, asi que supertest
-// puede atacar la app real sin levantar el servidor.
+// setup() wires middlewares and routes without opening a port, so supertest
+// can hit the real app without starting the server.
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
 const app = server.app;
@@ -32,7 +32,7 @@ describe('GET /api/health', () => {
 
 describe('unknown routes', () => {
   it('responds 404 with the ApiResponse envelope', async () => {
-    const res = await request(app).get('/ruta-inexistente');
+    const res = await request(app).get('/non-existent-route');
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ success: false, message: 'Not found' });
@@ -44,7 +44,7 @@ describe('malformed JSON body', () => {
     const res = await request(app)
       .post('/api/health')
       .set('Content-Type', 'application/json')
-      .send('{"roto":');
+      .send('{"broken":');
 
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);

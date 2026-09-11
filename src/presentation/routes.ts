@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { HealthRoutes } from './health/routes';
+import { UploadsRoutes } from './uploads/routes';
 import { MeRoutes } from './me/routes';
 import { SellersRoutes } from './sellers/routes';
 import { requireAuth, requireRole } from './middleware/auth';
@@ -12,6 +13,8 @@ export class AppRoutes {
     // Publica: la consume el monitoreo del VPS.
     router.use('/api/health', HealthRoutes.routes);
 
+    // CRM modules are mounted here under /api/v1/<resource>.
+    router.use('/api/v1/uploads', UploadsRoutes.routes);
     router.use('/api/v1/me', MeRoutes.routes);
 
     // RF-01: alta, edicion y habilitacion/deshabilitacion de vendedores.

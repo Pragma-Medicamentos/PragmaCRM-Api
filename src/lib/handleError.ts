@@ -3,10 +3,10 @@ import { CustomError } from '../domain/errors/CustomError';
 import { ErrorHandlerInterface } from '../domain/errors/errorHandler.interface';
 
 /**
- * Traduce cualquier error que llegue desde los servicios/controladores a un par
- * { statusCode, message } seguro para el cliente. Es el unico lugar donde se
- * decide que significa un fallo de cara a la API, de modo que controladores y
- * middlewares no repitan esa logica.
+ * Translates any error coming from services or controllers into a
+ * { statusCode, message } pair that is safe to hand to the client. It is the
+ * single place where a failure's meaning is decided for the API, so
+ * controllers and middlewares do not repeat that logic.
  */
 export const handleError = (error: unknown): ErrorHandlerInterface => {
   let statusCode = 500;
@@ -26,8 +26,8 @@ export const handleError = (error: unknown): ErrorHandlerInterface => {
     'expose' in error &&
     (error as { expose?: unknown }).expose === true
   ) {
-    // Errores de middlewares de Express (p. ej. body-parser con JSON malformado)
-    // marcan `expose: true` cuando el mensaje es seguro de mostrar al cliente.
+    // Express middleware errors (body-parser on malformed JSON, for instance)
+    // set `expose: true` when the message is safe to show to the client.
     const httpErr = error as {
       statusCode?: number;
       status?: number;
@@ -39,7 +39,7 @@ export const handleError = (error: unknown): ErrorHandlerInterface => {
       message = httpErr.message ?? message;
     }
   } else if (error && typeof error === 'object' && 'code' in error) {
-    // Codigos de error conocidos de Prisma.
+    // Known Prisma error codes.
     const prismaCode = String((error as { code?: unknown }).code ?? '');
     if (prismaCode === 'P2002') {
       statusCode = 409;

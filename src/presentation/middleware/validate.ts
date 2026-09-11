@@ -26,8 +26,8 @@ const buildValidator =
   ) =>
   (req: Request, res: Response, next: NextFunction) => {
     try {
-      // El valor parseado reemplaza al original: a partir de aqui el
-      // controlador trabaja con datos ya tipados y normalizados por Zod.
+      // The parsed value replaces the original: from here on the controller
+      // works with data already typed and normalised by Zod.
       const parsed = schema.parse(req[source]);
       if (source === 'body') {
         req.body = parsed;

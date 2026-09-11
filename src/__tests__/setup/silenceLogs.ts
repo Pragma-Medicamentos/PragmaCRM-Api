@@ -1,4 +1,4 @@
-// pino escribe a stdout, lo que ahoga la salida de Jest. Los tests unitarios no
-// verifican logs, asi que se apagan por defecto. Para depurar una corrida:
+// pino writes to stdout, which drowns out Jest's own output. Unit tests do not
+// assert on logs, so they are silenced by default. To debug a run:
 // `LOG_LEVEL=debug npm test`.
 process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? 'silent';

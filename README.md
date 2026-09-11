@@ -288,6 +288,22 @@ supabase/migrations/  migraciones SQL — fuente de verdad del esquema
 
 Convenciones detalladas en [CLAUDE.md](./CLAUDE.md).
 
+## Carga de archivos (RF-03)
+
+`POST /api/v1/uploads/sales` recibe el JSON exportado del ERP como
+`multipart/form-data`, en el campo `file`. El tamaño máximo lo fija
+`UPLOAD_MAX_FILE_SIZE_MB` (100 por defecto).
+
+> **Al desplegar detrás de nginx hay que subir `client_max_body_size` al mismo
+> valor.** Por defecto nginx corta en **1 MB** y responde un 413 en HTML antes
+> de que la petición llegue a la API — con esa configuración ni siquiera un
+> export mensual de 5 MB pasaría, y el dashboard no podría mostrar el mensaje
+> de error real.
+
+```nginx
+client_max_body_size 100m;
+```
+
 ## Despliegue de migraciones
 
 Las migraciones **nunca se aplican a mano** contra un entorno remoto: las aplica GitHub Actions al

@@ -1,12 +1,12 @@
 /**
  * API Response Interface
  *
- * Interfaz unica y simple para todas las respuestas de la API.
- * Los campos opcionales permiten usarla tanto para exito como para error.
+ * A single, simple envelope for every API response. The optional fields let it
+ * serve both success and error cases.
  */
 
 /**
- * Error de validacion individual
+ * A single validation error
  */
 export interface ValidationError {
   field: string;
@@ -14,7 +14,7 @@ export interface ValidationError {
 }
 
 /**
- * Respuesta estandar de la API
+ * Standard API response
  */
 export interface ApiResponse<T = unknown> {
   success: boolean;

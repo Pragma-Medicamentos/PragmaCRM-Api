@@ -10,12 +10,12 @@ describe('CustomError', () => {
 
   it.each([
     ['badRequest', CustomError.badRequest('bad'), 400, 'bad'],
-    ['unauthorized', CustomError.unauthorized(), 401, 'No autorizado'],
-    ['forbidden', CustomError.forbidden(), 403, 'Acceso denegado'],
-    ['notFound', CustomError.notFound(), 404, 'Recurso no encontrado'],
+    ['unauthorized', CustomError.unauthorized(), 401, 'Unauthorized'],
+    ['forbidden', CustomError.forbidden(), 403, 'Access denied'],
+    ['notFound', CustomError.notFound(), 404, 'Resource not found'],
     ['conflict', CustomError.conflict('dup'), 409, 'dup'],
     ['unprocessable', CustomError.unprocessable('nope'), 422, 'nope'],
-    ['internal', CustomError.internal(), 500, 'Error interno del servidor'],
+    ['internal', CustomError.internal(), 500, 'Internal server error'],
   ])('%s builds the expected status and message', (_name, error, status, message) => {
     expect(error.statusCode).toBe(status);
     expect(error.message).toBe(message);

@@ -18,7 +18,7 @@ Reglas de comportamiento acordadas con el equipo. Aplican a toda interacción sa
 - **Al grano.** Respuestas directas, sin preámbulos ni resúmenes de lo que se acaba de pedir. El equipo trabaja con plazos y prefiere densidad sobre cortesía.
 - **Anclar todo a referencias concretas:** número de RF, ID de pantalla del wireframe (`1a`, `1w`, `1x` en web; `1`–`14` en móvil), nombre exacto de tabla y columna, texto literal de la copy. Nunca describir en abstracto algo que tiene un identificador.
 - **No expandir sin que lo pidan.** Si la pregunta es puntual, la respuesta es puntual. Las explicaciones largas se ofrecen, no se imponen.
-- **Español.** Toda la documentación y la comunicación con el equipo están en español. El código y los identificadores técnicos siguen la convención del stack — ver la advertencia de nomenclatura en la sección 7.
+- **Español para hablar, inglés para el código.** La documentación (este archivo, el README, los entregables académicos) y la comunicación con el equipo van en español. **Todo lo que vive dentro de `src/` va en inglés: identificadores, comentarios y mensajes de error incluidos** — ver la sección 11. La nomenclatura de base de datos está en la advertencia de la sección 7.
 
 ### Criterios de trabajo
 
@@ -979,7 +979,11 @@ El proyecto se ejecuta como trabajo de curso universitario con cliente real. Imp
 
 **Convenciones de nomenclatura.** La documentación y la comunicación van en español; **la base de datos y el código van en inglés**. Tablas y columnas en `snake_case` inglés (ver la tabla de equivalencias en 7.0). PK `uuid` para entidades propias del CRM; PK entera natural (`erp_*_id`) para entidades espejo de Efactsoft. Toda ubicación es `geography(Point,4326)`. Soft delete generalizado con `deleted_at`.
 
-En el código TypeScript: archivos y símbolos en inglés siguiendo la convención del stack; comentarios en español, explicando el porqué y no el qué.
+**En el código TypeScript todo va en inglés**, siguiendo la convención del stack: nombres de archivo, símbolos, **comentarios** y **mensajes de error**. Los comentarios explican el porqué y no el qué.
+
+Esto incluye los mensajes del envelope `ApiResponse` que llegan al navegador. Si el dashboard necesita mostrarlos en español al usuario final, la traducción se hace en el frontend, no en la API — así el backend queda con un solo idioma y el texto de cara al usuario se puede cambiar sin tocar el servidor.
+
+> Decisión tomada en septiembre de 2026. Antes la convención era comentarios en español; el código anterior se migró completo, así que **no debe quedar español dentro de `src/`**. La documentación (este archivo, el README) sigue en español.
 
 **IDs de pantalla:** wireframes web `1a`–`1w` más `1x` y `1y`; wireframes móviles `1`–`14`. Usarlos como ancla en cualquier discusión de interfaz.
 

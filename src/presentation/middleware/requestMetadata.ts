@@ -3,9 +3,9 @@ import { randomUUID } from 'crypto';
 import { logger } from '../../lib/adapters/logger';
 
 /**
- * Asigna un X-Request-ID a cada peticion y registra metodo, ruta, status y
- * duracion cuando la respuesta termina. Es el primer middleware de la cadena
- * para que el id este disponible en el resto de capas.
+ * Assigns an X-Request-ID to every request and logs method, path, status and
+ * duration once the response finishes. It is the first middleware in the chain
+ * so the id is available to every other layer.
  */
 export const requestMetadata = (
   req: Request,
@@ -21,10 +21,10 @@ export const requestMetadata = (
     const elapsed = Number(process.hrtime.bigint() - startAt) / 1_000_000;
     logger.info('Request completed', {
       method: req.method,
-      // originalUrl y no req.path: Express reescribe req.url al entrar en un
-      // router montado, y este callback corre despues del enrutado — req.path
-      // ya seria relativo al router ("/" en vez de "/api/health").
-      // Se recorta el query string para no loguear datos sensibles.
+      // originalUrl rather than req.path: Express rewrites req.url when it
+      // enters a mounted router, and this callback runs after routing — req.path
+      // would already be relative to the router ("/" instead of "/api/health").
+      // The query string is trimmed to avoid logging sensitive data.
       path: req.originalUrl.split('?')[0],
       status: res.statusCode,
       duration_ms: elapsed.toFixed(2),

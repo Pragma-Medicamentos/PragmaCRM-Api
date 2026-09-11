@@ -4,23 +4,23 @@ export class CustomError extends Error {
   constructor(message: string, statusCode: number) {
     super(message);
     this.statusCode = statusCode;
-    Object.setPrototypeOf(this, CustomError.prototype); // Necesario para extender correctamente Error
+    Object.setPrototypeOf(this, CustomError.prototype); // Required to extend Error correctly
   }
 
-  // Factory methods para errores comunes
+  // Factory methods for common errors
   static badRequest(message: string) {
     return new CustomError(message, 400);
   }
 
-  static unauthorized(message = 'No autorizado') {
+  static unauthorized(message = 'Unauthorized') {
     return new CustomError(message, 401);
   }
 
-  static forbidden(message = 'Acceso denegado') {
+  static forbidden(message = 'Access denied') {
     return new CustomError(message, 403);
   }
 
-  static notFound(message = 'Recurso no encontrado') {
+  static notFound(message = 'Resource not found') {
     return new CustomError(message, 404);
   }
 
@@ -32,7 +32,7 @@ export class CustomError extends Error {
     return new CustomError(message, 422);
   }
 
-  static internal(message = 'Error interno del servidor') {
+  static internal(message = 'Internal server error') {
     return new CustomError(message, 500);
   }
 }
