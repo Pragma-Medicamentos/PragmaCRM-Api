@@ -1,8 +1,5 @@
 import { CustomError } from '../domain/errors/CustomError';
-import {
-  efactsoftSaleSchema,
-  formatZodIssues,
-} from '../domain/schemas/efactsoft-sale.schema';
+import { efactsoftSaleSchema, formatZodIssues } from '../domain/schemas/efactsoft-sale.schema';
 import {
   SaleRejection,
   SaleStagingStatus,
@@ -13,26 +10,28 @@ import { parseErpDateOnly } from '../lib/parseErpDate';
 import { Client } from '../lib/prisma';
 
 /**
- * Recepcion del JSON de Efactsoft: valida el archivo y lo deja encolado en
- * `upload` + `sale_staging` (RF-03, PCRM-32 y PCRM-33).
+ * Intake of the ERP sales JSON: validates the file and queues it into
+ * `upload` + `sale_staging` (RF-03, PCRM-32 and PCRM-33).
  *
- * Este modulo NO escribe en las tablas vivas (`customer`, `product`, `sale`,
- * `sale_detail`, `balance_snapshot`): ese upsert es PCRM-34. La separacion es
- * lo que hace que el criterio de aceptacion CA2 de la HU-02 —"sin corromper
- * datos existentes"— se cumpla por construccion, porque esas tablas ni se
- * abren durante la carga.
+ * This module does NOT write to the live tables (`customer`, `product`,
+ * `sale`, `sale_detail`, `balance_snapshot`): that upsert is PCRM-34. The
+ * separation is what makes acceptance criterion CA2 of HU-02 — "without
+ * corrupting existing data" — hold by construction, because those tables are
+ * never even opened during intake.
  */
 
 /**
- * Cuantos rechazos se devuelven en la respuesta HTTP. Un archivo con miles de
- * registros sucios no debe producir una respuesta de megabytes; los rechazos
- * quedan completos en `sale_staging` de todas formas.
+ * How many rejections travel back in the HTTP response. A file with thousands
+ * of dirty records must not produce a multi-megabyte response; every rejection
+ * is stored in `sale_staging` either way.
  */
 export const MAX_REJECTIONS_IN_RESPONSE = 100;
 
 /**
- * Tamano de lote del `createMany`. Evita armar un solo INSERT gigante cuando
- * se cargue el historico completo (CLAUDE.md 7.9: ~18.000 ventas al ano).
+ * Batch size for `createMany`. Keeps a full historical backfill from building
+ * one enormous INSERT (CLAUDE.md 7.9: ~18,000 sales per year). Postgres caps a
+ * statement at 65,535 parameters and each row uses 5, so the hard ceiling is
+ * around 13,000 rows.
  */
 const STAGING_CHUNK_SIZE = 500;
 
@@ -43,7 +42,7 @@ interface StagingRow {
   error: string | null;
 }
 
-/** Extrae `venta.id_venta` de un elemento sin confiar en su forma. */
+/** Reads `venta.id_venta` from an entry without trusting its shape. */
 const readErpSaleId = (item: unknown): number | null => {
   if (typeof item !== 'object' || item === null) return null;
 
@@ -54,40 +53,38 @@ const readErpSaleId = (item: unknown): number | null => {
   return typeof id === 'number' && Number.isInteger(id) ? id : null;
 };
 
-/** Convierte el buffer del archivo en el array de ventas, o falla explicando por que. */
+/** Turns the uploaded buffer into the array of sales, or fails explaining why. */
 const parseFile = (fileBuffer: Buffer): unknown[] => {
-  // El export del ERP viene en UTF-8 (trae acentos en nombres de cliente);
-  // forzarlo evita que el locale del servidor lo lea como ANSI.
+  // The ERP export is UTF-8 (customer names carry accents); forcing it keeps
+  // the server locale from reading it as ANSI.
   const text = fileBuffer.toString('utf-8');
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    // El detalle de JSON.parse ("Unexpected end of JSON input") no le sirve al
-    // administrador y filtra interioridades del runtime. El motivo fino de
-    // cada venta rechazada si viaja, en `rejections`.
-    throw CustomError.badRequest('El archivo no es un JSON valido.');
+    // JSON.parse detail ("Unexpected end of JSON input") is useless to an
+    // administrator and leaks runtime internals. The fine-grained reason for
+    // each rejected sale does travel, in `rejections`.
+    throw CustomError.badRequest('The file is not valid JSON.');
   }
 
   if (!Array.isArray(parsed)) {
-    throw CustomError.unprocessable(
-      'El archivo debe contener un arreglo de ventas en la raiz.'
-    );
+    throw CustomError.unprocessable('The file must contain an array of sales at the root.');
   }
 
   if (parsed.length === 0) {
-    throw CustomError.unprocessable('El archivo no contiene ninguna venta.');
+    throw CustomError.unprocessable('The file does not contain any sales.');
   }
 
   return parsed;
 };
 
 /**
- * Valida cada elemento y arma las filas de staging. Los errores son por venta,
- * no por archivo: una venta sucia se marca y el resto del lote sigue. El
- * historico son anos de ventas y un registro corrupto no puede bloquear la
- * carga completa.
+ * Validates each entry and builds the staging rows. Errors are per sale, not
+ * per file: a dirty sale is flagged and the rest of the batch continues. The
+ * history spans years of sales and one corrupt record cannot block the whole
+ * load.
  */
 const buildStagingRows = (items: unknown[]) => {
   const rows: StagingRow[] = [];
@@ -107,9 +104,9 @@ const buildStagingRows = (items: unknown[]) => {
       rejections.push({ index, erp_sale_id: erpSaleId, reason });
       rows.push({
         erp_sale_id: erpSaleId,
-        // A staging va el payload CRUDO, no el parseado: PCRM-34 necesita los
-        // 200+ campos del ERP, y una venta rechazada debe poder auditarse tal
-        // como llego.
+        // The RAW payload goes to staging, not the parsed one: PCRM-34 needs
+        // all 200+ ERP fields, and a rejected sale has to be auditable exactly
+        // as it arrived.
         payload: (item ?? {}) as object,
         status: 'failed',
         error: reason,
@@ -124,10 +121,10 @@ const buildStagingRows = (items: unknown[]) => {
 
     const { venta } = result.data;
 
-    // Un `id_venta` repetido dentro del mismo archivo reventaria el upsert de
-    // PCRM-34 contra la PK natural `sale.erp_sale_id`. Se corta aqui.
+    // A repeated `id_venta` within the same file would break the PCRM-34
+    // upsert against the `sale.erp_sale_id` natural key. It stops here.
     if (seenSaleIds.has(venta.id_venta)) {
-      reject(`venta.id_venta: ${venta.id_venta} aparece mas de una vez en el archivo`);
+      reject(`venta.id_venta: ${venta.id_venta} appears more than once in the file`);
       return;
     }
     seenSaleIds.add(venta.id_venta);
@@ -156,10 +153,10 @@ const buildStagingRows = (items: unknown[]) => {
 };
 
 /**
- * Recibe el archivo, lo valida y lo deja encolado para PCRM-34.
+ * Receives the file, validates it and leaves it queued for PCRM-34.
  *
- * Recibe `Client` (y no `PrismaClient`) para poder correr suelto o dentro de
- * un `$transaction`, segun la convencion de CLAUDE.md 8.1.
+ * Takes `Client` rather than `PrismaClient` so it can run standalone or inside
+ * a `$transaction`, per the convention in CLAUDE.md 8.1.
  */
 export const stageSalesFile = async (
   client: Client,
@@ -170,26 +167,23 @@ export const stageSalesFile = async (
   const { rows, rejections, accepted, range, salesWithoutCustomer, salesWithoutUser } =
     buildStagingRows(items);
 
-  // Si no se salvo ni una venta, lo mas probable es que el archivo no sea el
-  // export de ventas. Se corta sin crear el `upload` para no dejar lotes
-  // vacios en el historial de cargas.
+  // If not a single sale survived, the file is most likely not the sales
+  // export. Bail out without creating the `upload` so the load history does
+  // not fill up with empty batches.
   if (accepted === 0) {
-    throw CustomError.unprocessable(
-      'Ninguna venta del archivo tiene el formato esperado.'
-    );
+    throw CustomError.unprocessable('No sale in the file has the expected format.');
   }
 
   const upload = await client.upload.create({
     data: {
-      // La API todavia no tiene autenticacion (CLAUDE.md 5.9 y 8.1): la
-      // columna es nullable y se llenara cuando exista el middleware de Clerk.
-      //TODO: cuando se agregue Clerk, cambiar a `uploaded_by: clerkUserId`.
+      // The API has no authentication yet (CLAUDE.md 5.9 and 8.1): the column
+      // is nullable and will be filled once the Clerk middleware exists.
       uploaded_by: null,
       range_from: range.from,
       range_to: range.to,
       sales_received: items.length,
       failed: rejections.length,
-      // `inserted` y `updated` quedan en 0: los llena PCRM-34 al procesar.
+      // `inserted` and `updated` stay at 0: PCRM-34 fills them while processing.
       status: 'staged',
     },
   });

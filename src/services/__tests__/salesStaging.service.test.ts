@@ -3,9 +3,9 @@ import { Client } from '../../lib/prisma';
 import { MAX_REJECTIONS_IN_RESPONSE, stageSalesFile } from '../salesStaging.service';
 
 /**
- * Doble del cliente de Prisma: registra lo que el service intenta escribir sin
- * tocar la base. La verificacion contra Postgres real esta en los tests de
- * integracion.
+ * Prisma client double: records what the service tries to write without
+ * touching the database. Verification against real Postgres lives in the
+ * integration tests.
  */
 const createClientMock = () => {
   const createdUploads: Record<string, unknown>[] = [];
@@ -41,71 +41,82 @@ const validSale = (id: number) => ({
     saldop: '0.00',
   },
   detalle: [
-    { id_venta_det: id * 10, id_producto: 2, nombre: 'ACETAMINOFEN', cantidad: '1', precio: '3.75', total: '3.75' },
+    {
+      id_venta_det: id * 10,
+      id_producto: 2,
+      nombre: 'ACETAMINOFEN',
+      cantidad: '1',
+      precio: '3.75',
+      total: '3.75',
+    },
   ],
 });
 
 const toBuffer = (value: unknown) => Buffer.from(JSON.stringify(value), 'utf-8');
 
-describe('stageSalesFile — archivo invalido (todo o nada)', () => {
-  it('rechaza un JSON que no parsea, sin crear el upload', async () => {
+describe('stageSalesFile — invalid file (all or nothing)', () => {
+  it('rejects JSON that does not parse, without creating the upload', async () => {
     const { client, spies } = createClientMock();
 
-    await expect(stageSalesFile(client, Buffer.from('{"roto":', 'utf-8'))).rejects.toThrow(
+    await expect(stageSalesFile(client, Buffer.from('{"broken":', 'utf-8'))).rejects.toThrow(
       CustomError
     );
     expect(spies.upload.create).not.toHaveBeenCalled();
   });
 
-  it('rechaza un objeto en la raiz en vez de un arreglo', async () => {
+  it('rejects an object at the root instead of an array', async () => {
     const { client, spies } = createClientMock();
 
     await expect(stageSalesFile(client, toBuffer({}))).rejects.toMatchObject({ statusCode: 422 });
     expect(spies.upload.create).not.toHaveBeenCalled();
   });
 
-  it('rechaza un arreglo vacio', async () => {
+  it('rejects an empty array', async () => {
     const { client, spies } = createClientMock();
 
     await expect(stageSalesFile(client, toBuffer([]))).rejects.toMatchObject({ statusCode: 422 });
     expect(spies.upload.create).not.toHaveBeenCalled();
   });
 
-  it('rechaza el archivo si ninguna venta es valida', async () => {
+  it('rejects the file when no sale is valid', async () => {
     const { client, spies } = createClientMock();
 
     await expect(
-      stageSalesFile(client, toBuffer([{ otra_cosa: 1 }, { tampoco: 2 }]))
+      stageSalesFile(client, toBuffer([{ something_else: 1 }, { nope: 2 }]))
     ).rejects.toMatchObject({ statusCode: 422 });
     expect(spies.upload.create).not.toHaveBeenCalled();
   });
 
-  it('explica que fallo en terminos del archivo (CA2 de la HU-02)', async () => {
+  it('explains what failed in terms of the file (CA2 of HU-02)', async () => {
     const { client } = createClientMock();
 
-    await expect(stageSalesFile(client, Buffer.from('no soy json', 'utf-8'))).rejects.toThrow(
-      /no es un JSON valido/i
+    await expect(stageSalesFile(client, Buffer.from('not json', 'utf-8'))).rejects.toThrow(
+      /not valid JSON/i
     );
   });
 
   it.each([
-    ['JSON roto', Buffer.from('{"roto":', 'utf-8')],
-    ['raiz que no es arreglo', Buffer.from('{}', 'utf-8')],
-    ['ninguna venta valida', Buffer.from('[{"nada":1}]', 'utf-8')],
-  ])('el mensaje de %s no filtra detalle interno ni el ERP de origen', async (_label, buffer) => {
+    ['broken JSON', Buffer.from('{"broken":', 'utf-8')],
+    ['non-array root', Buffer.from('{}', 'utf-8')],
+    ['no valid sale', Buffer.from('[{"nothing":1}]', 'utf-8')],
+  ])('the %s message does not leak internals or the source ERP', async (_label, buffer) => {
     const { client } = createClientMock();
 
-    // Los mensajes los lee un administrador de drogueria, no un desarrollador:
-    // nada de jerga de Zod o del runtime. Y no se nombra el sistema de origen,
-    // para que no queden mintiendo si el cliente cambia de ERP.
+    // These messages are read by a pharmacy administrator, not a developer, so
+    // they must not carry Zod phrasing ("Invalid input: expected number,
+    // received undefined") or JSON.parse wording ("Unexpected end of JSON
+    // input"). The source system is not named either, so the copy does not go
+    // stale if the customer switches ERP.
     await expect(stageSalesFile(client, buffer)).rejects.toMatchObject({
-      message: expect.not.stringMatching(/efactsoft|Invalid input|expected |received |Unexpected /i),
+      message: expect.not.stringMatching(
+        /efactsoft|Invalid input|expected \w+, received|Unexpected end of|Unexpected token/i
+      ),
     });
   });
 });
 
-describe('stageSalesFile — lote valido', () => {
-  it('encola cada venta como pending y devuelve los contadores', async () => {
+describe('stageSalesFile — valid batch', () => {
+  it('queues every sale as pending and returns the counters', async () => {
     const { client, createdUploads, stagedRows } = createClientMock();
 
     const result = await stageSalesFile(client, toBuffer([validSale(1), validSale(2)]));
@@ -121,8 +132,8 @@ describe('stageSalesFile — lote valido', () => {
     expect(createdUploads[0]).toMatchObject({ sales_received: 2, failed: 0, status: 'staged' });
   });
 
-  it('guarda el payload crudo, no el parseado', async () => {
-    // PCRM-34 necesita los 200+ campos del ERP, no solo los que valida Zod.
+  it('stores the raw payload, not the parsed one', async () => {
+    // PCRM-34 needs all 200+ ERP fields, not just the ones Zod validates.
     const { client, stagedRows } = createClientMock();
     const sale = validSale(1);
     const withExtras = { ...sale, venta: { ...sale.venta, num_control: 'ABC', tpv: 'TERMINAL 1' } };
@@ -134,7 +145,7 @@ describe('stageSalesFile — lote valido', () => {
     });
   });
 
-  it('calcula el rango del lote desde fecha_emision', async () => {
+  it('computes the batch range from fecha_emision', async () => {
     const { client } = createClientMock();
     const older = validSale(1);
     older.venta.fecha_emision = '2026-08-08 08:08:24';
@@ -145,7 +156,7 @@ describe('stageSalesFile — lote valido', () => {
     expect(result.range.to!.toISOString()).toBe('2026-09-05T00:00:00.000Z');
   });
 
-  it('deja uploaded_by en null mientras no haya autenticacion', async () => {
+  it('leaves uploaded_by null while there is no authentication', async () => {
     const { client, createdUploads } = createClientMock();
 
     await stageSalesFile(client, toBuffer([validSale(1)]));
@@ -153,9 +164,9 @@ describe('stageSalesFile — lote valido', () => {
     expect(createdUploads[0].uploaded_by).toBeNull();
   });
 
-  it('no toca las tablas vivas', async () => {
-    // El CA2 se cumple por construccion: si el service no conoce esas tablas,
-    // no puede corromperlas.
+  it('does not touch the live tables', async () => {
+    // CA2 holds by construction: a service that does not know those tables
+    // cannot corrupt them.
     const { client, spies } = createClientMock();
 
     await stageSalesFile(client, toBuffer([validSale(1)]));
@@ -164,8 +175,8 @@ describe('stageSalesFile — lote valido', () => {
   });
 });
 
-describe('stageSalesFile — lote parcial', () => {
-  it('acepta las ventas buenas y marca las malas', async () => {
+describe('stageSalesFile — partial batch', () => {
+  it('accepts the good sales and flags the bad ones', async () => {
     const { client, stagedRows, createdUploads } = createClientMock();
     const badSale = { venta: { id_venta: 9 }, detalle: [] };
 
@@ -179,9 +190,9 @@ describe('stageSalesFile — lote parcial', () => {
     expect(failed[0].error).toEqual(expect.any(String));
   });
 
-  it('reporta la posicion y el id de cada rechazo', async () => {
+  it('reports the position and id of every rejection', async () => {
     const { client } = createClientMock();
-    const badSale = { venta: { id_venta: 777, estado: 'dos' }, detalle: [] };
+    const badSale = { venta: { id_venta: 777, estado: 'two' }, detalle: [] };
 
     const result = await stageSalesFile(client, toBuffer([validSale(1), badSale]));
 
@@ -189,7 +200,7 @@ describe('stageSalesFile — lote parcial', () => {
     expect(result.rejections[0].reason).toContain('detalle');
   });
 
-  it('conserva en staging la venta rechazada para poder auditarla', async () => {
+  it('keeps the rejected sale in staging so it can be audited', async () => {
     const { client, stagedRows } = createClientMock();
 
     await stageSalesFile(client, toBuffer([validSale(1), { venta: { id_venta: 5 }, detalle: [] }]));
@@ -198,17 +209,17 @@ describe('stageSalesFile — lote parcial', () => {
     expect(failed!.payload).toMatchObject({ venta: { id_venta: 5 } });
   });
 
-  it('rechaza el id_venta repetido dentro del mismo archivo', async () => {
-    // Un duplicado reventaria el upsert de PCRM-34 contra la PK natural.
+  it('rejects an id_venta repeated within the same file', async () => {
+    // A duplicate would break the PCRM-34 upsert against the natural key.
     const { client } = createClientMock();
 
     const result = await stageSalesFile(client, toBuffer([validSale(1), validSale(1)]));
 
     expect(result).toMatchObject({ accepted: 1, rejected: 1 });
-    expect(result.rejections[0].reason).toContain('mas de una vez');
+    expect(result.rejections[0].reason).toContain('more than once');
   });
 
-  it('trunca la lista de rechazos pero conserva el total', async () => {
+  it('truncates the rejection list but keeps the real total', async () => {
     const { client, stagedRows } = createClientMock();
     const many = Array.from({ length: MAX_REJECTIONS_IN_RESPONSE + 25 }, () => ({
       venta: { id_venta: 1 },
@@ -220,13 +231,13 @@ describe('stageSalesFile — lote parcial', () => {
     expect(result.rejected).toBe(MAX_REJECTIONS_IN_RESPONSE + 25);
     expect(result.rejections).toHaveLength(MAX_REJECTIONS_IN_RESPONSE);
     expect(result.rejections_truncated).toBe(25);
-    // En staging quedan todos, truncados o no.
+    // Staging keeps them all, truncated or not.
     expect(stagedRows).toHaveLength(MAX_REJECTIONS_IN_RESPONSE + 26);
   });
 });
 
-describe('stageSalesFile — datos de control', () => {
-  it('cuenta las ventas de mostrador sin cliente', async () => {
+describe('stageSalesFile — control figures', () => {
+  it('counts counter sales with no customer', async () => {
     const { client } = createClientMock();
     const counterSale = validSale(2);
     counterSale.venta.id_cliente = null as never;
@@ -237,7 +248,7 @@ describe('stageSalesFile — datos de control', () => {
     expect(result.warnings.sales_without_customer).toBe(1);
   });
 
-  it('cuenta las ventas sin vendedor, que no son atribuibles a ninguna ruta', async () => {
+  it('counts sales with no salesperson, which no route can claim', async () => {
     const { client } = createClientMock();
     const orphan = validSale(2);
     orphan.venta.id_usuario = null as never;
@@ -248,8 +259,8 @@ describe('stageSalesFile — datos de control', () => {
   });
 });
 
-describe('stageSalesFile — volumen', () => {
-  it('parte la insercion en lotes en vez de un solo INSERT gigante', async () => {
+describe('stageSalesFile — volume', () => {
+  it('splits the insert into batches instead of one giant INSERT', async () => {
     const { client, spies, stagedRows } = createClientMock();
     const sales = Array.from({ length: 1200 }, (_, i) => validSale(i + 1));
 

@@ -1,6 +1,6 @@
 import { efactsoftSaleSchema, formatZodIssues } from '../efactsoft-sale.schema';
 
-/** Venta minima valida, con la forma real del export de Efactsoft. */
+/** Minimal valid sale, shaped like the real ERP export. */
 const validSale = () => ({
   venta: {
     id_venta: 4778,
@@ -37,13 +37,13 @@ const validSale = () => ({
 });
 
 describe('efactsoftSaleSchema', () => {
-  it('acepta una venta con la forma real del ERP', () => {
+  it('accepts a sale shaped like the real ERP export', () => {
     expect(efactsoftSaleSchema.safeParse(validSale()).success).toBe(true);
   });
 
-  it('conserva los campos que no valida', () => {
-    // El payload trae 200+ campos que el CRM ignora, pero PCRM-34 los necesita.
-    // Sin `.loose()` Zod los descartaria.
+  it('keeps the fields it does not validate', () => {
+    // The payload carries 200+ fields the CRM ignores, but PCRM-34 needs them.
+    // Without `.loose()` Zod would strip them.
     const sale = validSale();
     const withExtras = {
       ...sale,
@@ -56,9 +56,9 @@ describe('efactsoftSaleSchema', () => {
     expect(result.data!.venta).toMatchObject({ num_control: '000000000000000', tpv: 'TERMINAL 1' });
   });
 
-  it('acepta la venta de mostrador sin cliente', () => {
-    // Caso real del archivo: id_venta 4421, contado, sin id_cliente.
-    // `sale.customer_id` es nullable, asi que no hay motivo para rechazarla.
+  it('accepts a counter sale with no customer', () => {
+    // Real case from the export: id_venta 4421, cash, no id_cliente.
+    // `sale.customer_id` is nullable, so there is no reason to reject it.
     const sale = validSale();
     sale.venta.id_cliente = null as never;
 
@@ -69,14 +69,14 @@ describe('efactsoftSaleSchema', () => {
     ['dd/MM/yyyy HH:mm:ss', '05/09/2026 17:27:56'],
     ['yyyy-MM-dd HH:mm:ss', '2026-09-05 17:27:56'],
     ['dd/MM/yyyy', '05/09/2026'],
-  ])('acepta updated_at en formato %s', (_label, value) => {
+  ])('accepts updated_at in %s format', (_label, value) => {
     const sale = validSale();
     sale.venta.updated_at = value;
 
     expect(efactsoftSaleSchema.safeParse(sale).success).toBe(true);
   });
 
-  it('rechaza una fecha con formato desconocido', () => {
+  it('rejects a date in an unknown format', () => {
     const sale = validSale();
     sale.venta.updated_at = '2026/09/05T17:27';
 
@@ -86,7 +86,7 @@ describe('efactsoftSaleSchema', () => {
     expect(formatZodIssues(result.error!)).toContain('venta.updated_at');
   });
 
-  it('rechaza una venta sin id_venta', () => {
+  it('rejects a sale with no id_venta', () => {
     const sale = validSale();
     delete (sale.venta as { id_venta?: number }).id_venta;
 
@@ -96,7 +96,7 @@ describe('efactsoftSaleSchema', () => {
     expect(formatZodIssues(result.error!)).toContain('venta.id_venta');
   });
 
-  it('rechaza una venta sin lineas de detalle', () => {
+  it('rejects a sale with no detail lines', () => {
     const sale = validSale();
     sale.detalle = [];
 
@@ -106,9 +106,9 @@ describe('efactsoftSaleSchema', () => {
     expect(formatZodIssues(result.error!)).toContain('detalle');
   });
 
-  it('rechaza un importe que no es decimal', () => {
+  it('rejects an amount that is not a decimal', () => {
     const sale = validSale();
-    sale.venta.total = 'tres con setenta y cinco';
+    sale.venta.total = 'three seventy five';
 
     const result = efactsoftSaleSchema.safeParse(sale);
 
@@ -117,17 +117,17 @@ describe('efactsoftSaleSchema', () => {
   });
 
   it.each([
-    ['3.75', 'texto decimal'],
-    [3.75, 'numero'],
-    ['0.0000', 'cero con decimales'],
-  ])('acepta el importe %p (%s)', (value: string | number, _label: string) => {
+    ['3.75', 'decimal text'],
+    [3.75, 'number'],
+    ['0.0000', 'zero with decimals'],
+  ])('accepts the amount %p (%s)', (value: string | number, _label: string) => {
     const sale = validSale();
     sale.venta.total = value as never;
 
     expect(efactsoftSaleSchema.safeParse(sale).success).toBe(true);
   });
 
-  it('rechaza una linea de detalle sin producto', () => {
+  it('rejects a detail line with no product', () => {
     const sale = validSale();
     delete (sale.detalle[0] as { id_producto?: number }).id_producto;
 
@@ -137,18 +137,27 @@ describe('efactsoftSaleSchema', () => {
     expect(formatZodIssues(result.error!)).toContain('detalle.0.id_producto');
   });
 
-  it.each([null, undefined, 'texto', 42, []])('rechaza el payload %p', (payload) => {
+  it.each([null, undefined, 'text', 42, []])('rejects the payload %p', (payload) => {
     expect(efactsoftSaleSchema.safeParse(payload).success).toBe(false);
   });
 });
 
 describe('formatZodIssues', () => {
-  it('usa el formato "campo: mensaje" del resto de la API', () => {
+  it('uses the "field: message" shape the rest of the API uses', () => {
     const result = efactsoftSaleSchema.safeParse({ venta: {}, detalle: [] });
 
     const message = formatZodIssues(result.error!);
 
     expect(message).toMatch(/venta\.id_venta: /);
     expect(message).toContain('; ');
+  });
+
+  it('reports rejection reasons in plain language, not Zod internals', () => {
+    const result = efactsoftSaleSchema.safeParse({ venta: {}, detalle: [] });
+
+    const message = formatZodIssues(result.error!);
+
+    expect(message).toContain('the sale has no document number');
+    expect(message).toContain('the sale has no detail lines');
   });
 });

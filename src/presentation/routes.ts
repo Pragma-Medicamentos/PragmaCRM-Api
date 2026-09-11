@@ -8,7 +8,7 @@ export class AppRoutes {
 
     router.use('/api/health', HealthRoutes.routes);
 
-    // Los modulos del CRM se montan aqui bajo /api/v1/<recurso>.
+    // CRM modules are mounted here under /api/v1/<resource>.
     router.use('/api/v1/uploads', UploadsRoutes.routes);
 
     return router;

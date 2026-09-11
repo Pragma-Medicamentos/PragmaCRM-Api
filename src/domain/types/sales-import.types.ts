@@ -1,81 +1,82 @@
 /**
- * Tipos compartidos del flujo de importacion del JSON de Efactsoft
- * (RF-03, PCRM-32 / PCRM-33).
+ * Shared types for the ERP sales import flow (RF-03, PCRM-32 / PCRM-33).
  */
 
-/** Una venta que no paso la validacion y quedo marcada en `sale_staging`. */
+/** A sale that failed validation and was flagged in `sale_staging`. */
 export interface SaleRejection {
-  /** Posicion en el array del archivo, para que el admin la ubique. */
+  /** Position within the file array, so the administrator can locate it. */
   index: number;
-  /** `id_venta` del payload, si venia legible. */
+  /** The payload's `id_venta`, when it was readable. */
   erp_sale_id: number | null;
-  /** Motivo en el mismo formato que el resto de la API: `campo: mensaje`. */
+  /** Reason in the same shape as the rest of the API: `field: message`. */
   reason: string;
 }
 
 /**
- * Estados de `upload.status` a lo largo del ciclo de importacion. La columna es
- * texto libre en la base (sin check), asi que este tipo es el unico contrato.
+ * Values of `upload.status` across the import lifecycle. The column is free
+ * text in the database (no check constraint), so this type is the only
+ * contract.
  *
- *   staged      -> el archivo se recibio y la cola quedo lista   (PCRM-32/33, este modulo)
- *   processing  -> el sincronizador esta consumiendo la cola     (PCRM-34)
- *   completed   -> upsert terminado                              (PCRM-34)
- *   failed      -> el procesamiento aborto                       (PCRM-34)
+ *   staged      -> file received and queue ready        (PCRM-32/33, this module)
+ *   processing  -> the synchronizer is draining it      (PCRM-34)
+ *   completed   -> upsert finished                      (PCRM-34)
+ *   failed      -> processing aborted                   (PCRM-34)
  */
 export type UploadStatus = 'staged' | 'processing' | 'completed' | 'failed';
 
 /**
- * Estados de `sale_staging.status`. `sale_staging` es una cola de trabajo, asi
- * que estos estados hablan del PROCESAMIENTO, no de la validacion:
+ * Values of `sale_staging.status`. `sale_staging` is a work queue, so these
+ * describe PROCESSING, not validation:
  *
- *   pending    -> validada y encolada, esperando a PCRM-34   (este modulo)
- *   failed     -> no paso la validacion, no se va a procesar (este modulo)
- *   processed  -> ya se hizo upsert en las tablas vivas      (PCRM-34)
+ *   pending    -> validated and queued, waiting for PCRM-34   (this module)
+ *   failed     -> failed validation, will not be processed    (this module)
+ *   processed  -> already upserted into the live tables       (PCRM-34)
  *
- * Cuidado con `pending`: NO significa "pendiente de validar" — esa venta ya
- * paso el esquema. El sincronizador de PCRM-34 consulta
- * `WHERE upload_id = ? AND status = 'pending'` para saber que le falta, y sin
- * la distincion tendria que reprocesar las que ya sabemos que estan rotas.
- * Tambien es lo que permite reintentar un lote sin resubir el archivo.
+ * Careful with `pending`: it does NOT mean "pending validation" — that sale
+ * already passed the schema. The PCRM-34 synchronizer queries
+ * `WHERE upload_id = ? AND status = 'pending'` to know what is left, and
+ * without the distinction it would reprocess records we already know are
+ * broken. It is also what makes retrying a batch possible without re-uploading
+ * the file.
  *
- * El nombre viene del `@default("pending")` de la columna (prisma/schema.prisma),
- * definido en PCRM-31.
+ * The name comes from the column's `@default("pending")` (prisma/schema.prisma),
+ * defined in PCRM-31.
  */
 export type SaleStagingStatus = 'pending' | 'failed' | 'processed';
 
-/** Rango de fechas de factura que cubre el lote, para `upload.range_from/to`. */
+/** Invoice date range covered by the batch, for `upload.range_from/to`. */
 export interface UploadRange {
   from: Date | null;
   to: Date | null;
 }
 
-/** Resultado de recibir y encolar un archivo. */
+/** Result of receiving and queueing a file. */
 export interface StagingResult {
   upload_id: string;
-  /** Elementos que traia el archivo. */
+  /** How many entries the file carried. */
   sales_received: number;
-  /** Ventas encoladas como `pending`, listas para PCRM-34. */
+  /** Sales queued as `pending`, ready for PCRM-34. */
   accepted: number;
-  /** Ventas encoladas como `failed`. */
+  /** Sales queued as `failed`. */
   rejected: number;
   range: UploadRange;
   /**
-   * Detalle de los rechazos, truncado para no devolver una respuesta enorme
-   * cuando el archivo viene muy sucio. `rejected` conserva el total real y en
-   * `sale_staging` quedan todos.
+   * Rejection details, truncated so a very dirty file does not produce a huge
+   * response. `rejected` keeps the real total and every rejection is stored in
+   * `sale_staging` regardless.
    */
   rejections: SaleRejection[];
-  /** Cuantos rechazos se omitieron de `rejections` por el truncado. */
+  /** How many rejections were left out of `rejections` by the truncation. */
   rejections_truncated: number;
   /**
-   * Datos de control, no errores: ventas aceptadas a las que les falta un
-   * vinculo. Explican por que un reporte no cuadra con otro
-   * (CLAUDE.md Anexo A punto 2).
+   * Control figures, not errors: accepted sales that are missing a link. They
+   * explain why one report will not match another
+   * (CLAUDE.md Appendix A #2).
    */
   warnings: {
-    /** Ventas de mostrador sin `id_cliente`. */
+    /** Counter sales with no `id_cliente`. */
     sales_without_customer: number;
-    /** Ventas sin `id_usuario`: no son atribuibles a ninguna ruta. */
+    /** Sales with no `id_usuario`: not attributable to any route. */
     sales_without_user: number;
   };
 }

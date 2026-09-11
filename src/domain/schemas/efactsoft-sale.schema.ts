@@ -2,24 +2,24 @@ import { z } from 'zod';
 import { parseErpTimestamp } from '../../lib/parseErpDate';
 
 /**
- * Estructura del JSON que exporta Efactsoft (CLAUDE.md 6.2 y 6.3).
+ * Shape of the JSON exported by the ERP (CLAUDE.md 6.2 and 6.3).
  *
- * Dos criterios de diseno:
+ * Two design rules:
  *
- * 1. Se validan SOLO los campos que hacen a una venta procesable. El payload
- *    real trae mas de 200 campos por venta (datos de DTE, tarjetas, bitcoin,
- *    recintos fiscales...) que el CRM ignora; exigirlos rechazaria ventas
- *    perfectamente validas.
+ * 1. Only the fields that make a sale processable are validated. The real
+ *    payload carries more than 200 fields per sale (tax document data, card
+ *    details, bitcoin references, customs offices...) that the CRM ignores;
+ *    requiring them would reject perfectly valid sales.
  *
- * 2. Los objetos son `loose`: Zod conserva las claves desconocidas en vez de
- *    descartarlas. Aun asi, a `sale_staging.payload` se escribe el objeto
- *    CRUDO, nunca el parseado — PCRM-34 necesita el payload integro.
+ * 2. Objects are `loose`, so Zod keeps unknown keys instead of stripping them.
+ *    Even so, what is written to `sale_staging.payload` is the RAW object, not
+ *    the parsed one — PCRM-34 needs the payload untouched.
  */
 
 /**
- * Los importes llegan como texto decimal ("3.75", "0.0000") y a veces como
- * numero. Se acepta cualquiera de los dos siempre que sea convertible; no se
- * transforma, porque a staging va el valor crudo.
+ * Amounts arrive as decimal text ("3.75", "0.0000") and occasionally as
+ * numbers. Either is accepted as long as it converts; no transformation is
+ * applied, since the raw value is what goes to staging.
  */
 const decimalString = z.union([z.string(), z.number()]).refine(
   (value) => {
@@ -27,25 +27,25 @@ const decimalString = z.union([z.string(), z.number()]).refine(
     const trimmed = value.trim();
     return trimmed !== '' && Number.isFinite(Number(trimmed));
   },
-  { message: 'no es un decimal valido' }
+  { message: 'is not a valid decimal amount' }
 );
 
-/** Fecha del ERP en cualquiera de los formatos que mezcla el payload. */
+/** An ERP date, in any of the formats the payload mixes. */
 const erpTimestamp = z
-  .string()
+  .string({ message: 'is required and must be a date' })
   .refine((value) => parseErpTimestamp(value) !== null, {
-    message: 'formato de fecha no reconocido (se espera dd/MM/yyyy HH:mm:ss o yyyy-MM-dd HH:mm:ss)',
+    message: 'unrecognized date format (expected dd/MM/yyyy HH:mm:ss or yyyy-MM-dd HH:mm:ss)',
   });
 
-/** Texto opcional: el ERP manda null, "" o ausencia indistintamente. */
+/** Optional text: the ERP sends null, "" or nothing at all interchangeably. */
 const optionalText = z.string().nullish();
 
 export const efactsoftSaleDetailSchema = z
   .object({
-    id_venta_det: z.number().int(),
-    id_producto: z.number().int(),
+    id_venta_det: z.number({ message: 'is required and must be a number' }).int(),
+    id_producto: z.number({ message: 'the line does not identify a product' }).int(),
     id_venta: z.number().int().optional(),
-    nombre: z.string().min(1, 'el producto no tiene nombre'),
+    nombre: z.string({ message: 'the product has no name' }).min(1, 'the product has no name'),
     codigo: optionalText,
     grupo_prod: optionalText,
     cantidad: decimalString,
@@ -59,41 +59,44 @@ export const efactsoftSaleDetailSchema = z
 
 export const efactsoftSaleHeaderSchema = z
   .object({
-    // Llaves de vinculacion con el ERP (CLAUDE.md 6.4)
-    id_venta: z.number().int().positive(),
+    // ERP linking keys (CLAUDE.md 6.4)
+    id_venta: z
+      .number({ message: 'the sale has no document number' })
+      .int()
+      .positive('the document number must be positive'),
 
-    // Nullable a proposito: el archivo real trae ventas de mostrador a cliente
-    // eventual (id_venta 4421, contado, $9.40) sin `id_cliente`. `sale.customer_id`
-    // tambien es nullable en la base, asi que rechazarlas seria inventar una
-    // regla que el esquema no impone y sesgaria venta total y ticket promedio.
-    // El service las cuenta aparte como dato de control para PCRM-34.
+    // Nullable on purpose: the real export contains counter sales to walk-in
+    // customers (id_venta 4421, cash, $9.40) with no `id_cliente`.
+    // `sale.customer_id` is nullable too, so rejecting them would invent a rule
+    // the schema does not impose and would skew total sales and average ticket.
+    // The service counts them separately as a control figure for PCRM-34.
     id_cliente: z.number().int().nullish(),
 
-    // Nullable por el mismo motivo: sale.user_id lo es. Una venta sin vendedor
-    // no es atribuible a ninguna ruta (CLAUDE.md Anexo A punto 2).
+    // Nullable for the same reason: sale.user_id is. A sale with no
+    // salesperson cannot be attributed to a route (CLAUDE.md Appendix A #2).
     id_usuario: z.number().int().nullish(),
 
-    // 1 = cotizacion, 2 = venta realizada (CLAUDE.md 5.5)
-    estado: z.number().int(),
+    // 1 = quotation, 2 = completed sale (CLAUDE.md 5.5)
+    estado: z.number({ message: 'the sale has no status' }).int(),
 
-    // Fuente de erp_created_at y last_payment_at. NUNCA la hora de importacion.
+    // Source of erp_created_at and last_payment_at. NEVER the import time.
     updated_at: erpTimestamp,
-    // Fecha real de la factura, base del rango del lote.
+    // Actual invoice date, used for the batch range.
     fecha_emision: erpTimestamp,
     created_at: erpTimestamp.optional(),
 
-    // Importes
+    // Amounts
     total: decimalString,
     total_neto: decimalString.nullish(),
     iva: decimalString.nullish(),
     saldop: decimalString,
 
-    // Base del criterio de ventas de contado (CLAUDE.md 5.6).
-    // En el archivo real: 1 = Contado, 5 = Credito, 6 = Credito Pagado.
+    // Basis for the cash-sale criterion (CLAUDE.md 5.6).
+    // In the real export: 1 = cash, 5 = credit, 6 = credit paid.
     pago: optionalText,
     id_pago: z.number().int().nullish(),
 
-    // Datos de cliente embebidos: el ERP no manda objetos de cliente aparte
+    // Customer data is embedded: the ERP does not send standalone customers
     nombres: optionalText,
     apellidos: optionalText,
     nombre_comercial: optionalText,
@@ -104,7 +107,7 @@ export const efactsoftSaleHeaderSchema = z
     telefono: optionalText,
     celular: optionalText,
 
-    // Datos de vendedor embebidos
+    // Salesperson data is embedded too
     usuario: optionalText,
 
     documento: optionalText,
@@ -115,8 +118,8 @@ export const efactsoftSaleHeaderSchema = z
 export const efactsoftSaleSchema = z.object({
   venta: efactsoftSaleHeaderSchema,
   detalle: z
-    .array(efactsoftSaleDetailSchema)
-    .min(1, 'la venta no tiene lineas de detalle'),
+    .array(efactsoftSaleDetailSchema, { message: 'the sale has no detail lines' })
+    .min(1, 'the sale has no detail lines'),
 });
 
 export type EfactsoftSale = z.infer<typeof efactsoftSaleSchema>;
@@ -124,9 +127,9 @@ export type EfactsoftSaleHeader = z.infer<typeof efactsoftSaleHeaderSchema>;
 export type EfactsoftSaleDetail = z.infer<typeof efactsoftSaleDetailSchema>;
 
 /**
- * Aplana los issues de Zod al mismo formato que usa el middleware de
- * validacion (`campo: mensaje`), para que el motivo de rechazo se lea igual
- * venga de donde venga. Va tal cual a `sale_staging.error`.
+ * Flattens Zod issues into the same shape the validation middleware uses
+ * (`field: message`), so a rejection reads the same wherever it comes from.
+ * This string goes straight into `sale_staging.error`.
  */
 export const formatZodIssues = (error: z.ZodError): string =>
   error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');

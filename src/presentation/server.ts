@@ -27,14 +27,13 @@ export class Server {
   }
 
   /**
-   * Monta middlewares, rutas y los handlers de 404/error. Esta separado de
-   * start() para que los tests de integracion puedan construir la app sin
-   * abrir un puerto.
+   * Wires middlewares, routes and the 404/error handlers. Kept separate from
+   * start() so integration tests can build the app without opening a port.
    */
   setup() {
-    //* Confia en un unico reverse proxy (Nginx) delante de la app para que el
-    //* IP real del cliente se derive de X-Forwarded-For. Se usa un numero de
-    //* saltos (no `true`) para que un cliente no pueda falsificar la cabecera.
+    //* Trusts a single reverse proxy (Nginx) in front of the app so the real
+    //* client IP is derived from X-Forwarded-For. A hop count is used instead
+    //* of `true` so a client cannot forge the header.
     this.app.set('trust proxy', 1);
 
     //* Middlewares
@@ -52,10 +51,10 @@ export class Server {
         .json({ success: false, message: 'Not found' } satisfies ApiResponse);
     });
 
-    //* Error handler global — captura errores de middlewares
-    //* (p. ej. un body JSON malformado) y de rutas asincronas.
-    //* Express solo lo reconoce como error handler si declara los 4 argumentos,
-    //* de ahi que `_next` este presente aunque no se use.
+    //* Global error handler — catches errors raised by middlewares (a
+    //* malformed JSON body, for instance) and by async routes.
+    //* Express only recognises it as an error handler if all four arguments
+    //* are declared, which is why `_next` is present even though it is unused.
     this.app.use(
       (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
         const { statusCode, message } = handleError(err);

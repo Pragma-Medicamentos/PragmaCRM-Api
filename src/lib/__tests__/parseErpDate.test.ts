@@ -6,24 +6,24 @@ import {
 } from '../parseErpDate';
 
 describe('parseErpTimestamp', () => {
-  it('lee dd/MM/yyyy HH:mm:ss como dia/mes, no mes/dia', () => {
-    // El caso que motiva todo el modulo: `new Date('05/09/2026 17:27:56')`
-    // devolveria el 9 de mayo. Aqui tiene que ser el 5 de septiembre.
+  it('reads dd/MM/yyyy HH:mm:ss as day/month, not month/day', () => {
+    // The case this module exists for: `new Date('05/09/2026 17:27:56')` would
+    // return May 9th. It has to be September 5th.
     const date = parseErpTimestamp('05/09/2026 17:27:56');
 
     expect(date).not.toBeNull();
-    expect(date!.toISOString()).toBe('2026-09-05T23:27:56.000Z'); // 17:27:56 en UTC-6
+    expect(date!.toISOString()).toBe('2026-09-05T23:27:56.000Z'); // 17:27:56 at UTC-6
   });
 
-  it('lee yyyy-MM-dd HH:mm:ss', () => {
+  it('reads yyyy-MM-dd HH:mm:ss', () => {
     const date = parseErpTimestamp('2026-09-05 17:27:17');
 
     expect(date!.toISOString()).toBe('2026-09-05T23:27:17.000Z');
   });
 
-  it('aplica el desfase de America/El_Salvador (UTC-6)', () => {
-    // Una venta facturada a las 6 p.m. pertenece al mismo dia local, aunque en
-    // UTC ya sea medianoche. Ver CLAUDE.md 5.7.
+  it('applies the America/El_Salvador offset (UTC-6)', () => {
+    // A sale invoiced at 6 p.m. belongs to the same local day even though it is
+    // already midnight in UTC. See CLAUDE.md 5.7.
     const date = parseErpTimestamp('05/09/2026 18:00:00');
 
     expect(date!.toISOString()).toBe('2026-09-06T00:00:00.000Z');
@@ -32,70 +32,70 @@ describe('parseErpTimestamp', () => {
   it.each([
     ['05/09/2026', '2026-09-05T06:00:00.000Z'],
     ['2026-09-05', '2026-09-05T06:00:00.000Z'],
-  ])('acepta %s sin hora', (input, expected) => {
+  ])('accepts %s without a time component', (input, expected) => {
     expect(parseErpTimestamp(input)!.toISOString()).toBe(expected);
   });
 
   it.each([
-    ['31/02/2026 10:00:00', 'dia que no existe en el calendario'],
-    ['05-09-2026 17:27:56', 'separador equivocado'],
-    ['2026/09/05 17:27:56', 'orden y separador equivocados'],
-    ['', 'cadena vacia'],
-    ['   ', 'solo espacios'],
-    ['no es una fecha', 'texto arbitrario'],
-  ])('devuelve null para %s (%s)', (input) => {
+    ['31/02/2026 10:00:00', 'day that does not exist in the calendar'],
+    ['05-09-2026 17:27:56', 'wrong separator'],
+    ['2026/09/05 17:27:56', 'wrong order and separator'],
+    ['', 'empty string'],
+    ['   ', 'whitespace only'],
+    ['not a date', 'arbitrary text'],
+  ])('returns null for %s (%s)', (input) => {
     expect(parseErpTimestamp(input)).toBeNull();
   });
 
-  it.each([null, undefined, 12345, {}, []])('devuelve null para el valor no textual %p', (input) => {
+  it.each([null, undefined, 12345, {}, []])('returns null for the non-string value %p', (input) => {
     expect(parseErpTimestamp(input)).toBeNull();
   });
 
-  it('no lanza nunca, para que un dato sucio no aborte el lote', () => {
+  it('never throws, so a dirty record cannot abort the batch', () => {
     expect(() => parseErpTimestamp('31/02/2026')).not.toThrow();
   });
 });
 
 describe('parseErpTimestampWithReason', () => {
-  it('devuelve la fecha y error null cuando parsea', () => {
+  it('returns the date and a null error on success', () => {
     const result = parseErpTimestampWithReason('05/09/2026 17:27:56');
 
     expect(result.error).toBeNull();
     expect(result.date!.toISOString()).toBe('2026-09-05T23:27:56.000Z');
   });
 
-  it('explica el formato rechazado', () => {
+  it('reports the rejected value', () => {
     const result = parseErpTimestampWithReason('05-09-2026');
 
     expect(result.date).toBeNull();
     expect(result.error).toContain('05-09-2026');
   });
 
-  it('distingue el valor ausente del formato invalido', () => {
-    expect(parseErpTimestampWithReason(null).error).toBe('fecha vacia o no es texto');
+  it('tells a missing value apart from an invalid format', () => {
+    expect(parseErpTimestampWithReason(null).error).toBe('date is empty or not a string');
   });
 });
 
 describe('parseErpDateOnly', () => {
-  it('conserva el dia local aunque la hora empuje el instante a UTC del dia siguiente', () => {
-    // 23:30 del 5 de septiembre en El Salvador son las 05:30 UTC del 6. El dia
-    // que importa para el reporte es el 5.
+  it('keeps the local day even when the time pushes the instant into the next UTC day', () => {
+    // 11:30 p.m. on September 5th in El Salvador is 5:30 a.m. UTC on the 6th.
+    // The day that matters for reporting is the 5th.
     const date = parseErpDateOnly('05/09/2026 23:30:00');
 
     expect(date!.toISOString()).toBe('2026-09-05T00:00:00.000Z');
   });
 
-  it('trunca la hora', () => {
+  it('drops the time', () => {
     expect(parseErpDateOnly('2026-09-05 17:27:17')!.toISOString()).toBe('2026-09-05T00:00:00.000Z');
   });
 
-  it('devuelve null ante un formato desconocido', () => {
+  it('returns null for an unknown format', () => {
     expect(parseErpDateOnly('05-09-2026')).toBeNull();
   });
 });
 
 describe('ERP_TIMEZONE', () => {
-  it('es la zona del cliente definida en CLAUDE.md 5.7', () => {
+  it('is the customer timezone defined in CLAUDE.md 5.7', () => {
     expect(ERP_TIMEZONE).toBe('America/El_Salvador');
   });
 });

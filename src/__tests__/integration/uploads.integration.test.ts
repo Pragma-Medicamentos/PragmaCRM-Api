@@ -6,10 +6,11 @@ import { AppRoutes } from '../../presentation/routes';
 import { Server } from '../../presentation/server';
 
 /**
- * Carga del JSON de Efactsoft contra Postgres real (RF-03, PCRM-32 / PCRM-33).
+ * ERP sales JSON upload against real Postgres (RF-03, PCRM-32 / PCRM-33).
  *
- * Corre contra la base local de Supabase, nunca contra staging ni produccion:
- * loadEnv.ts fuerza .env.test antes de que se importe el cliente de Prisma.
+ * Runs against the local Supabase database, never against staging or
+ * production: loadEnv.ts forces .env.test before the Prisma client is
+ * imported.
  */
 
 const ENDPOINT = '/api/v1/uploads/sales';
@@ -19,10 +20,10 @@ const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
 const app = server.app;
 
-/** Ids creados durante la corrida, para limpiar al final. */
+/** Ids created during the run, cleaned up at the end. */
 const createdUploadIds: string[] = [];
 
-const upload = async (content: Buffer, filename = 'ventas.json') => {
+const upload = async (content: Buffer, filename = 'sales.json') => {
   const res = await request(app).post(ENDPOINT).attach('file', content, filename);
   if (res.body?.data?.upload_id) createdUploadIds.push(res.body.data.upload_id);
   return res;
@@ -56,7 +57,7 @@ const sale = (id: number, overrides: Record<string, unknown> = {}) => ({
 const toBuffer = (value: unknown) => Buffer.from(JSON.stringify(value), 'utf-8');
 
 afterAll(async () => {
-  // sale_staging cuelga de upload con ON DELETE CASCADE.
+  // sale_staging hangs off upload with ON DELETE CASCADE.
   if (createdUploadIds.length > 0) {
     await prisma.upload.deleteMany({ where: { id: { in: createdUploadIds } } });
   }
@@ -64,11 +65,11 @@ afterAll(async () => {
   server.close();
 });
 
-describe('carga del archivo real de Efactsoft', () => {
-  // El archivo no esta versionado (5 MB). Si no esta, se omite en vez de fallar.
+describe('upload of the real ERP export', () => {
+  // The file is not versioned (5 MB). If it is missing, skip instead of fail.
   const itWithRealFile = existsSync(REAL_FILE) ? it : it.skip;
 
-  itWithRealFile('encola las 346 ventas y calcula el rango del lote', async () => {
+  itWithRealFile('queues all 346 sales and computes the batch range', async () => {
     const res = await upload(readFileSync(REAL_FILE), 'ventas_json_example.json');
 
     expect(res.status).toBe(201);
@@ -85,7 +86,7 @@ describe('carga del archivo real de Efactsoft', () => {
     expect(stored).toMatchObject({
       sales_received: 346,
       failed: 0,
-      inserted: 0, // los llena PCRM-34
+      inserted: 0, // filled by PCRM-34
       updated: 0,
       status: 'staged',
       uploaded_by: null,
@@ -101,14 +102,14 @@ describe('carga del archivo real de Efactsoft', () => {
     expect(pending).toBe(346);
   }, 60_000);
 
-  itWithRealFile('cuenta la venta de mostrador sin cliente como dato de control', async () => {
-    // id_venta 4421 del archivo real viene sin id_cliente.
+  itWithRealFile('counts the counter sale with no customer as a control figure', async () => {
+    // id_venta 4421 of the real export arrives with no id_cliente.
     const res = await upload(readFileSync(REAL_FILE), 'ventas_json_example.json');
 
     expect(res.body.data.warnings.sales_without_customer).toBe(1);
   }, 60_000);
 
-  itWithRealFile('conserva el payload crudo con los campos que el CRM ignora', async () => {
+  itWithRealFile('keeps the raw payload with the fields the CRM ignores', async () => {
     const res = await upload(readFileSync(REAL_FILE), 'ventas_json_example.json');
 
     const row = await prisma.sale_staging.findFirstOrThrow({
@@ -116,13 +117,13 @@ describe('carga del archivo real de Efactsoft', () => {
     });
 
     const payload = row.payload as { venta: Record<string, unknown> };
-    // Campos que el esquema Zod no valida pero PCRM-34 necesita.
+    // Fields the Zod schema does not validate but PCRM-34 needs.
     expect(payload.venta.num_control).toBe('000000000000000');
     expect(payload.venta.tpv).toBe('TERMINAL 1');
     expect(payload.venta.id_pago).toBe(1);
   }, 60_000);
 
-  itWithRealFile('conserva los acentos del ERP (UTF-8)', async () => {
+  itWithRealFile('preserves the accents coming from the ERP (UTF-8)', async () => {
     const res = await upload(readFileSync(REAL_FILE), 'ventas_json_example.json');
 
     const row = await prisma.sale_staging.findFirstOrThrow({
@@ -134,8 +135,8 @@ describe('carga del archivo real de Efactsoft', () => {
   }, 60_000);
 });
 
-describe('lote parcial', () => {
-  it('persiste las validas como pending y las invalidas como failed', async () => {
+describe('partial batch', () => {
+  it('persists the valid ones as pending and the invalid ones as failed', async () => {
     const res = await upload(
       toBuffer([sale(900_001), { venta: { id_venta: 900_002 }, detalle: [] }, sale(900_003)])
     );
@@ -162,28 +163,28 @@ describe('lote parcial', () => {
     expect(stored).toMatchObject({ sales_received: 3, failed: 1 });
   });
 
-  it('marca el id_venta duplicado dentro del mismo archivo', async () => {
+  it('flags an id_venta duplicated within the same file', async () => {
     const res = await upload(toBuffer([sale(900_010), sale(900_010)]));
 
     expect(res.body.data).toMatchObject({ accepted: 1, rejected: 1 });
-    expect(res.body.data.rejections[0].reason).toContain('mas de una vez');
+    expect(res.body.data.rejections[0].reason).toContain('more than once');
   });
 });
 
-describe('archivo invalido — no se escribe nada (CA2 de la HU-02)', () => {
+describe('invalid file — nothing is written (CA2 of HU-02)', () => {
   const countUploads = () => prisma.upload.count();
 
-  it('responde 400 ante un JSON roto sin crear el upload', async () => {
+  it('responds 400 to broken JSON without creating the upload', async () => {
     const before = await countUploads();
 
     const res = await upload(Buffer.from('[{"venta":', 'utf-8'));
 
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/no es un JSON valido/i);
+    expect(res.body.message).toMatch(/not valid JSON/i);
     expect(await countUploads()).toBe(before);
   });
 
-  it('responde 422 ante un objeto en la raiz sin crear el upload', async () => {
+  it('responds 422 to an object at the root without creating the upload', async () => {
     const before = await countUploads();
 
     const res = await upload(toBuffer({ ventas: [] }));
@@ -192,28 +193,28 @@ describe('archivo invalido — no se escribe nada (CA2 de la HU-02)', () => {
     expect(await countUploads()).toBe(before);
   });
 
-  it('responde 422 si ninguna venta es valida, sin crear el upload', async () => {
+  it('responds 422 when no sale is valid, without creating the upload', async () => {
     const before = await countUploads();
 
-    const res = await upload(toBuffer([{ nada: 1 }, { tampoco: 2 }]));
+    const res = await upload(toBuffer([{ nothing: 1 }, { nope: 2 }]));
 
     expect(res.status).toBe(422);
-    expect(res.body.message).toMatch(/ninguna venta del archivo/i);
+    expect(res.body.message).toMatch(/no sale in the file/i);
     expect(await countUploads()).toBe(before);
   });
 
-  it('responde 400 si la extension no es .json', async () => {
+  it('responds 400 when the extension is not .json', async () => {
     const before = await countUploads();
 
-    const res = await upload(toBuffer([sale(900_020)]), 'ventas.txt');
+    const res = await upload(toBuffer([sale(900_020)]), 'sales.txt');
 
     expect(res.status).toBe(400);
     expect(await countUploads()).toBe(before);
   });
 });
 
-describe('aislamiento de las tablas vivas', () => {
-  it('no crea filas en customer, product ni sale — eso es PCRM-34', async () => {
+describe('isolation of the live tables', () => {
+  it('creates no rows in customer, product or sale — that is PCRM-34', async () => {
     const before = {
       customers: await prisma.customer.count(),
       products: await prisma.product.count(),

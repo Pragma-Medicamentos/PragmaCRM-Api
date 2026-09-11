@@ -7,9 +7,9 @@ export class UploadsRoutes {
     const router = Router();
     const controller = new UploadsController();
 
-    // Carga manual del JSON de Efactsoft (RF-03, HU-02).
-    // No lleva validateBody: el cuerpo es multipart, no JSON, y la validacion
-    // del contenido ocurre venta por venta dentro del service.
+    // Manual upload of the ERP sales JSON (RF-03, HU-02).
+    // No validateBody here: the body is multipart, not JSON, and content
+    // validation happens sale by sale inside the service.
     router.post('/sales', uploadJsonFile, controller.importSales);
 
     return router;

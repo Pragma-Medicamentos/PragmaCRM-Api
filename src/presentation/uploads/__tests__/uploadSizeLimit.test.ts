@@ -2,24 +2,24 @@ import { Express } from 'express';
 import request from 'supertest';
 
 /**
- * El limite de tamano se lee de `envs` en el momento del import, asi que este
- * caso vive en su propio archivo: baja el limite a 1 MB y carga los modulos
- * despues, en vez de generar un archivo de 50 MB.
+ * The size limit is read from `envs` at import time, so this case lives in its
+ * own file: it lowers the limit to 1 MB and loads the modules afterwards,
+ * instead of generating a 50 MB file.
  *
- * Vale la pena probarlo aparte porque es una trampa real: `handleError` trata
- * cualquier objeto con `code` como error de Prisma, y un MulterError
- * (`code: 'LIMIT_FILE_SIZE'`) saldria como 500 opaco si el middleware no lo
- * tradujera antes.
+ * It is worth testing separately because of a real trap: `handleError` treats
+ * any object carrying `code` as a Prisma error, and a MulterError
+ * (`code: 'LIMIT_FILE_SIZE'`) would surface as an opaque 500 if the middleware
+ * did not translate it first.
  */
 
-// Sin el mock, importar las rutas arrastra src/lib/prisma.ts y abre un pool de
-// conexiones que deja a Jest colgado al terminar.
+// Without the mock, importing the routes pulls in src/lib/prisma.ts and opens
+// a connection pool that leaves Jest hanging.
 const importSalesFileMock = jest.fn();
 jest.mock('../../../use-cases/importSalesFile.use-case', () => ({
   importSalesFile: (...args: unknown[]) => importSalesFileMock(...args),
 }));
 
-describe('POST /api/v1/uploads/sales — limite de tamano', () => {
+describe('POST /api/v1/uploads/sales — size limit', () => {
   let app: Express;
 
   beforeAll(() => {
@@ -41,20 +41,20 @@ describe('POST /api/v1/uploads/sales — limite de tamano', () => {
     jest.resetModules();
   });
 
-  it('responde 413 y no 500 cuando el archivo excede el limite', async () => {
+  it('responds 413 and not 500 when the file exceeds the limit', async () => {
     const tooBig = Buffer.alloc(2 * 1024 * 1024, 'a');
 
     const res = await request(app)
       .post('/api/v1/uploads/sales')
-      .attach('file', tooBig, 'ventas.json');
+      .attach('file', tooBig, 'sales.json');
 
     expect(res.status).toBe(413);
     expect(res.body.success).toBe(false);
-    expect(res.body.message).toMatch(/supera el limite de 1 MB/i);
+    expect(res.body.message).toMatch(/exceeds the 1 MB limit/i);
     expect(importSalesFileMock).not.toHaveBeenCalled();
   });
 
-  it('deja pasar un archivo por debajo del limite', async () => {
+  it('lets a file under the limit through', async () => {
     importSalesFileMock.mockResolvedValue({
       upload_id: 'u1',
       sales_received: 0,
@@ -69,7 +69,7 @@ describe('POST /api/v1/uploads/sales — limite de tamano', () => {
 
     const res = await request(app)
       .post('/api/v1/uploads/sales')
-      .attach('file', small, 'ventas.json');
+      .attach('file', small, 'sales.json');
 
     expect(res.status).toBe(201);
     expect(importSalesFileMock).toHaveBeenCalled();

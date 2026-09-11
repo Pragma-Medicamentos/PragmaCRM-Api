@@ -5,30 +5,30 @@ import { logger } from '../../lib/adapters/logger';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { importSalesFile } from '../../use-cases/importSalesFile.use-case';
 
-/** Fecha a `YYYY-MM-DD`, que es como el frontend espera un rango de dias. */
+/** Date to `YYYY-MM-DD`, which is how the frontend expects a day range. */
 const toIsoDate = (date: Date | null): string | null =>
   date ? date.toISOString().slice(0, 10) : null;
 
 const buildMessage = (result: StagingResult): string => {
   const { accepted, rejected } = result;
-  const base = `Archivo recibido: ${accepted} ${accepted === 1 ? 'venta aceptada' : 'ventas aceptadas'}`;
+  const base = `File received: ${accepted} ${accepted === 1 ? 'sale' : 'sales'} accepted`;
   return rejected === 0
-    ? `${base}, ninguna rechazada`
-    : `${base}, ${rejected} ${rejected === 1 ? 'rechazada' : 'rechazadas'}`;
+    ? `${base}, none rejected`
+    : `${base}, ${rejected} rejected`;
 };
 
 export class UploadsController {
   // POST /api/v1/uploads/sales
-  // Los metodos no usan `this` a proposito: las rutas los registran sin bind,
-  // igual que HealthController.
+  // Methods deliberately avoid `this`: routes register them without binding,
+  // the same way HealthController does.
   public async importSales(req: Request, res: Response) {
     try {
-      // El middleware uploadJsonFile ya garantizo que el archivo existe.
+      // The uploadJsonFile middleware already guaranteed the file is there.
       const file = req.file!;
 
       const result = await importSalesFile(file.buffer);
 
-      logger.info('Archivo de ventas importado', {
+      logger.info('Sales file imported', {
         upload_id: result.upload_id,
         filename: file.originalname,
         size_bytes: file.size,

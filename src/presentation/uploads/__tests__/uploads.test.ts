@@ -4,8 +4,8 @@ import { StagingResult } from '../../../domain/types/sales-import.types';
 import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
 
-// El use-case toca la base; aqui solo se prueba la capa HTTP. La verificacion
-// contra Postgres real esta en los tests de integracion.
+// The use case hits the database; only the HTTP layer is exercised here.
+// Verification against real Postgres lives in the integration tests.
 jest.mock('../../../use-cases/importSalesFile.use-case', () => ({
   importSalesFile: jest.fn(),
 }));
@@ -14,7 +14,7 @@ import { importSalesFile } from '../../../use-cases/importSalesFile.use-case';
 
 const importSalesFileMock = importSalesFile as jest.MockedFunction<typeof importSalesFile>;
 
-// setup() monta middlewares y rutas sin abrir un puerto.
+// setup() wires middlewares and routes without opening a port.
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
 const app = server.app;
@@ -36,10 +36,10 @@ const stagingResult = (overrides: Partial<StagingResult> = {}): StagingResult =>
 const validFile = Buffer.from(JSON.stringify([{ venta: {}, detalle: [] }]), 'utf-8');
 
 describe('POST /api/v1/uploads/sales', () => {
-  it('responde 201 con el envelope ApiResponse y el resumen del lote', async () => {
+  it('responds 201 with the ApiResponse envelope and the batch summary', async () => {
     importSalesFileMock.mockResolvedValue(stagingResult());
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'ventas.json');
+    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
@@ -55,86 +55,89 @@ describe('POST /api/v1/uploads/sales', () => {
     });
   });
 
-  it('pasa el contenido del archivo al use-case', async () => {
+  it('passes the file contents to the use case', async () => {
     importSalesFileMock.mockResolvedValue(stagingResult());
 
-    await request(app).post(ENDPOINT).attach('file', validFile, 'ventas.json');
+    await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
 
     expect(importSalesFileMock).toHaveBeenCalledWith(expect.any(Buffer));
     expect(importSalesFileMock.mock.calls[0][0].toString('utf-8')).toBe(validFile.toString('utf-8'));
   });
 
-  it('devuelve los rechazos para que la UI los pinte', async () => {
+  it('returns the rejections so the UI can render them', async () => {
     importSalesFileMock.mockResolvedValue(
       stagingResult({
         accepted: 1,
         rejected: 1,
-        rejections: [{ index: 1, erp_sale_id: 4790, reason: 'venta.id_venta: requerido' }],
+        rejections: [{ index: 1, erp_sale_id: 4790, reason: 'venta.id_venta: required' }],
       })
     );
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'ventas.json');
+    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(201);
-    expect(res.body.message).toContain('1 rechazada');
+    expect(res.body.message).toContain('1 rejected');
     expect(res.body.data.rejections).toEqual([
-      { index: 1, erp_sale_id: 4790, reason: 'venta.id_venta: requerido' },
+      { index: 1, erp_sale_id: 4790, reason: 'venta.id_venta: required' },
     ]);
   });
 
-  it('devuelve null en el rango cuando no hay fechas', async () => {
+  it('returns a null range when there are no dates', async () => {
     importSalesFileMock.mockResolvedValue(stagingResult({ range: { from: null, to: null } }));
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'ventas.json');
+    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
 
     expect(res.body.data.range).toEqual({ from: null, to: null });
   });
 });
 
-describe('POST /api/v1/uploads/sales — errores de la carga (PCRM-33)', () => {
+describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
   beforeEach(() => {
     importSalesFileMock.mockResolvedValue(stagingResult());
   });
 
-  it('responde 400 si no se envio ningun archivo', async () => {
+  it('responds 400 when no file was sent', async () => {
     const res = await request(app).post(ENDPOINT);
 
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
-    expect(res.body.message).toMatch(/no se recibio ningun archivo/i);
+    expect(res.body.message).toMatch(/no file received/i);
     expect(importSalesFileMock).not.toHaveBeenCalled();
   });
 
-  it('responde 400 si el campo multipart tiene otro nombre', async () => {
-    const res = await request(app).post(ENDPOINT).attach('archivo', validFile, 'ventas.json');
+  it('responds 400 when the multipart field has another name', async () => {
+    const res = await request(app).post(ENDPOINT).attach('archivo', validFile, 'sales.json');
 
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/campo de archivo inesperado/i);
+    expect(res.body.message).toMatch(/unexpected file field/i);
   });
 
-  it('responde 400 si la extension no es .json', async () => {
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'ventas.txt');
+  it('responds 400 when the extension is not .json', async () => {
+    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.txt');
 
     expect(res.status).toBe(400);
-    expect(res.body.message).toMatch(/extension \.json/i);
+    expect(res.body.message).toMatch(/\.json extension/i);
     expect(importSalesFileMock).not.toHaveBeenCalled();
   });
 
-  it('propaga el status y el mensaje de un CustomError del use-case', async () => {
+  it('propagates the status and message of a CustomError from the use case', async () => {
     importSalesFileMock.mockRejectedValue(
-      CustomError.unprocessable('El archivo no contiene ninguna venta.')
+      CustomError.unprocessable('The file does not contain any sales.')
     );
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'ventas.json');
+    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(422);
-    expect(res.body).toEqual({ success: false, message: 'El archivo no contiene ninguna venta.' });
+    expect(res.body).toEqual({
+      success: false,
+      message: 'The file does not contain any sales.',
+    });
   });
 
-  it('no filtra el detalle interno de un error inesperado', async () => {
+  it('does not leak internal details of an unexpected error', async () => {
     importSalesFileMock.mockRejectedValue(new Error('connection string: postgres://user:pass@host'));
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'ventas.json');
+    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(500);
     expect(res.body.message).toBe('Internal server error');

@@ -1,32 +1,31 @@
 import { DateTime } from 'luxon';
 
 /**
- * Parseo de las fechas que llegan en el JSON de Efactsoft.
+ * Parsing for the date formats found in the ERP sales export.
  *
- * El ERP mezcla dos formatos dentro del mismo payload:
+ * The ERP mixes two formats within the same payload:
  *
  *   venta.created_at / venta.updated_at   -> dd/MM/yyyy HH:mm:ss   (05/09/2026 17:27:56)
  *   venta.fecha_emision                   -> yyyy-MM-dd HH:mm:ss   (2026-09-05 17:27:17)
  *   venta.fecha / fecha_entrega           -> dd/MM/yyyy            (05/09/2026)
  *   detalle.created_at / updated_at       -> yyyy-MM-dd HH:mm:ss   (2026-09-05 17:27:56)
  *
- * Por eso no sirve `new Date(valor)`: con "05/09/2026" el motor aplica la
- * convencion estadounidense MM/dd y lo lee como 9 de mayo en vez del 5 de
- * septiembre. Es un error silencioso — devuelve una fecha valida, solo que
- * equivocada — y corromperia `sale.erp_created_at` y `sale.last_payment_at`,
- * los dos campos que segun CLAUDE.md 5.5 se estampan una vez y nunca se
- * sobrescriben.
+ * This is why `new Date(value)` cannot be used: for "05/09/2026" the engine
+ * applies the US MM/dd convention and reads it as May 9th instead of September
+ * 5th. The failure is silent — it returns a valid date, just the wrong one —
+ * and would corrupt `sale.erp_created_at` and `sale.last_payment_at`, the two
+ * columns that are stamped once and never overwritten (CLAUDE.md 5.5).
  *
- * Ninguna de esas cadenas trae zona horaria, asi que se interpretan en la hora
- * local del cliente (CLAUDE.md 5.7).
+ * None of these strings carry a timezone, so they are interpreted in the
+ * customer's local time (CLAUDE.md 5.7).
  */
 
-/** Zona del cliente. Ver CLAUDE.md 5.7. */
+/** Customer timezone. See CLAUDE.md 5.7. */
 export const ERP_TIMEZONE = 'America/El_Salvador';
 
 /**
- * Formatos aceptados, en orden de intento. Luxon exige el formato exacto, asi
- * que una cadena que no calce con ninguno se rechaza en vez de adivinarse.
+ * Accepted formats, in the order they are tried. Luxon requires an exact
+ * match, so a string that fits none of them is rejected rather than guessed.
  */
 const TIMESTAMP_FORMATS = [
   'dd/MM/yyyy HH:mm:ss',
@@ -37,7 +36,7 @@ const TIMESTAMP_FORMATS = [
 
 export interface ErpDateParseResult {
   date: Date | null;
-  /** Motivo del fallo, listo para `sale_staging.error`. Null si se parseo bien. */
+  /** Failure reason, ready for `sale_staging.error`. Null when parsing succeeds. */
   error: string | null;
 }
 
@@ -56,22 +55,22 @@ const parseToDateTime = (value: unknown): DateTime | null => {
 };
 
 /**
- * Parsea una marca de tiempo del ERP a un Date en UTC.
+ * Parses an ERP timestamp into a UTC Date.
  *
- * Devuelve null si el formato no se reconoce o si la fecha no existe en el
- * calendario (31/02/2026); nunca lanza, porque el importador necesita marcar
- * esa venta como rechazada y seguir con el resto del lote.
+ * Returns null when the format is unknown or the date does not exist in the
+ * calendar (31/02/2026). It never throws: the importer needs to flag that one
+ * sale as rejected and carry on with the rest of the batch.
  */
 export const parseErpTimestamp = (value: unknown): Date | null =>
   parseToDateTime(value)?.toJSDate() ?? null;
 
 /**
- * Igual que parseErpTimestamp, pero devuelve ademas el motivo del fallo para
- * poder explicarle al administrador que fecha venia mal.
+ * Same as parseErpTimestamp, but also reports why parsing failed so the
+ * administrator can be told which date was malformed.
  */
 export const parseErpTimestampWithReason = (value: unknown): ErpDateParseResult => {
   if (typeof value !== 'string' || value.trim() === '') {
-    return { date: null, error: 'fecha vacia o no es texto' };
+    return { date: null, error: 'date is empty or not a string' };
   }
 
   const parsed = parseToDateTime(value);
@@ -79,19 +78,18 @@ export const parseErpTimestampWithReason = (value: unknown): ErpDateParseResult 
 
   return {
     date: null,
-    error: `fecha no reconocida: "${value}" (formatos aceptados: ${TIMESTAMP_FORMATS.join(', ')})`,
+    error: `unrecognized date: "${value}" (accepted formats: ${TIMESTAMP_FORMATS.join(', ')})`,
   };
 };
 
 /**
- * Descarta la hora y devuelve la medianoche UTC del dia calendario
- * salvadoreno. Se usa para las columnas `date` de `upload` (range_from /
- * range_to), donde la hora no aporta nada.
+ * Drops the time and returns UTC midnight of the Salvadoran calendar day. Used
+ * for the `date` columns of `upload` (range_from / range_to), where the time
+ * adds nothing.
  *
- * Se construye con Date.UTC a partir de los componentes locales para que
- * Postgres reciba exactamente el dia que el vendedor vio en su factura: pasar
- * el instante crudo haria que una venta de las 6 p.m. cayera al dia siguiente
- * (CLAUDE.md 5.7).
+ * It is rebuilt with Date.UTC from the local components so Postgres stores the
+ * same day the salesperson saw on the invoice: passing the raw instant would
+ * push a 6 p.m. sale into the following day (CLAUDE.md 5.7).
  */
 export const parseErpDateOnly = (value: unknown): Date | null => {
   const parsed = parseToDateTime(value);

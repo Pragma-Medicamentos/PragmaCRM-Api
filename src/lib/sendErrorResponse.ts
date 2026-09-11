@@ -4,8 +4,8 @@ import { handleError } from './handleError';
 import { logger } from './adapters/logger';
 
 /**
- * Punto unico de salida de errores en los controladores. Traduce el error,
- * loguea solo lo inesperado (500) y responde con el envelope ApiResponse.
+ * Single exit point for errors in controllers. Translates the error, logs only
+ * the unexpected ones (500) and replies with the ApiResponse envelope.
  */
 export const sendErrorResponse = (
   res: Response,

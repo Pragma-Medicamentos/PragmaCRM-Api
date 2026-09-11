@@ -3,17 +3,16 @@ import { prisma } from '../lib/prisma';
 import { stageSalesFile } from '../services/salesStaging.service';
 
 /**
- * Importacion de un archivo de ventas de Efactsoft (RF-03).
+ * Import of an ERP sales file (RF-03).
  *
- * Orquesta el flujo completo de la HU-02. Hoy tiene un solo paso; el segundo
- * lo agrega PCRM-34.
+ * Orchestrates the full HU-02 flow. Today it has a single step; the second one
+ * is added by PCRM-34.
  */
 
 /**
- * Margen para la transaccion. El default de Prisma son 5 s, suficiente para el
- * export mensual (~350 ventas) pero no para el backfill historico
- * (~18.000 ventas al ano, CLAUDE.md 7.9), donde el `createMany` se parte en
- * decenas de lotes.
+ * Transaction headroom. Prisma defaults to 5 s, which is fine for a monthly
+ * export (~350 sales) but not for a historical backfill (~18,000 sales per
+ * year, CLAUDE.md 7.9) where `createMany` is split into dozens of batches.
  */
 const TRANSACTION_TIMEOUT_MS = 120_000;
 const TRANSACTION_MAX_WAIT_MS = 10_000;
@@ -21,24 +20,24 @@ const TRANSACTION_MAX_WAIT_MS = 10_000;
 export const importSalesFile = async (fileBuffer: Buffer): Promise<StagingResult> =>
   prisma.$transaction(
     async (tx) => {
-      // PASO 1 — Recibir: validar el archivo y encolarlo. PCRM-32 / PCRM-33.
+      // STEP 1 — Intake: validate the file and queue it. PCRM-32 / PCRM-33.
       const result = await stageSalesFile(tx, fileBuffer);
 
-      // PASO 2 — Sincronizar: consumir la cola y hacer upsert en `customer`,
-      // `product`, `sale`, `sale_detail` y `balance_snapshot`.
+      // STEP 2 — Synchronize: drain the queue and upsert into `customer`,
+      // `product`, `sale`, `sale_detail` and `balance_snapshot`.
       //
-      // >>> PUNTO DE ENGANCHE DE PCRM-34 <<<
-      // Aqui va la llamada al sincronizador, que debe:
-      //   - leer `sale_staging` con upload_id = result.upload_id y status 'pending'
-      //   - hacer el upsert idempotente por las llaves naturales (CLAUDE.md 6.4),
-      //     repitiendo el predicado `WHERE deleted_at IS NULL` en los ON CONFLICT
-      //     sobre indices unicos parciales (CLAUDE.md 9.2)
-      //   - marcar `processed_at` en cada fila procesada
-      //   - actualizar upload.inserted / upload.updated y dejar
-      //     upload.status en 'completed'
+      // >>> PCRM-34 HOOKS IN HERE <<<
+      // The synchronizer call goes here and must:
+      //   - read `sale_staging` where upload_id = result.upload_id and status 'pending'
+      //   - upsert idempotently on the ERP natural keys (CLAUDE.md 6.4),
+      //     repeating the `WHERE deleted_at IS NULL` predicate in ON CONFLICT
+      //     for the partial unique indexes (CLAUDE.md 9.2)
+      //   - stamp `processed_at` on every processed row
+      //   - update upload.inserted / upload.updated and leave upload.status
+      //     as 'completed'
       //
-      // Corre dentro de esta misma transaccion recibiendo `tx`, para que un
-      // fallo a mitad del upsert no deje el lote a medio aplicar.
+      // It runs inside this same transaction by receiving `tx`, so a failure
+      // halfway through the upsert cannot leave the batch half applied.
       //
       //   const sync = await syncStagedSales(tx, result.upload_id);
       //   return { ...result, ...sync };

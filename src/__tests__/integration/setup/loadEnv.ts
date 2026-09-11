@@ -1,7 +1,7 @@
 import { config } from 'dotenv';
 import { resolve } from 'path';
 
-// Los tests de integracion golpean servicios reales (base de datos), asi que
-// leen .env.test y no el .env de desarrollo — evita que una corrida de tests
-// escriba por accidente sobre datos locales de trabajo.
+// Integration tests hit real services (the database), so they read .env.test
+// rather than the development .env — this keeps a test run from accidentally
+// writing over local working data.
 config({ path: resolve(process.cwd(), '.env.test'), override: true });
