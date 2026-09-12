@@ -349,34 +349,36 @@ En este repositorio, las constantes que sean configurables por entorno van en `s
 
 ### 5.9 Autenticación y autorización
 
-- **Clerk es dueño de la autenticación. La API es dueña de la autorización.**
-- **No se usa `auth.users` de Supabase.** La tabla `app_user` guarda `clerk_user_id text UNIQUE`, que contiene el claim `sub` del JWT de Clerk. Ese es el vínculo.
-- **De Supabase se usa solo la base de datos.** Ni Supabase Auth, ni la Data API (PostgREST), ni `supabase-js` en los clientes.
-- **Se requiere webhook de sincronización** para los eventos `user.created` y `user.updated` de Clerk, para mantener la tabla `app_user` alineada.
-- Esta decisión resolvió una de las discrepancias del DER: la tabla de usuarios no tenía campos de contraseña ni credenciales. Ya no los necesita.
+**Decisión confirmada (11 de septiembre de 2026): Supabase Auth es el proveedor de identidad y RLS es el control de acceso.** Sustituye a la decisión anterior basada en Clerk, que queda retirada.
 
-**Decisión confirmada (9 de septiembre de 2026): toda validación ocurre en la API. Ningún cliente consulta Supabase directamente.**
+- **Supabase Auth es dueño de la autenticación.** `app_user.auth_user_id uuid` guarda el `auth.users.id`, que es el claim `sub` del JWT. Ese es el vínculo.
+- **Los clientes consultan Supabase directamente** con `supabase-js`. Las políticas RLS deciden qué ve cada quien.
+- **El rol vive en `app_user.role`, no en los claims.** Cambiarlo es un `UPDATE` y aplica en la consulta siguiente. Por eso las políticas lo resuelven con las funciones de `app_auth` y no leyendo el token.
+- **No hay webhook de sincronización y no hace falta**: la API crea la identidad en Supabase Auth y la fila de `app_user` en la misma operación, así que conoce el `sub` en el acto.
+- La tabla de usuarios sigue sin campos de contraseña ni credenciales: los gestiona Supabase Auth.
 
-Web y móvil hablan únicamente con PragmaCRM-Api, que consulta Postgres con `DATABASE_URL` como rol `postgres`. Ese rol **bypassea RLS** por diseño de Postgres. Consecuencias, todas importantes:
+**Dos caminos, y solo uno pasa por RLS.**
 
-| Punto | Estado tras la decisión |
+| Camino | Quién autoriza |
 |---|---|
-| Control de acceso vigente | El middleware de la API (`requireAuth` + `requireRole`), no las políticas |
-| Integración *Third-Party Auth* Clerk↔Supabase | **No hace falta.** Solo aplica si un cliente consultara Supabase directo |
-| Políticas RLS contra `auth.jwt() ->> 'sub'` | Fuera del camino de ejecución. Defensa en profundidad, no control de acceso |
-| `supabase-js`, `SUPABASE_URL`, anon key en web/móvil | No se usan. Los clientes solo necesitan el SDK de Clerk y la URL de la API |
+| Cliente → Supabase (`supabase-js`) | Las políticas RLS |
+| Cliente → PragmaCRM-Api | `requireAuth` + `requireRole` |
 
-**Superficie de la Data API: ya está cerrada.** La migración baseline no otorga `SELECT`/`INSERT`/`UPDATE`/`DELETE` a `anon` ni a `authenticated` sobre ninguna tabla (solo `postgres` los tiene), y todas las tablas tienen RLS habilitado con **cero políticas** — que en Postgres significa denegar todo. La decisión no exige ningún cambio de esquema para ser segura.
+La API se conecta con `DATABASE_URL` como rol `postgres`, que **bypassea RLS**. No es una sola fuente de verdad: es una división por camino. La frontera, que hay que respetar al agregar funcionalidad: **`app_user` se escribe solo desde la API** — crear una identidad exige la `service_role` key — **y el resto del dominio se lee y escribe por RLS**.
 
-**Lo que sí queda pendiente de limpiar** (migración aparte, sin urgencia): el baseline otorga `MAINTAIN, REFERENCES, TRIGGER, TRUNCATE` a `anon` y `authenticated` en todas las tablas. No son alcanzables por la Data API y `anon` no es un rol de login, así que no hay explotación práctica, pero `TRUNCATE` **no lo restringe RLS** — es un privilegio de tabla. Son residuos de la captura del esquema desde el dashboard y conviene revocarlos.
+**Cómo se escribe una política.** Las funciones `app_auth.current_app_user_id()`, `app_auth.role_name()` y `app_auth.is_admin()` (migración `rls_helper_functions`) resuelven al usuario. Son `SECURITY DEFINER` a propósito: una política que consultara `app_user` directamente dispararía las políticas de `app_user` y Postgres abortaría con `42P17: infinite recursion detected in policy`.
 
-**Nota de rendimiento (si algún día se escriben políticas):** una política RLS mal escrita (que evalúe la resolución del `sub` por fila en lugar de como InitPlan) degrada más que la ausencia de cualquier índice. Envolver siempre en `(select auth.jwt() ->> 'sub')` y verificar con `EXPLAIN ANALYZE` ejecutando como rol `Vendedor`, no como `postgres`.
+Cuatro reglas que no son opcionales:
 
-**Nota de deprecación**, por si alguien retoma el camino directo a Supabase en el futuro: el método antiguo de integrar Clerk con Supabase — *JWT template* firmando con el `JWT secret` de Supabase — está deprecado desde el 1 de abril de 2025. El mecanismo vigente es Third-Party Auth, donde Supabase valida el token de Clerk contra el JWKS de Clerk sin compartir secretos.
+1. Siempre `TO authenticated`. Sin la cláusula la política también se evalúa para `anon`.
+2. Siempre `(select app_auth.is_admin())`, envuelto. Sin el `select` el planner ejecuta la función **una vez por fila**; con él es un InitPlan, se evalúa una sola vez y el filtro resultante puede usar el índice. Verificar con `pg_stat_user_functions`: `calls` debe ser 1.
+3. `deleted_at IS NULL` va en `USING`, nunca en el `WITH CHECK` de un UPDATE: ahí rompe el propio soft delete.
+4. Ninguna política `FOR DELETE` ni `GRANT DELETE`. El modelo es soft delete.
 
-**Estado en este repositorio:** implementado. Ver la sección **Autenticación** en 8.1.
+**`FORCE ROW LEVEL SECURITY` está prohibido sobre `app_user`.** Activarlo reintroduce la recursión *y* deja ciega a la API, que se conecta como `postgres`.
 
----
+**Estado de los permisos.** `anon` no tiene ningún privilegio, deliberadamente: la anon key viaja dentro del bundle web y del APK. `authenticated` tiene solo el DML que necesita, tabla por tabla. Las tablas sin política siguen en deny-all: `upload` y `sale_staging` entre ellas, que son exclusivas de la API.
+
 
 ## 6. Integración con Efactsoft
 
@@ -496,7 +498,7 @@ La segunda es la más importante y cambia el modelo mental de la sección 5.1: *
 app_user
   PK  id              uuid
       erp_user_id     integer  UNIQUE parcial   -- puente con Efactsoft
-      clerk_user_id   text     UNIQUE parcial   -- claim 'sub' de Clerk
+      auth_user_id    uuid     UNIQUE parcial   -- auth.users.id (claim 'sub')
       role            text                       -- 'Administrador' | 'Vendedor'
       name            text
       email           text
@@ -711,7 +713,7 @@ Base: 350+ clientes, ~5 vendedores, 15+ visitas diarias por vendedor, 22 días h
 |---|---|---|
 | Base de datos | **PostgreSQL 17** con **PostGIS** | `geography(Point,4326)` para todas las ubicaciones |
 | Plataforma de datos | **Supabase** | Solo la base de datos. No se usa `auth.users` ni la Data API — ver 5.9 |
-| Autenticación | **Clerk** | Dueño de la identidad. Vínculo por claim `sub` → `app_user.clerk_user_id` |
+| Autenticación | **Supabase Auth** | Dueño de la identidad. Vínculo por claim `sub` → `app_user.auth_user_id` |
 | **Backend (este repo)** | **Node.js + TypeScript + Express 4, Prisma 7 como cliente** | Ver 8.1 |
 | Frontend web | Dashboard administrativo, responsive (escritorio y tablet) | RNF-10 |
 | App móvil | **Android nativo**, entregada como APK | RNF-01. Sin iOS |
@@ -733,7 +735,7 @@ API REST del CRM. Node.js + TypeScript + Express, PostgreSQL vía Supabase, Pris
 
 ```bash
 npm run dev          # Servidor de desarrollo con hot-reload (ts-node-dev)
-npm run dev:token -- <email>  # Token de Clerk para probar endpoints con curl (solo dev)
+
 npm run build        # Compila TypeScript a dist/
 npm run start        # Build + ejecuta el output compilado
 npm run lint         # ESLint
@@ -839,26 +841,25 @@ Toda respuesta usa el envelope `ApiResponse<T>`: `{ success, message, data?, err
 
 ### Autenticación
 
-Implementada con `@clerk/express`. La decisión de arquitectura está en 5.9.
+Implementada con `jose` (verificación del JWT) y `@supabase/supabase-js` (Admin API). La decisión de arquitectura está en 5.9.
 
-- `clerkMiddleware()` se monta **global** en `server.ts`, antes de las rutas. Verifica firma, `exp` y `azp` del JWT y deja el resultado en el request. **No rechaza nada por sí mismo**: una petición sin token sigue llegando a las rutas públicas.
-- `requireAuth` (`presentation/middleware/auth.ts`) es quien exige sesión: lee el claim `sub` con `getAuth`, lo resuelve contra `app_user` vía `services/auth.service.ts` y deja el usuario en `req.authUser` (`AuthenticatedUser`, en `domain/types/auth.types.ts`).
-- `requireRole(...roles)` se encadena después. Los roles son la constante `ROLES` — `app_user.role` es `text` libre, así que la API es el único lugar donde ese dominio queda acotado.
-- Los guards se aplican **por grupo de rutas** en `routes.ts`, nunca dentro del controlador:
-  ```ts
-  router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
-  ```
-- Códigos: **401** solo por token ausente/inválido. **403** para todo lo demás — usuario no enlazado, `active = false`, `role` desconocido, rol insuficiente. La regla para el cliente es: 401 se arregla volviendo a iniciar sesión, 403 no.
-- `/api/v1/me` devuelve usuario y rol; es como web y móvil resuelven su estado inicial. Sin `requireRole`: lo llaman los dos roles.
-- `/api/health` sigue pública.
+- **No hay middleware global.** `requireAuth` (`presentation/middleware/auth.ts`) lee el header `Bearer`, verifica el token con `verifyAccessToken` (`lib/supabaseJwt.ts`) contra el JWKS asimétrico del proyecto, resuelve el `sub` contra `app_user.auth_user_id` y deja el usuario en `req.authUser`. Una ruta pública no paga el costo de verificar nada.
+- La verificación exige `iss` (el proyecto de Supabase) y `aud` (`authenticated`), y rechaza sesiones anónimas. El check de `iss` es lo que impide que sirva aquí un token emitido por otro proyecto.
+- El claim `role` del JWT es el rol de **Postgres**, no el de negocio. Nunca se usa para autorizar.
+- `requireRole(...roles)` se encadena después. Los roles son la constante `ROLES`.
+- Los guards se aplican **por grupo de rutas** en `routes.ts`, nunca dentro del controlador. En rutas con subida de archivos van necesariamente ahí, por delante de multer, para rechazar a un anónimo antes de bufferizar el archivo.
+- Códigos: **401** por token ausente, inválido, expirado o de otro emisor. **403** por usuario no enlazado, `active = false`, `role` desconocido o rol insuficiente. **503** si el JWKS no responde — el token podría ser válido, y mandar a todos al login por un problema de red sería peor.
+- `/api/v1/me` devuelve usuario y rol. Importa más que antes: como el rol no viaja en el token, es el único lugar donde un cliente que habla directo con Supabase descubre su rol y se entera de que está deshabilitado.
+- `/api/health` es la única ruta pública.
 
-**Probar endpoints protegidos:** `npm run dev:token -- <email>` (`src/scripts/dev-token.ts`) crea una sesión contra la instancia de desarrollo de Clerk y emite un token real para curl. Se niega a correr con `sk_live_` o `STAGE=prod`. Para tests automatizados no se usa: ahí se mockea `getAuth` — ver `presentation/middleware/__tests__/auth.test.ts`.
+**Alta de vendedores.** `use-cases/create-seller.use-case.ts` crea primero la identidad (`services/supabaseAdmin.service.ts`, con la `service_role` key) y después el perfil, con `auth_user_id` ya poblado; si el perfil falla, borra la identidad. No hay ventana con el enlace en NULL ni paso manual. El `inviteLink` se devuelve una sola vez en el 201 y no se almacena.
 
-**Lo que no está hecho** (tareas aparte): webhook `user.created` / `user.updated` — hoy `clerk_user_id` se carga a mano — y las políticas RLS en Supabase.
+**Deshabilitar** corta por los dos caminos: la API responde 403, las funciones `app_auth.*` filtran por `active` y las políticas dejan de devolver filas, y además se banea la cuenta para que muera la sesión viva.
 
-**Este middleware es el control de acceso del sistema, no una capa más.** Por decisión confirmada (ver 5.9) toda validación ocurre en la API: ningún cliente consulta Supabase directamente. La API se conecta como rol `postgres`, que bypassea RLS, así que **no hay una segunda línea de defensa en la base**. Un endpoint montado sin `requireAuth` queda público, sin nada detrás que lo tape.
+**Probar endpoints protegidos:** pedir un token a `/auth/v1/token?grant_type=password` con la anon key (ver README). En los tests se mockea `lib/supabaseJwt`; la criptografía real se prueba en `lib/__tests__/supabaseJwt.test.ts`, que firma tokens ES256 de verdad sin red.
 
-Regla operativa: en `routes.ts`, todo grupo de rutas nuevo lleva `requireAuth` salvo que se justifique lo contrario en el PR. Hoy la única excepción es `/api/health`.
+**Lo que no está hecho:** las políticas RLS están escritas solo para las tablas que web y móvil consumen en este sprint. El resto sigue en deny-all — no rompe nada porque nadie las consulta, pero quien agregue una funcionalidad nueva tendrá que escribir su política y su GRANT, o verá cero filas sin explicación.
+
 
 ### Ramas y CI
 
@@ -902,7 +903,7 @@ Flujo `feat/* → dev → staging → prod`. `ci.yml` corre en cada PR (lint, ts
 | 1 | Falta campo `tipo` en las tablas de fase de planificación | **Resuelto** vía `scheduled_visit.stop_type` y `visit.visit_type` |
 | 2 | `visit` no soporta prospectos (`customer_id` obligatorio, sin `prospect_id`) | **Abierta.** `scheduled_visit` sí acepta prospectos; `visit` no. Ningún KPI lo requiere, pero el wireframe de ruta ejecutada dibuja prospectos visitados como pin hueco |
 | 3 | Falta de validez temporal en la asignación de ruta | **Resuelto:** `route_user` con `day` + vigencia por `created_at` / `deleted_at` |
-| 4 | Tabla de usuarios sin campos de contraseña ni credenciales | **Resuelto** por la integración con Clerk |
+| 4 | Tabla de usuarios sin campos de contraseña ni credenciales | **Resuelto**: las gestiona Supabase Auth |
 | 5 | Comportamiento GPS fuera de rango contradictorio entre tres documentos | **Abierta.** Requiere decisión del cliente |
 | 6 | El DER está en español; la base aplicada está en inglés | **Abierta como deuda documental.** La base es la verdad; el DER debería actualizarse o publicarse la tabla de equivalencias de 7.0 |
 

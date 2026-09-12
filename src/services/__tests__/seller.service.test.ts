@@ -8,6 +8,8 @@ import {
   updateSeller,
 } from '../seller.service';
 
+const AUTH_ID = '88888888-8888-8888-8888-888888888888';
+
 const SELLER_ID = '11111111-1111-1111-1111-111111111111';
 
 const seller = (overrides: Record<string, unknown> = {}) => ({
@@ -15,7 +17,7 @@ const seller = (overrides: Record<string, unknown> = {}) => ({
   name: 'Vendedor de prueba',
   email: 'vendedor@pragma.test',
   active: true,
-  clerk_user_id: null,
+  auth_user_id: AUTH_ID,
   created_at: new Date(),
   updated_at: new Date(),
   ...overrides,
@@ -89,7 +91,7 @@ describe('createSellerProfile', () => {
     });
 
     await expect(
-      createSellerProfile(client, { name: 'Nuevo', email: 'vendedor@pragma.test' })
+      createSellerProfile(client, { name: 'Nuevo', email: 'vendedor@pragma.test' }, AUTH_ID)
     ).rejects.toMatchObject({ statusCode: 409 });
 
     expect((client.app_user.create as jest.Mock)).not.toHaveBeenCalled();
@@ -102,7 +104,7 @@ describe('createSellerProfile', () => {
       create,
     });
 
-    await createSellerProfile(client, { name: 'Nuevo', email: 'nuevo@pragma.test' });
+    await createSellerProfile(client, { name: 'Nuevo', email: 'nuevo@pragma.test' }, AUTH_ID);
 
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -111,6 +113,7 @@ describe('createSellerProfile', () => {
           email: 'nuevo@pragma.test',
           role: ROLES.SELLER,
           active: true,
+          auth_user_id: AUTH_ID,
         },
       })
     );

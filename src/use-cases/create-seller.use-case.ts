@@ -3,33 +3,46 @@ import { logger } from '../lib/adapters/logger';
 import { CreateSellerInput } from '../domain/schemas/seller.schema';
 import {
   createSellerProfile,
-  deleteSellerProfile,
   SellerRecord,
 } from '../services/seller.service';
-import { inviteSeller } from '../services/clerk.service';
+import {
+  createSellerAuthUser,
+  deleteAuthUser,
+  sendLoginOtp,
+} from '../services/supabaseAdmin.service';
 
-// clerk_user_id queda en NULL hasta que el vendedor acepte la invitacion y se
-// enlace manualmente (ver 8.1: el webhook user.created/user.updated esta
-// fuera de alcance — la API aun no tiene URL publica con HTTPS).
+export interface CreatedSeller {
+  seller: SellerRecord;
+}
+
+// Identity first, profile second: the insert already knows auth_user_id, so
+// there is no window where a seller exists in the CRM without an account and
+// somebody has to link the two by hand.
 export const createSeller = async (
   client: Client,
   data: CreateSellerInput
-): Promise<SellerRecord> => {
-  const seller = await createSellerProfile(client, data);
+): Promise<CreatedSeller> => {
+  const { authUserId } = await createSellerAuthUser(data.email);
 
   try {
-    await inviteSeller(seller.email as string);
-  } catch (error) {
-    // Compensacion: sin invitacion no hay forma de que el vendedor acceda,
-    // no dejamos un perfil huerfano en el CRM.
-    await deleteSellerProfile(client, seller.id).catch((cleanupError) => {
-      logger.error('No se pudo revertir el perfil tras fallar la invitación de Clerk', {
+    const seller = await createSellerProfile(client, data, authUserId);
+
+    await sendLoginOtp(data.email).catch((error) => {
+      logger.error('Could not send the onboarding OTP after creating the seller', {
         seller_id: seller.id,
+        email: data.email,
+        error,
+      });
+    });
+
+    return { seller };
+  } catch (error) {
+    await deleteAuthUser(authUserId).catch((cleanupError) => {
+      logger.error('Could not roll back the auth account after the profile failed', {
+        auth_user_id: authUserId,
         cleanup_error: cleanupError,
       });
     });
     throw error;
   }
-
-  return seller;
 };

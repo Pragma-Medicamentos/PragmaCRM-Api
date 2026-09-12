@@ -1,43 +1,61 @@
 import request from 'supertest';
 import { Router } from 'express';
-import { getAuth } from '@clerk/express';
 import { Server } from '../../server';
 import { requireAuth, requireRole } from '../auth';
-import { findUserByClerkId, AppUserRecord } from '../../../services/auth.service';
+import {
+  JwksUnavailableError,
+  verifyAccessToken,
+} from '../../../lib/supabaseJwt';
+import {
+  findUserByAuthUserId,
+  AppUserRecord,
+} from '../../../services/auth.service';
 import { ROLES } from '../../../domain/types/auth.types';
+import { CustomError } from '../../../domain/errors/CustomError';
 
-// Se mockea el SDK: lo que se prueba es la traduccion sesion -> usuario -> rol.
-jest.mock('@clerk/express', () => ({
-  clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) =>
-    next(),
-  getAuth: jest.fn(),
-}));
+// What is under test is the translation session -> user -> role, not the
+// cryptography: that belongs to the supabaseJwt unit test, which signs real
+// tokens.
+jest.mock('../../../lib/supabaseJwt', () => {
+  class FakeJwksUnavailableError extends Error {}
+  return {
+    verifyAccessToken: jest.fn(),
+    JwksUnavailableError: FakeJwksUnavailableError,
+    warmUpJwks: jest.fn(),
+  };
+});
 
 jest.mock('../../../services/auth.service', () => ({
-  findUserByClerkId: jest.fn(),
+  findUserByAuthUserId: jest.fn(),
 }));
 
-const getAuthMock = getAuth as unknown as jest.Mock;
-const findUserByClerkIdMock = findUserByClerkId as jest.Mock;
+const verifyAccessTokenMock = verifyAccessToken as jest.Mock;
+const findUserByAuthUserIdMock = findUserByAuthUserId as jest.Mock;
 
-const signedIn = (userId = 'user_clerk_123') =>
-  getAuthMock.mockReturnValue({ isAuthenticated: true, userId });
+const AUTH_ID = '33333333-3333-3333-3333-333333333333';
+const BEARER = 'Bearer token-de-prueba';
 
-const signedOut = () =>
-  getAuthMock.mockReturnValue({ isAuthenticated: false, userId: null });
+const validToken = (sub = AUTH_ID) =>
+  verifyAccessTokenMock.mockResolvedValue({ sub });
+
+const rejectedToken = () =>
+  verifyAccessTokenMock.mockRejectedValue(
+    CustomError.unauthorized('Sesión no válida o ausente')
+  );
 
 const appUser = (overrides: Partial<AppUserRecord> = {}): AppUserRecord => ({
   id: '11111111-1111-1111-1111-111111111111',
-  clerk_user_id: 'user_clerk_123',
+  auth_user_id: AUTH_ID,
   role: ROLES.SELLER,
   name: 'Vendedor de prueba',
   email: 'vendedor@pragma.test',
   active: true,
+  password_set_at: null,
   ...overrides,
 });
 
-// Se usa Server y no un express() suelto para que las respuestas pasen por el
-// error handler global y se verifique el envelope ApiResponse real.
+// Server rather than a bare express() so the responses go through the global
+// error handler and the real ApiResponse envelope is asserted.
 const buildApp = () => {
   const router = Router();
   router.get('/api/test/auth', requireAuth, (req, res) => {
@@ -63,9 +81,7 @@ const buildApp = () => {
 const app = buildApp();
 
 describe('requireAuth', () => {
-  it('responde 401 cuando no hay sesión válida de Clerk', async () => {
-    signedOut();
-
+  it('responde 401 cuando no hay header Authorization', async () => {
     const res = await request(app).get('/api/test/auth');
 
     expect(res.status).toBe(401);
@@ -73,68 +89,113 @@ describe('requireAuth', () => {
       success: false,
       message: 'Sesión no válida o ausente',
     });
-    expect(findUserByClerkIdMock).not.toHaveBeenCalled();
+    expect(verifyAccessTokenMock).not.toHaveBeenCalled();
   });
 
-  it('responde 403 cuando el clerk_user_id no está enlazado a app_user', async () => {
-    signedIn();
-    findUserByClerkIdMock.mockResolvedValue(null);
+  it('responde 401 cuando el esquema del header no es Bearer', async () => {
+    const res = await request(app)
+      .get('/api/test/auth')
+      .set('Authorization', 'Basic dXNlcjpwYXNz');
 
-    const res = await request(app).get('/api/test/auth');
+    expect(res.status).toBe(401);
+    expect(verifyAccessTokenMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 401 cuando el token no verifica', async () => {
+    rejectedToken();
+
+    const res = await request(app)
+      .get('/api/test/auth')
+      .set('Authorization', BEARER);
+
+    expect(res.status).toBe(401);
+    expect(findUserByAuthUserIdMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 503, y no 401, cuando el JWKS no está disponible', async () => {
+    verifyAccessTokenMock.mockRejectedValue(
+      new JwksUnavailableError('sin red')
+    );
+
+    const res = await request(app)
+      .get('/api/test/auth')
+      .set('Authorization', BEARER);
+
+    expect(res.status).toBe(503);
+    expect(res.body.success).toBe(false);
+  });
+
+  it('responde 403 cuando el auth_user_id no está enlazado a app_user', async () => {
+    validToken();
+    findUserByAuthUserIdMock.mockResolvedValue(null);
+
+    const res = await request(app)
+      .get('/api/test/auth')
+      .set('Authorization', BEARER);
 
     expect(res.status).toBe(403);
     expect(res.body.message).toBe('El usuario no está registrado en el CRM');
   });
 
   it('responde 403 cuando el usuario está deshabilitado', async () => {
-    signedIn();
-    findUserByClerkIdMock.mockResolvedValue(appUser({ active: false }));
+    validToken();
+    findUserByAuthUserIdMock.mockResolvedValue(appUser({ active: false }));
 
-    const res = await request(app).get('/api/test/auth');
+    const res = await request(app)
+      .get('/api/test/auth')
+      .set('Authorization', BEARER);
 
     expect(res.status).toBe(403);
     expect(res.body.message).toBe('El usuario está deshabilitado');
   });
 
   it('responde 403 cuando el role de la base está fuera del dominio', async () => {
-    signedIn();
-    findUserByClerkIdMock.mockResolvedValue(appUser({ role: 'Supervisor' }));
+    validToken();
+    findUserByAuthUserIdMock.mockResolvedValue(appUser({ role: 'Supervisor' }));
 
-    const res = await request(app).get('/api/test/auth');
+    const res = await request(app)
+      .get('/api/test/auth')
+      .set('Authorization', BEARER);
 
     expect(res.status).toBe(403);
     expect(res.body.message).toBe('El usuario no tiene un rol válido');
   });
 
   it('resuelve el usuario contra el claim sub y lo expone en req.authUser', async () => {
-    signedIn('user_clerk_abc');
-    findUserByClerkIdMock.mockResolvedValue(
-      appUser({ clerk_user_id: 'user_clerk_abc' })
+    const otherId = '44444444-4444-4444-4444-444444444444';
+    validToken(otherId);
+    findUserByAuthUserIdMock.mockResolvedValue(
+      appUser({ auth_user_id: otherId })
     );
 
-    const res = await request(app).get('/api/test/auth');
+    const res = await request(app)
+      .get('/api/test/auth')
+      .set('Authorization', BEARER);
 
     expect(res.status).toBe(200);
     expect(res.body.data).toEqual({
       id: '11111111-1111-1111-1111-111111111111',
-      clerkUserId: 'user_clerk_abc',
+      authUserId: otherId,
       role: ROLES.SELLER,
       name: 'Vendedor de prueba',
       email: 'vendedor@pragma.test',
+      passwordSetAt: null,
     });
-    expect(findUserByClerkIdMock).toHaveBeenCalledWith(
+    expect(findUserByAuthUserIdMock).toHaveBeenCalledWith(
       expect.anything(),
-      'user_clerk_abc'
+      otherId
     );
   });
 });
 
 describe('requireRole', () => {
   it('responde 403 cuando el rol no está en la lista permitida', async () => {
-    signedIn();
-    findUserByClerkIdMock.mockResolvedValue(appUser({ role: ROLES.SELLER }));
+    validToken();
+    findUserByAuthUserIdMock.mockResolvedValue(appUser({ role: ROLES.SELLER }));
 
-    const res = await request(app).get('/api/test/admin');
+    const res = await request(app)
+      .get('/api/test/admin')
+      .set('Authorization', BEARER);
 
     expect(res.status).toBe(403);
     expect(res.body).toEqual({
@@ -144,18 +205,22 @@ describe('requireRole', () => {
   });
 
   it('deja pasar cuando el rol está permitido', async () => {
-    signedIn();
-    findUserByClerkIdMock.mockResolvedValue(appUser({ role: ROLES.ADMIN }));
+    validToken();
+    findUserByAuthUserIdMock.mockResolvedValue(appUser({ role: ROLES.ADMIN }));
 
-    const res = await request(app).get('/api/test/admin');
+    const res = await request(app)
+      .get('/api/test/admin')
+      .set('Authorization', BEARER);
 
     expect(res.status).toBe(200);
   });
 
   it('responde 401 si se monta sin requireAuth delante', async () => {
-    signedIn();
+    validToken();
 
-    const res = await request(app).get('/api/test/sin-require-auth');
+    const res = await request(app)
+      .get('/api/test/sin-require-auth')
+      .set('Authorization', BEARER);
 
     expect(res.status).toBe(401);
   });

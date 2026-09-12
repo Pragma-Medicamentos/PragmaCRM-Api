@@ -15,6 +15,26 @@ import request from 'supertest';
 // Without the mock, importing the routes pulls in src/lib/prisma.ts and opens
 // a connection pool that leaves Jest hanging.
 const importSalesFileMock = jest.fn();
+// The route is admin-only now: the auth chain is stubbed so these tests keep
+// exercising the HTTP layer and not the token verification.
+jest.mock('../../../lib/supabaseJwt', () => ({
+  verifyAccessToken: jest.fn().mockResolvedValue({ sub: 'auth-admin' }),
+  JwksUnavailableError: class extends Error {},
+  warmUpJwks: jest.fn(),
+}));
+
+jest.mock('../../../services/auth.service', () => ({
+  findUserByAuthUserId: jest.fn().mockResolvedValue({
+    id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    auth_user_id: 'auth-admin',
+    role: 'Administrador',
+    name: 'Admin',
+    email: 'admin@pragma.test',
+    active: true,
+    password_set_at: new Date('2026-09-11T12:00:00.000Z'),
+  }),
+}));
+
 jest.mock('../../../use-cases/importSalesFile.use-case', () => ({
   importSalesFile: (...args: unknown[]) => importSalesFileMock(...args),
 }));
@@ -46,6 +66,7 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
 
     const res = await request(app)
       .post('/api/v1/uploads/sales')
+      .set('Authorization', 'Bearer token-de-prueba')
       .attach('file', tooBig, 'sales.json');
 
     expect(res.status).toBe(413);
@@ -69,6 +90,7 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
 
     const res = await request(app)
       .post('/api/v1/uploads/sales')
+      .set('Authorization', 'Bearer token-de-prueba')
       .attach('file', small, 'sales.json');
 
     expect(res.status).toBe(201);

@@ -171,8 +171,11 @@ enable_refresh_token_rotation = true
 # Allows refresh tokens to be reused after expiry, up to the specified interval in seconds.
 # Requires enable_refresh_token_rotation = true.
 refresh_token_reuse_interval = 10
+# Accounts are created by an administrator through the API with the service
+# role key. With open signup and a publishable anon key, anyone could mint an
+# authenticated JWT; they would see nothing, but it is a needless vector.
 # Allow/disallow new user signups to your project.
-enable_signup = true
+enable_signup = false
 # Allow/disallow anonymous sign-ins to your project.
 enable_anonymous_sign_ins = false
 # Allow/disallow testing manual linking of accounts
@@ -217,6 +220,9 @@ web3 = 30
 
 [auth.email]
 # Allow/disallow new user signups via email to your project.
+# Keep true: this flag enables the email provider as a whole, so turning it off
+# disables logins too, not just self-service signup. Signup is closed globally
+# above in [auth].
 enable_signup = true
 # If enabled, a user will be required to confirm any email change on both the old, and new email
 # addresses. If disabled, only the new email is required to confirm.
@@ -230,7 +236,8 @@ max_frequency = "1s"
 # Number of characters used in the email OTP.
 otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
-otp_expiry = 3600
+# 10 min: short-lived login codes for signInWithOtp.
+otp_expiry = 600
 
 # Use a production-ready SMTP server
 # [auth.email.smtp]
@@ -241,6 +248,10 @@ otp_expiry = 3600
 # pass = "env(SENDGRID_API_KEY)"
 # admin_email = "admin@email.com"
 # sender_name = "Admin"
+
+[auth.email.template.magic_link]
+subject = "Tu codigo de acceso — Pragma CRM"
+content_path = "./supabase/templates/otp.html"
 
 # Uncomment to customize email template
 # [auth.email.template.invite]

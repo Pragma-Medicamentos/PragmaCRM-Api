@@ -34,13 +34,13 @@ export const envs = {
   // the same value on the VPS, or the user sees nginx's HTML error instead of
   // the ApiResponse envelope.
   UPLOAD_MAX_FILE_SIZE_MB: get('UPLOAD_MAX_FILE_SIZE_MB').default('100').asIntPositive(),
-  // Las tres CLERK_* las lee @clerk/express de process.env; aqui solo se validan.
-  CLERK_PUBLISHABLE_KEY: get('CLERK_PUBLISHABLE_KEY').required().asString(),
-  CLERK_SECRET_KEY: get('CLERK_SECRET_KEY').required().asString(),
-  // Opcional: con ella la verificacion de firma es local, sin descargar el JWKS.
-  CLERK_JWT_KEY: get('CLERK_JWT_KEY').asString(),
-  // Claim `azp`: sin esta lista sirve aqui un token emitido para otra app.
-  CLERK_AUTHORIZED_PARTIES: get('CLERK_AUTHORIZED_PARTIES')
-    .default('')
-    .asArray(','),
+  // Base URL of the Supabase project. Issuer and JWKS endpoint are derived
+  // from it, so there is no point declaring three variables for one value.
+  SUPABASE_URL: get('SUPABASE_URL').required().asUrlString(),
+
+  // Full RLS bypass, usable over HTTP from anywhere: leaking it is worse than
+  // leaking DATABASE_URL. Server only, never in web or mobile.
+  SUPABASE_SERVICE_ROLE_KEY: get('SUPABASE_SERVICE_ROLE_KEY')
+    .required()
+    .asString(),
 };

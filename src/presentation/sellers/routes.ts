@@ -35,6 +35,11 @@ export class SellersRoutes {
       validateBody(updateSellerStatusSchema),
       controller.updateStatus
     );
+    router.post(
+      '/:id/resend-otp',
+      validateParams(sellerParamsSchema),
+      controller.resendOtp
+    );
 
     return router;
   }

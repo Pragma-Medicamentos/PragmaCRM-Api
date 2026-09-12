@@ -20,6 +20,8 @@ model app_user {
   created_at      DateTime          @default(now()) @db.Timestamptz(6)
   updated_at      DateTime          @default(now()) @db.Timestamptz(6)
   deleted_at      DateTime?         @db.Timestamptz(6)
+  auth_user_id    String?           @unique(where: raw("(deleted_at IS NULL)")) @db.Uuid
+  password_set_at DateTime?         @db.Timestamptz(6)
   goal            goal[]
   product_request product_request[]
   prospect        prospect[]
@@ -121,6 +123,7 @@ model product_request {
   visit              visit?          @relation(fields: [visit_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([visit_id], where: raw("(deleted_at IS NULL)"))
+  @@index([user_id], where: raw("(deleted_at IS NULL)"))
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -138,6 +141,8 @@ model prospect {
   deleted_at      DateTime?                 @db.Timestamptz(6)
   app_user        app_user                  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   scheduled_visit scheduled_visit[]
+
+  @@index([user_id], where: raw("(deleted_at IS NULL)"))
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -198,6 +203,7 @@ model route_user {
   visit           visit[]
 
   @@unique([route_id, user_id, day], map: "route_user_unique_key", where: raw("(deleted_at IS NULL)"))
+  @@index([user_id], where: raw("(deleted_at IS NULL)"))
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
@@ -311,6 +317,8 @@ model upload {
   sale             sale[]
   sale_staging     sale_staging[]
   app_user         app_user?          @relation(fields: [uploaded_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([uploaded_by])
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
