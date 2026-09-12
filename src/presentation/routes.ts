@@ -14,7 +14,13 @@ export class AppRoutes {
     router.use('/api/health', HealthRoutes.routes);
 
     // CRM modules are mounted here under /api/v1/<resource>.
-    router.use('/api/v1/uploads', UploadsRoutes.routes);
+    // RF-03: solo el Administrador puede importar el JSON del ERP.
+    router.use(
+      '/api/v1/uploads',
+      requireAuth,
+      requireRole(ROLES.ADMIN),
+      UploadsRoutes.routes
+    );
     router.use('/api/v1/me', MeRoutes.routes);
 
     // RF-01: alta, edicion y habilitacion/deshabilitacion de vendedores.

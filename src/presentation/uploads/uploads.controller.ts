@@ -1,20 +1,21 @@
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
-import { StagingResult } from '../../domain/types/sales-import.types';
 import { logger } from '../../lib/adapters/logger';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
-import { importSalesFile } from '../../use-cases/importSalesFile.use-case';
+import { importSalesFile, ImportSalesResult } from '../../use-cases/importSalesFile.use-case';
 
 /** Date to `YYYY-MM-DD`, which is how the frontend expects a day range. */
 const toIsoDate = (date: Date | null): string | null =>
   date ? date.toISOString().slice(0, 10) : null;
 
-const buildMessage = (result: StagingResult): string => {
-  const { accepted, rejected } = result;
+const buildMessage = (result: ImportSalesResult): string => {
+  const { accepted, rejected, inserted, updated, sync_failed } = result;
   const base = `File received: ${accepted} ${accepted === 1 ? 'sale' : 'sales'} accepted`;
-  return rejected === 0
-    ? `${base}, none rejected`
-    : `${base}, ${rejected} rejected`;
+  const rejectedPart = rejected === 0 ? 'none rejected' : `${rejected} rejected`;
+  const syncPart = `${inserted} inserted, ${updated} updated${
+    sync_failed > 0 ? `, ${sync_failed} failed to synchronize` : ''
+  }`;
+  return `${base}, ${rejectedPart}. ${syncPart}.`;
 };
 
 export class UploadsController {
@@ -35,6 +36,9 @@ export class UploadsController {
         sales_received: result.sales_received,
         accepted: result.accepted,
         rejected: result.rejected,
+        inserted: result.inserted,
+        updated: result.updated,
+        sync_failed: result.sync_failed,
         request_id: res.getHeader('X-Request-ID'),
       });
 
@@ -46,6 +50,9 @@ export class UploadsController {
           sales_received: result.sales_received,
           accepted: result.accepted,
           rejected: result.rejected,
+          inserted: result.inserted,
+          updated: result.updated,
+          sync_failed: result.sync_failed,
           range: {
             from: toIsoDate(result.range.from),
             to: toIsoDate(result.range.to),

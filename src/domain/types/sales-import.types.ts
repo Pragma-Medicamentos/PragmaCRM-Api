@@ -53,9 +53,9 @@ export interface UploadRange {
 /** Result of receiving and queueing a file. */
 export interface StagingResult {
   upload_id: string;
-  /** How many entries the file carried. */
+  /** How many entries the file carried, including quotations. */
   sales_received: number;
-  /** Sales queued as `pending`, ready for PCRM-34. */
+  /** Sales queued as `pending`, ready for PCRM-34. Excludes quotations. */
   accepted: number;
   /** Sales queued as `failed`. */
   rejected: number;
@@ -78,5 +78,27 @@ export interface StagingResult {
     sales_without_customer: number;
     /** Sales with no `id_usuario`: not attributable to any route. */
     sales_without_user: number;
+    /**
+     * Quotations (`venta.estado === 1`): valid entries that are neither
+     * staged nor synchronized because a quotation may never become a sale
+     * (CLAUDE.md 5.5). Confirmed by the team on 2026-09-11.
+     */
+    quotations_skipped: number;
   };
+}
+
+/** Result of draining `sale_staging` into the live tables (PCRM-34). */
+export interface SyncResult {
+  /** Sales upserted into `sale`, inserted or updated. */
+  processed: number;
+  /** Sales that did not exist in `sale` yet. */
+  inserted: number;
+  /** Sales that already existed in `sale` and were refreshed. */
+  updated: number;
+  /**
+   * Staged rows that failed re-validation during sync and were left as
+   * `failed` instead of `processed`. Distinct from `StagingResult.rejected`,
+   * which counts intake-time rejections.
+   */
+  sync_failed: number;
 }

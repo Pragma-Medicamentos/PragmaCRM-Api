@@ -19,12 +19,34 @@ jest.mock('../../../use-cases/importSalesFile.use-case', () => ({
   importSalesFile: (...args: unknown[]) => importSalesFileMock(...args),
 }));
 
+// /api/v1/uploads requires an authenticated Administrador (RF-03).
+const getAuthMock = jest.fn();
+jest.mock('@clerk/express', () => ({
+  clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  getAuth: (...args: unknown[]) => getAuthMock(...args),
+}));
+
+const findUserByClerkIdMock = jest.fn();
+jest.mock('../../../services/auth.service', () => ({
+  findUserByClerkId: (...args: unknown[]) => findUserByClerkIdMock(...args),
+}));
+
 describe('POST /api/v1/uploads/sales — size limit', () => {
   let app: Express;
 
   beforeAll(() => {
     jest.resetModules();
     process.env.UPLOAD_MAX_FILE_SIZE_MB = '1';
+
+    getAuthMock.mockReturnValue({ isAuthenticated: true, userId: 'user_clerk_admin' });
+    findUserByClerkIdMock.mockResolvedValue({
+      id: '11111111-1111-1111-1111-111111111111',
+      clerk_user_id: 'user_clerk_admin',
+      role: 'Administrador',
+      name: 'Admin de prueba',
+      email: 'admin@pragma.test',
+      active: true,
+    });
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { AppRoutes } = require('../../routes') as typeof import('../../routes');
@@ -63,7 +85,11 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
       range: { from: null, to: null },
       rejections: [],
       rejections_truncated: 0,
-      warnings: { sales_without_customer: 0, sales_without_user: 0 },
+      warnings: { sales_without_customer: 0, sales_without_user: 0, quotations_skipped: 0 },
+      processed: 0,
+      inserted: 0,
+      updated: 0,
+      sync_failed: 0,
     });
     const small = Buffer.from(JSON.stringify([]), 'utf-8');
 
