@@ -43,4 +43,12 @@ export const envs = {
   SUPABASE_SERVICE_ROLE_KEY: get('SUPABASE_SERVICE_ROLE_KEY')
     .required()
     .asString(),
+
+  // Comma-separated list of origins allowed to call this API from a browser
+  // (the web dashboard's dev server and, later, its deployed origin). Not
+  // needed by the Android app or server-to-server calls: those never send an
+  // Origin header, so the browser-only CORS check does not apply to them.
+  CORS_ORIGIN: get('CORS_ORIGIN')
+    .default('http://localhost:5173')
+    .asString(),
 };

@@ -18,6 +18,7 @@
   "author": "Pragma Medicamentos",
   "license": "UNLICENSED",
   "devDependencies": {
+    "@types/cors": "^2.8.19",
     "@types/express": "^4.17.18",
     "@types/jest": "^30.0.0",
     "@types/luxon": "^3.7.5",
@@ -42,6 +43,7 @@
     "@prisma/adapter-pg": "^7.10.0",
     "@prisma/client": "^7.10.0",
     "@supabase/supabase-js": "^2.116.0",
+    "cors": "^2.8.6",
     "dotenv": "^16.3.1",
     "env-var": "^7.4.1",
     "express": "^4.18.2",
