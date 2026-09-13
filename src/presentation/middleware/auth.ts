@@ -1,8 +1,11 @@
 import { NextFunction, Request, Response } from 'express';
-import { getAuth } from '@clerk/express';
+import {
+  JwksUnavailableError,
+  verifyAccessToken,
+} from '../../lib/supabaseJwt';
 import { CustomError } from '../../domain/errors/CustomError';
 import { AuthenticatedUser, Role, isRole } from '../../domain/types/auth.types';
-import { findUserByClerkId } from '../../services/auth.service';
+import { findUserByAuthUserId } from '../../services/auth.service';
 import { logger } from '../../lib/adapters/logger';
 import { prisma } from '../../lib/prisma';
 
@@ -21,6 +24,14 @@ const logRejection = (
   });
 };
 
+const bearerToken = (req: Request): string | undefined => {
+  const header = req.headers.authorization;
+  if (!header?.startsWith('Bearer ')) return undefined;
+
+  const token = header.slice('Bearer '.length).trim();
+  return token.length > 0 ? token : undefined;
+};
+
 // 401 solo si no se sabe quien es. Todo lo demas es 403: volver a loguearse no lo arregla.
 export const requireAuth = async (
   req: Request,
@@ -28,17 +39,28 @@ export const requireAuth = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const auth = getAuth(req);
+    const token = bearerToken(req);
 
-    if (!auth.isAuthenticated || !auth.userId) {
+    if (!token) {
       logRejection(req, res, 'missing_or_invalid_token');
       throw CustomError.unauthorized('Sesión no válida o ausente');
     }
 
-    const record = await findUserByClerkId(prisma, auth.userId);
+    const claims = await verifyAccessToken(token).catch((error: unknown) => {
+      // A JWKS outage says nothing about the token: answering 401 would send
+      // every user back to the login screen over a network problem.
+      if (error instanceof JwksUnavailableError) {
+        logRejection(req, res, 'jwks_unavailable');
+        throw new CustomError('Servicio de autenticación no disponible', 503);
+      }
+      logRejection(req, res, 'missing_or_invalid_token');
+      throw error;
+    });
+
+    const record = await findUserByAuthUserId(prisma, claims.sub);
 
     if (!record) {
-      logRejection(req, res, 'user_not_linked', { clerk_user_id: auth.userId });
+      logRejection(req, res, 'user_not_linked', { auth_user_id: claims.sub });
       throw CustomError.forbidden('El usuario no está registrado en el CRM');
     }
 
@@ -58,10 +80,11 @@ export const requireAuth = async (
 
     const authUser: AuthenticatedUser = {
       id: record.id,
-      clerkUserId: auth.userId,
+      authUserId: claims.sub,
       role: record.role,
       name: record.name,
       email: record.email,
+      passwordSetAt: record.password_set_at?.toISOString() ?? null,
     };
 
     req.authUser = authUser;

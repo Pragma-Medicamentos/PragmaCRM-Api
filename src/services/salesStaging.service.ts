@@ -178,7 +178,8 @@ const buildStagingRows = (items: unknown[]) => {
  */
 export const stageSalesFile = async (
   client: Client,
-  fileBuffer: Buffer
+  fileBuffer: Buffer,
+  uploadedBy: string
 ): Promise<StagingResult> => {
   const items = parseFile(fileBuffer);
 
@@ -199,9 +200,7 @@ export const stageSalesFile = async (
 
   const upload = await client.upload.create({
     data: {
-      // The API has no authentication yet (CLAUDE.md 5.9 and 8.1): the column
-      // is nullable and will be filled once the Clerk middleware exists.
-      uploaded_by: null,
+      uploaded_by: uploadedBy,
       range_from: range.from,
       range_to: range.to,
       sales_received: items.length,

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import request from 'supertest';
-import { getAuth } from '@clerk/express';
+import { verifyAccessToken } from '../../lib/supabaseJwt';
 import { prisma } from '../../lib/prisma';
 import { AppRoutes } from '../../presentation/routes';
 import { Server } from '../../presentation/server';
@@ -16,16 +16,20 @@ import { ROLES } from '../../domain/types/auth.types';
  * imported.
  *
  * `/api/v1/uploads` requires an authenticated Administrador (confirmed
- * 2026-09-11). Clerk itself is mocked — this suite is about the sync flow,
- * not the auth layer, which already has its own tests.
+ * 2026-09-11). Token verification is mocked — this suite is about the sync
+ * flow, not the auth layer, which already has its own tests.
  */
 
-jest.mock('@clerk/express', () => ({
-  clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
-  getAuth: jest.fn(),
+jest.mock('../../lib/supabaseJwt', () => ({
+  verifyAccessToken: jest.fn(),
+  JwksUnavailableError: class extends Error {},
+  warmUpJwks: jest.fn(),
 }));
 
-const getAuthMock = getAuth as unknown as jest.Mock;
+const verifyAccessTokenMock = verifyAccessToken as unknown as jest.Mock;
+
+/** The identity requireAuth resolves against app_user.auth_user_id. */
+const ADMIN_AUTH_ID = 'e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1';
 
 const ENDPOINT = '/api/v1/uploads/sales';
 const REAL_FILE = join(process.cwd(), 'ventas_json_example.json');
@@ -38,9 +42,21 @@ const app = server.app;
 let adminId: string;
 
 beforeAll(async () => {
+  // app_user.auth_user_id is guarded by a trigger against auth.users, so the
+  // identity has to exist before the profile. GoTrue owns this table; here the
+  // row is inserted directly because the suite never signs anybody in.
+  await prisma.$executeRaw`
+    insert into auth.users (id, instance_id, aud, role, email)
+    values (
+      ${ADMIN_AUTH_ID}::uuid,
+      '00000000-0000-0000-0000-000000000000'::uuid,
+      'authenticated', 'authenticated', 'uploads-admin@pragma.test'
+    )
+    on conflict (id) do nothing`;
+
   const admin = await prisma.app_user.create({
     data: {
-      clerk_user_id: 'user_clerk_uploads_admin',
+      auth_user_id: ADMIN_AUTH_ID,
       role: ROLES.ADMIN,
       name: 'Admin de integración',
       email: 'uploads-admin@pragma.test',
@@ -48,7 +64,7 @@ beforeAll(async () => {
     select: { id: true },
   });
   adminId = admin.id;
-  getAuthMock.mockReturnValue({ isAuthenticated: true, userId: 'user_clerk_uploads_admin' });
+  verifyAccessTokenMock.mockResolvedValue({ sub: ADMIN_AUTH_ID });
 });
 
 /** Ids created during the run, cleaned up at the end. */
@@ -100,6 +116,7 @@ afterAll(async () => {
   await prisma.customer.deleteMany({ where: { erp_customer_id: 25 } });
   await prisma.product.deleteMany({ where: { erp_product_id: 2 } });
   await prisma.app_user.delete({ where: { id: adminId } });
+  await prisma.$executeRaw`delete from auth.users where id = ${ADMIN_AUTH_ID}::uuid`;
   await prisma.$disconnect();
   server.close();
 });

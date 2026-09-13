@@ -13,10 +13,11 @@ import {
   getSellerById,
   listSellers,
   SellerRecord,
-  setSellerStatus,
   updateSeller,
 } from '../../services/seller.service';
 import { createSeller } from '../../use-cases/create-seller.use-case';
+import { resendSellerOtp } from '../../use-cases/resend-seller-otp.use-case';
+import { setSellerStatusEverywhere } from '../../use-cases/set-seller-status.use-case';
 
 export class SellersController {
   public async list(req: Request, res: Response) {
@@ -54,11 +55,12 @@ export class SellersController {
   public async create(req: Request, res: Response) {
     try {
       const data = req.body as CreateSellerInput;
-      const seller = await createSeller(prisma, data);
+      const { seller } = await createSeller(prisma, data);
 
       const response: ApiResponse<SellerRecord> = {
         success: true,
-        message: 'Vendedor creado. Se envió una invitación de acceso a su correo',
+        message:
+          'Vendedor creado. Se envio un codigo de acceso al correo (expira en 10 minutos)',
         data: seller,
       };
       res.status(201).json(response);
@@ -84,11 +86,27 @@ export class SellersController {
     }
   }
 
+  public async resendOtp(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as SellerParams;
+      const seller = await resendSellerOtp(prisma, id);
+
+      const response: ApiResponse<SellerRecord> = {
+        success: true,
+        message: 'Codigo reenviado al correo del vendedor. Expira en 10 minutos',
+        data: seller,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'SellersController.resendOtp');
+    }
+  }
+
   public async updateStatus(req: Request, res: Response) {
     try {
       const { id } = req.params as unknown as SellerParams;
       const { active } = req.body as UpdateSellerStatusInput;
-      const seller = await setSellerStatus(prisma, id, active);
+      const seller = await setSellerStatusEverywhere(prisma, id, active);
 
       const response: ApiResponse<SellerRecord> = {
         success: true,

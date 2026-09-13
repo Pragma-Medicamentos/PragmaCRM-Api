@@ -1,33 +1,38 @@
 import request from 'supertest';
-import { getAuth } from '@clerk/express';
 import { CustomError } from '../../../domain/errors/CustomError';
 import { ImportSalesResult } from '../../../use-cases/importSalesFile.use-case';
-import { ROLES } from '../../../domain/types/auth.types';
-import { findUserByClerkId } from '../../../services/auth.service';
 import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
 
 // The use case hits the database; only the HTTP layer is exercised here.
 // Verification against real Postgres lives in the integration tests.
-jest.mock('../../../use-cases/importSalesFile.use-case', () => ({
-  importSalesFile: jest.fn(),
-}));
-
-// /api/v1/uploads requires an authenticated Administrador (RF-03).
-jest.mock('@clerk/express', () => ({
-  clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
-  getAuth: jest.fn(),
+// The route is admin-only now: the auth chain is stubbed so these tests keep
+// exercising the HTTP layer and not the token verification.
+jest.mock('../../../lib/supabaseJwt', () => ({
+  verifyAccessToken: jest.fn().mockResolvedValue({ sub: 'auth-admin' }),
+  JwksUnavailableError: class extends Error {},
+  warmUpJwks: jest.fn(),
 }));
 
 jest.mock('../../../services/auth.service', () => ({
-  findUserByClerkId: jest.fn(),
+  findUserByAuthUserId: jest.fn().mockResolvedValue({
+    id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    auth_user_id: 'auth-admin',
+    role: 'Administrador',
+    name: 'Admin',
+    email: 'admin@pragma.test',
+    active: true,
+    password_set_at: new Date('2026-09-11T12:00:00.000Z'),
+  }),
+}));
+
+jest.mock('../../../use-cases/importSalesFile.use-case', () => ({
+  importSalesFile: jest.fn(),
 }));
 
 import { importSalesFile } from '../../../use-cases/importSalesFile.use-case';
 
 const importSalesFileMock = importSalesFile as jest.MockedFunction<typeof importSalesFile>;
-const getAuthMock = getAuth as unknown as jest.Mock;
-const findUserByClerkIdMock = findUserByClerkId as jest.Mock;
 
 // setup() wires middlewares and routes without opening a port.
 const server = new Server({ port: 0, routes: AppRoutes.routes });
@@ -35,18 +40,6 @@ server.setup();
 const app = server.app;
 
 const ENDPOINT = '/api/v1/uploads/sales';
-
-beforeEach(() => {
-  getAuthMock.mockReturnValue({ isAuthenticated: true, userId: 'user_clerk_admin' });
-  findUserByClerkIdMock.mockResolvedValue({
-    id: '11111111-1111-1111-1111-111111111111',
-    clerk_user_id: 'user_clerk_admin',
-    role: ROLES.ADMIN,
-    name: 'Admin de prueba',
-    email: 'admin@pragma.test',
-    active: true,
-  });
-});
 
 const stagingResult = (overrides: Partial<ImportSalesResult> = {}): ImportSalesResult => ({
   upload_id: '3f1c8e2a-0000-4000-8000-000000000001',
@@ -70,7 +63,8 @@ describe('POST /api/v1/uploads/sales', () => {
   it('responds 201 with the ApiResponse envelope and the batch summary', async () => {
     importSalesFileMock.mockResolvedValue(stagingResult());
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
@@ -89,9 +83,13 @@ describe('POST /api/v1/uploads/sales', () => {
   it('passes the file contents to the use case', async () => {
     importSalesFileMock.mockResolvedValue(stagingResult());
 
-    await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
+    await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
 
-    expect(importSalesFileMock).toHaveBeenCalledWith(expect.any(Buffer));
+    expect(importSalesFileMock).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+    );
     expect(importSalesFileMock.mock.calls[0][0].toString('utf-8')).toBe(validFile.toString('utf-8'));
   });
 
@@ -104,7 +102,8 @@ describe('POST /api/v1/uploads/sales', () => {
       })
     );
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(201);
     expect(res.body.message).toContain('1 rejected');
@@ -116,7 +115,8 @@ describe('POST /api/v1/uploads/sales', () => {
   it('returns a null range when there are no dates', async () => {
     importSalesFileMock.mockResolvedValue(stagingResult({ range: { from: null, to: null } }));
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
 
     expect(res.body.data.range).toEqual({ from: null, to: null });
   });
@@ -128,7 +128,8 @@ describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
   });
 
   it('responds 400 when no file was sent', async () => {
-    const res = await request(app).post(ENDPOINT);
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba');
 
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
@@ -137,14 +138,16 @@ describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
   });
 
   it('responds 400 when the multipart field has another name', async () => {
-    const res = await request(app).post(ENDPOINT).attach('archivo', validFile, 'sales.json');
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').attach('archivo', validFile, 'sales.json');
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/unexpected file field/i);
   });
 
   it('responds 400 when the extension is not .json', async () => {
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.txt');
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.txt');
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/\.json extension/i);
@@ -156,7 +159,8 @@ describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
       CustomError.unprocessable('The file does not contain any sales.')
     );
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(422);
     expect(res.body).toEqual({
@@ -168,7 +172,8 @@ describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
   it('does not leak internal details of an unexpected error', async () => {
     importSalesFileMock.mockRejectedValue(new Error('connection string: postgres://user:pass@host'));
 
-    const res = await request(app).post(ENDPOINT).attach('file', validFile, 'sales.json');
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(500);
     expect(res.body.message).toBe('Internal server error');

@@ -24,10 +24,11 @@ export class UploadsController {
   // the same way HealthController does.
   public async importSales(req: Request, res: Response) {
     try {
-      // The uploadJsonFile middleware already guaranteed the file is there.
+      // The uploadJsonFile middleware already guaranteed the file is there,
+      // and requireAuth guaranteed authUser (the route is admin-only).
       const file = req.file!;
 
-      const result = await importSalesFile(file.buffer);
+      const result = await importSalesFile(file.buffer, req.authUser!.id);
 
       logger.info('Sales file imported', {
         upload_id: result.upload_id,

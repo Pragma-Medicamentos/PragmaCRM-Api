@@ -15,20 +15,28 @@ import request from 'supertest';
 // Without the mock, importing the routes pulls in src/lib/prisma.ts and opens
 // a connection pool that leaves Jest hanging.
 const importSalesFileMock = jest.fn();
+// The route is admin-only now: the auth chain is stubbed so these tests keep
+// exercising the HTTP layer and not the token verification.
+jest.mock('../../../lib/supabaseJwt', () => ({
+  verifyAccessToken: jest.fn().mockResolvedValue({ sub: 'auth-admin' }),
+  JwksUnavailableError: class extends Error {},
+  warmUpJwks: jest.fn(),
+}));
+
+jest.mock('../../../services/auth.service', () => ({
+  findUserByAuthUserId: jest.fn().mockResolvedValue({
+    id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    auth_user_id: 'auth-admin',
+    role: 'Administrador',
+    name: 'Admin',
+    email: 'admin@pragma.test',
+    active: true,
+    password_set_at: new Date('2026-09-11T12:00:00.000Z'),
+  }),
+}));
+
 jest.mock('../../../use-cases/importSalesFile.use-case', () => ({
   importSalesFile: (...args: unknown[]) => importSalesFileMock(...args),
-}));
-
-// /api/v1/uploads requires an authenticated Administrador (RF-03).
-const getAuthMock = jest.fn();
-jest.mock('@clerk/express', () => ({
-  clerkMiddleware: () => (_req: unknown, _res: unknown, next: () => void) => next(),
-  getAuth: (...args: unknown[]) => getAuthMock(...args),
-}));
-
-const findUserByClerkIdMock = jest.fn();
-jest.mock('../../../services/auth.service', () => ({
-  findUserByClerkId: (...args: unknown[]) => findUserByClerkIdMock(...args),
 }));
 
 describe('POST /api/v1/uploads/sales — size limit', () => {
@@ -38,15 +46,6 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
     jest.resetModules();
     process.env.UPLOAD_MAX_FILE_SIZE_MB = '1';
 
-    getAuthMock.mockReturnValue({ isAuthenticated: true, userId: 'user_clerk_admin' });
-    findUserByClerkIdMock.mockResolvedValue({
-      id: '11111111-1111-1111-1111-111111111111',
-      clerk_user_id: 'user_clerk_admin',
-      role: 'Administrador',
-      name: 'Admin de prueba',
-      email: 'admin@pragma.test',
-      active: true,
-    });
 
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { AppRoutes } = require('../../routes') as typeof import('../../routes');
@@ -68,6 +67,7 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
 
     const res = await request(app)
       .post('/api/v1/uploads/sales')
+      .set('Authorization', 'Bearer token-de-prueba')
       .attach('file', tooBig, 'sales.json');
 
     expect(res.status).toBe(413);
@@ -95,6 +95,7 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
 
     const res = await request(app)
       .post('/api/v1/uploads/sales')
+      .set('Authorization', 'Bearer token-de-prueba')
       .attach('file', small, 'sales.json');
 
     expect(res.status).toBe(201);

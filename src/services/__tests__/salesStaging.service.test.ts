@@ -2,6 +2,8 @@ import { CustomError } from '../../domain/errors/CustomError';
 import { Client } from '../../lib/prisma';
 import { MAX_REJECTIONS_IN_RESPONSE, stageSalesFile } from '../salesStaging.service';
 
+const UPLOADED_BY = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+
 /**
  * Prisma client double: records what the service tries to write without
  * touching the database. Verification against real Postgres lives in the
@@ -58,7 +60,7 @@ describe('stageSalesFile — invalid file (all or nothing)', () => {
   it('rejects JSON that does not parse, without creating the upload', async () => {
     const { client, spies } = createClientMock();
 
-    await expect(stageSalesFile(client, Buffer.from('{"broken":', 'utf-8'))).rejects.toThrow(
+    await expect(stageSalesFile(client, Buffer.from('{"broken":', 'utf-8'), UPLOADED_BY)).rejects.toThrow(
       CustomError
     );
     expect(spies.upload.create).not.toHaveBeenCalled();
@@ -67,14 +69,14 @@ describe('stageSalesFile — invalid file (all or nothing)', () => {
   it('rejects an object at the root instead of an array', async () => {
     const { client, spies } = createClientMock();
 
-    await expect(stageSalesFile(client, toBuffer({}))).rejects.toMatchObject({ statusCode: 422 });
+    await expect(stageSalesFile(client, toBuffer({}), UPLOADED_BY)).rejects.toMatchObject({ statusCode: 422 });
     expect(spies.upload.create).not.toHaveBeenCalled();
   });
 
   it('rejects an empty array', async () => {
     const { client, spies } = createClientMock();
 
-    await expect(stageSalesFile(client, toBuffer([]))).rejects.toMatchObject({ statusCode: 422 });
+    await expect(stageSalesFile(client, toBuffer([]), UPLOADED_BY)).rejects.toMatchObject({ statusCode: 422 });
     expect(spies.upload.create).not.toHaveBeenCalled();
   });
 
@@ -82,7 +84,7 @@ describe('stageSalesFile — invalid file (all or nothing)', () => {
     const { client, spies } = createClientMock();
 
     await expect(
-      stageSalesFile(client, toBuffer([{ something_else: 1 }, { nope: 2 }]))
+      stageSalesFile(client, toBuffer([{ something_else: 1 }, { nope: 2 }]), UPLOADED_BY)
     ).rejects.toMatchObject({ statusCode: 422 });
     expect(spies.upload.create).not.toHaveBeenCalled();
   });
@@ -90,7 +92,7 @@ describe('stageSalesFile — invalid file (all or nothing)', () => {
   it('explains what failed in terms of the file (CA2 of HU-02)', async () => {
     const { client } = createClientMock();
 
-    await expect(stageSalesFile(client, Buffer.from('not json', 'utf-8'))).rejects.toThrow(
+    await expect(stageSalesFile(client, Buffer.from('not json', 'utf-8'), UPLOADED_BY)).rejects.toThrow(
       /not valid JSON/i
     );
   });
@@ -107,7 +109,7 @@ describe('stageSalesFile — invalid file (all or nothing)', () => {
     // received undefined") or JSON.parse wording ("Unexpected end of JSON
     // input"). The source system is not named either, so the copy does not go
     // stale if the customer switches ERP.
-    await expect(stageSalesFile(client, buffer)).rejects.toMatchObject({
+    await expect(stageSalesFile(client, buffer, UPLOADED_BY)).rejects.toMatchObject({
       message: expect.not.stringMatching(
         /efactsoft|Invalid input|expected \w+, received|Unexpected end of|Unexpected token/i
       ),
@@ -119,7 +121,7 @@ describe('stageSalesFile — valid batch', () => {
   it('queues every sale as pending and returns the counters', async () => {
     const { client, createdUploads, stagedRows } = createClientMock();
 
-    const result = await stageSalesFile(client, toBuffer([validSale(1), validSale(2)]));
+    const result = await stageSalesFile(client, toBuffer([validSale(1), validSale(2)]), UPLOADED_BY);
 
     expect(result).toMatchObject({
       upload_id: 'upload-uuid-1',
@@ -138,7 +140,7 @@ describe('stageSalesFile — valid batch', () => {
     const sale = validSale(1);
     const withExtras = { ...sale, venta: { ...sale.venta, num_control: 'ABC', tpv: 'TERMINAL 1' } };
 
-    await stageSalesFile(client, toBuffer([withExtras]));
+    await stageSalesFile(client, toBuffer([withExtras]), UPLOADED_BY);
 
     expect(stagedRows[0].payload).toMatchObject({
       venta: expect.objectContaining({ num_control: 'ABC', tpv: 'TERMINAL 1' }),
@@ -150,18 +152,18 @@ describe('stageSalesFile — valid batch', () => {
     const older = validSale(1);
     older.venta.fecha_emision = '2026-08-08 08:08:24';
 
-    const result = await stageSalesFile(client, toBuffer([validSale(2), older]));
+    const result = await stageSalesFile(client, toBuffer([validSale(2), older]), UPLOADED_BY);
 
     expect(result.range.from!.toISOString()).toBe('2026-08-08T00:00:00.000Z');
     expect(result.range.to!.toISOString()).toBe('2026-09-05T00:00:00.000Z');
   });
 
-  it('leaves uploaded_by null while there is no authentication', async () => {
+  it('records who uploaded the file', async () => {
     const { client, createdUploads } = createClientMock();
 
-    await stageSalesFile(client, toBuffer([validSale(1)]));
+    await stageSalesFile(client, toBuffer([validSale(1)]), UPLOADED_BY);
 
-    expect(createdUploads[0].uploaded_by).toBeNull();
+    expect(createdUploads[0].uploaded_by).toBe(UPLOADED_BY);
   });
 
   it('does not touch the live tables', async () => {
@@ -169,7 +171,7 @@ describe('stageSalesFile — valid batch', () => {
     // cannot corrupt them.
     const { client, spies } = createClientMock();
 
-    await stageSalesFile(client, toBuffer([validSale(1)]));
+    await stageSalesFile(client, toBuffer([validSale(1)]), UPLOADED_BY);
 
     expect(Object.keys(spies)).toEqual(['upload', 'sale_staging']);
   });
@@ -180,7 +182,7 @@ describe('stageSalesFile — partial batch', () => {
     const { client, stagedRows, createdUploads } = createClientMock();
     const badSale = { venta: { id_venta: 9 }, detalle: [] };
 
-    const result = await stageSalesFile(client, toBuffer([validSale(1), badSale, validSale(2)]));
+    const result = await stageSalesFile(client, toBuffer([validSale(1), badSale, validSale(2)]), UPLOADED_BY);
 
     expect(result).toMatchObject({ sales_received: 3, accepted: 2, rejected: 1 });
     expect(createdUploads[0]).toMatchObject({ sales_received: 3, failed: 1 });
@@ -194,7 +196,7 @@ describe('stageSalesFile — partial batch', () => {
     const { client } = createClientMock();
     const badSale = { venta: { id_venta: 777, estado: 'two' }, detalle: [] };
 
-    const result = await stageSalesFile(client, toBuffer([validSale(1), badSale]));
+    const result = await stageSalesFile(client, toBuffer([validSale(1), badSale]), UPLOADED_BY);
 
     expect(result.rejections[0]).toMatchObject({ index: 1, erp_sale_id: 777 });
     expect(result.rejections[0].reason).toContain('detalle');
@@ -203,7 +205,7 @@ describe('stageSalesFile — partial batch', () => {
   it('keeps the rejected sale in staging so it can be audited', async () => {
     const { client, stagedRows } = createClientMock();
 
-    await stageSalesFile(client, toBuffer([validSale(1), { venta: { id_venta: 5 }, detalle: [] }]));
+    await stageSalesFile(client, toBuffer([validSale(1), { venta: { id_venta: 5 }, detalle: [] }]), UPLOADED_BY);
 
     const failed = stagedRows.find((row) => row.status === 'failed');
     expect(failed!.payload).toMatchObject({ venta: { id_venta: 5 } });
@@ -213,7 +215,7 @@ describe('stageSalesFile — partial batch', () => {
     // A duplicate would break the PCRM-34 upsert against the natural key.
     const { client } = createClientMock();
 
-    const result = await stageSalesFile(client, toBuffer([validSale(1), validSale(1)]));
+    const result = await stageSalesFile(client, toBuffer([validSale(1), validSale(1)]), UPLOADED_BY);
 
     expect(result).toMatchObject({ accepted: 1, rejected: 1 });
     expect(result.rejections[0].reason).toContain('more than once');
@@ -226,7 +228,7 @@ describe('stageSalesFile — partial batch', () => {
       detalle: [],
     }));
 
-    const result = await stageSalesFile(client, toBuffer([validSale(1), ...many]));
+    const result = await stageSalesFile(client, toBuffer([validSale(1), ...many]), UPLOADED_BY);
 
     expect(result.rejected).toBe(MAX_REJECTIONS_IN_RESPONSE + 25);
     expect(result.rejections).toHaveLength(MAX_REJECTIONS_IN_RESPONSE);
@@ -242,7 +244,7 @@ describe('stageSalesFile — control figures', () => {
     const counterSale = validSale(2);
     counterSale.venta.id_cliente = null as never;
 
-    const result = await stageSalesFile(client, toBuffer([validSale(1), counterSale]));
+    const result = await stageSalesFile(client, toBuffer([validSale(1), counterSale]), UPLOADED_BY);
 
     expect(result.accepted).toBe(2);
     expect(result.warnings.sales_without_customer).toBe(1);
@@ -253,7 +255,7 @@ describe('stageSalesFile — control figures', () => {
     const orphan = validSale(2);
     orphan.venta.id_usuario = null as never;
 
-    const result = await stageSalesFile(client, toBuffer([validSale(1), orphan]));
+    const result = await stageSalesFile(client, toBuffer([validSale(1), orphan]), UPLOADED_BY);
 
     expect(result.warnings.sales_without_user).toBe(1);
   });
@@ -267,7 +269,7 @@ describe('stageSalesFile — quotations (estado 1)', () => {
     const quotation = validSale(3);
     quotation.venta.estado = 1;
 
-    const result = await stageSalesFile(client, toBuffer([validSale(1), quotation]));
+    const result = await stageSalesFile(client, toBuffer([validSale(1), quotation]), UPLOADED_BY);
 
     expect(result).toMatchObject({ sales_received: 2, accepted: 1, rejected: 0 });
     expect(result.warnings.quotations_skipped).toBe(1);
@@ -280,7 +282,7 @@ describe('stageSalesFile — quotations (estado 1)', () => {
     const quotation = validSale(1);
     quotation.venta.estado = 1;
 
-    await expect(stageSalesFile(client, toBuffer([quotation]))).rejects.toMatchObject({
+    await expect(stageSalesFile(client, toBuffer([quotation]), UPLOADED_BY)).rejects.toMatchObject({
       statusCode: 422,
       message: expect.stringMatching(/only contains quotations/i),
     });
@@ -293,7 +295,7 @@ describe('stageSalesFile — volume', () => {
     const { client, spies, stagedRows } = createClientMock();
     const sales = Array.from({ length: 1200 }, (_, i) => validSale(i + 1));
 
-    const result = await stageSalesFile(client, toBuffer(sales));
+    const result = await stageSalesFile(client, toBuffer(sales), UPLOADED_BY);
 
     expect(result.accepted).toBe(1200);
     expect(stagedRows).toHaveLength(1200);

@@ -12,8 +12,9 @@ export const isRole = (value: string): value is Role =>
 
 export interface AuthenticatedUser {
   id: string;
-  clerkUserId: string;
+  authUserId: string;
   role: Role;
   name: string;
   email: string | null;
+  passwordSetAt: string | null;
 }
