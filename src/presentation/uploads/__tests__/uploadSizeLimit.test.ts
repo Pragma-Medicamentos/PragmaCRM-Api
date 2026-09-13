@@ -46,6 +46,7 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
     jest.resetModules();
     process.env.UPLOAD_MAX_FILE_SIZE_MB = '1';
 
+
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { AppRoutes } = require('../../routes') as typeof import('../../routes');
     // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -84,7 +85,11 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
       range: { from: null, to: null },
       rejections: [],
       rejections_truncated: 0,
-      warnings: { sales_without_customer: 0, sales_without_user: 0 },
+      warnings: { sales_without_customer: 0, sales_without_user: 0, quotations_skipped: 0 },
+      processed: 0,
+      inserted: 0,
+      updated: 0,
+      sync_failed: 0,
     });
     const small = Buffer.from(JSON.stringify([]), 'utf-8');
 

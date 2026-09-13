@@ -261,6 +261,35 @@ describe('stageSalesFile — control figures', () => {
   });
 });
 
+describe('stageSalesFile — quotations (estado 1)', () => {
+  // Confirmed by the team on 2026-09-11: a quotation may never become a
+  // sale, so it is not staged and never reaches PCRM-34.
+  it('skips a quotation: not staged, not counted as accepted or rejected', async () => {
+    const { client, stagedRows } = createClientMock();
+    const quotation = validSale(3);
+    quotation.venta.estado = 1;
+
+    const result = await stageSalesFile(client, toBuffer([validSale(1), quotation]), UPLOADED_BY);
+
+    expect(result).toMatchObject({ sales_received: 2, accepted: 1, rejected: 0 });
+    expect(result.warnings.quotations_skipped).toBe(1);
+    expect(stagedRows).toHaveLength(1);
+    expect(stagedRows[0]).toMatchObject({ erp_sale_id: 1 });
+  });
+
+  it('rejects a file that only contains quotations, with a clear message', async () => {
+    const { client, spies } = createClientMock();
+    const quotation = validSale(1);
+    quotation.venta.estado = 1;
+
+    await expect(stageSalesFile(client, toBuffer([quotation]), UPLOADED_BY)).rejects.toMatchObject({
+      statusCode: 422,
+      message: expect.stringMatching(/only contains quotations/i),
+    });
+    expect(spies.upload.create).not.toHaveBeenCalled();
+  });
+});
+
 describe('stageSalesFile — volume', () => {
   it('splits the insert into batches instead of one giant INSERT', async () => {
     const { client, spies, stagedRows } = createClientMock();

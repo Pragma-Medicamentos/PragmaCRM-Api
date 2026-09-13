@@ -1,6 +1,6 @@
 import request from 'supertest';
 import { CustomError } from '../../../domain/errors/CustomError';
-import { StagingResult } from '../../../domain/types/sales-import.types';
+import { ImportSalesResult } from '../../../use-cases/importSalesFile.use-case';
 import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
 
@@ -41,7 +41,7 @@ const app = server.app;
 
 const ENDPOINT = '/api/v1/uploads/sales';
 
-const stagingResult = (overrides: Partial<StagingResult> = {}): StagingResult => ({
+const stagingResult = (overrides: Partial<ImportSalesResult> = {}): ImportSalesResult => ({
   upload_id: '3f1c8e2a-0000-4000-8000-000000000001',
   sales_received: 2,
   accepted: 2,
@@ -49,7 +49,11 @@ const stagingResult = (overrides: Partial<StagingResult> = {}): StagingResult =>
   range: { from: new Date('2026-08-08T00:00:00.000Z'), to: new Date('2026-09-05T00:00:00.000Z') },
   rejections: [],
   rejections_truncated: 0,
-  warnings: { sales_without_customer: 0, sales_without_user: 0 },
+  warnings: { sales_without_customer: 0, sales_without_user: 0, quotations_skipped: 0 },
+  processed: 2,
+  inserted: 2,
+  updated: 0,
+  sync_failed: 0,
   ...overrides,
 });
 

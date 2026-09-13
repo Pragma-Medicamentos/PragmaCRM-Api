@@ -15,8 +15,7 @@ export class AppRoutes {
     router.use('/api/health', HealthRoutes.routes);
 
     // CRM modules are mounted here under /api/v1/<resource>.
-    // RF-03: the guards must stay HERE, ahead of the multer middleware inside
-    // the module, so an anonymous request is rejected before 100 MB is buffered.
+    // RF-03: solo el Administrador puede importar el JSON del ERP.
     router.use(
       '/api/v1/uploads',
       requireAuth,

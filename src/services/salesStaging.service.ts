@@ -94,6 +94,7 @@ const buildStagingRows = (items: unknown[]) => {
   let accepted = 0;
   let salesWithoutCustomer = 0;
   let salesWithoutUser = 0;
+  let quotationsSkipped = 0;
   let rangeFrom: Date | null = null;
   let rangeTo: Date | null = null;
 
@@ -120,6 +121,15 @@ const buildStagingRows = (items: unknown[]) => {
     }
 
     const { venta } = result.data;
+
+    // Quotations (estado 1) are not persisted anywhere, in `sale_staging` or
+    // `sale`: a quotation may never become an actual sale (CLAUDE.md 5.5), so
+    // there is nothing to synchronize or keep pending. They are only counted
+    // as a control figure. Confirmed by the team on 2026-09-11.
+    if (venta.estado === 1) {
+      quotationsSkipped += 1;
+      return;
+    }
 
     // A repeated `id_venta` within the same file would break the PCRM-34
     // upsert against the `sale.erp_sale_id` natural key. It stops here.
@@ -149,7 +159,15 @@ const buildStagingRows = (items: unknown[]) => {
 
   const range: UploadRange = { from: rangeFrom, to: rangeTo };
 
-  return { rows, rejections, accepted, range, salesWithoutCustomer, salesWithoutUser };
+  return {
+    rows,
+    rejections,
+    accepted,
+    range,
+    salesWithoutCustomer,
+    salesWithoutUser,
+    quotationsSkipped,
+  };
 };
 
 /**
@@ -165,13 +183,18 @@ export const stageSalesFile = async (
 ): Promise<StagingResult> => {
   const items = parseFile(fileBuffer);
 
-  const { rows, rejections, accepted, range, salesWithoutCustomer, salesWithoutUser } =
+  const { rows, rejections, accepted, range, salesWithoutCustomer, salesWithoutUser, quotationsSkipped } =
     buildStagingRows(items);
 
   // If not a single sale survived, the file is most likely not the sales
   // export. Bail out without creating the `upload` so the load history does
   // not fill up with empty batches.
   if (accepted === 0) {
+    if (quotationsSkipped > 0 && rejections.length === 0) {
+      throw CustomError.unprocessable(
+        'The file only contains quotations (estado 1); there are no confirmed sales to import.'
+      );
+    }
     throw CustomError.unprocessable('No sale in the file has the expected format.');
   }
 
@@ -211,6 +234,7 @@ export const stageSalesFile = async (
     warnings: {
       sales_without_customer: salesWithoutCustomer,
       sales_without_user: salesWithoutUser,
+      quotations_skipped: quotationsSkipped,
     },
   };
 };
