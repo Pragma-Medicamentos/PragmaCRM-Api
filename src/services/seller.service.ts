@@ -11,7 +11,7 @@ export interface SellerRecord {
   name: string;
   email: string | null;
   active: boolean;
-  clerk_user_id: string | null;
+  auth_user_id: string | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -21,7 +21,7 @@ const SELLER_SELECT = {
   name: true,
   email: true,
   active: true,
-  clerk_user_id: true,
+  auth_user_id: true,
   created_at: true,
   updated_at: true,
 } as const;
@@ -54,8 +54,8 @@ export const getSellerById = async (
   return seller;
 };
 
-// No valida contra Clerk: solo evita dos perfiles de vendedor activos con el
-// mismo correo dentro del CRM. email no tiene UNIQUE en la base (7.2).
+// Only guards against two active seller profiles sharing an email inside the
+// CRM: email has no UNIQUE constraint in the database (7.2).
 const assertEmailNotInUse = async (
   client: Client,
   email: string,
@@ -77,7 +77,8 @@ const assertEmailNotInUse = async (
 
 export const createSellerProfile = async (
   client: Client,
-  data: CreateSellerInput
+  data: CreateSellerInput,
+  authUserId: string
 ): Promise<SellerRecord> => {
   await assertEmailNotInUse(client, data.email);
 
@@ -87,6 +88,7 @@ export const createSellerProfile = async (
       email: data.email,
       role: ROLES.SELLER,
       active: true,
+      auth_user_id: authUserId,
     },
     select: SELLER_SELECT,
   });

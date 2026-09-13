@@ -43,7 +43,7 @@ curl http://localhost:3000/api/health
 | Script                     | Qué hace                                    |
 | -------------------------- | ------------------------------------------- |
 | `npm run dev`              | Servidor con hot-reload                     |
-| `npm run dev:token`        | Emite un token de Clerk para probar con curl |
+
 | `npm run build`            | Compila a `dist/`                           |
 | `npm run start`            | Build + ejecuta el compilado                |
 | `npm run lint`             | ESLint sobre `src/`                         |
@@ -171,26 +171,39 @@ por qué. Vincular el repo a un proyecto de la nube (`npx supabase link --projec
 Por qué `db push` está vedado en local: dos personas aplicando migraciones a mano desde sus laptops
 desincronizan el historial del remoto. El merge es el único disparador —
 ver [docs/CI_CD.md](./docs/CI_CD.md).
-
 ## Autenticación
 
-Clerk es el proveedor de identidad; la API solo **verifica** el token que emite y resuelve el rol
-contra la base. No hay contraseñas ni sesiones propias.
+**Supabase Auth** es el proveedor de identidad. La API no guarda contraseñas: recibe el token que
+emite Supabase, verifica su firma y resuelve el rol contra `app_user.auth_user_id`.
 
-Web y móvil **no consultan Supabase directamente**: todo pasa por esta API. Por lo tanto el control
-de acceso del sistema es el middleware de aquí abajo — no hay políticas RLS respaldándolo. Un
-endpoint montado sin `requireAuth` queda público. Ver [CLAUDE.md](./CLAUDE.md) sección 5.9.
+Hay **dos caminos** hacia los datos, y conviene tenerlos claros:
 
-Para levantar la API hacen falta `CLERK_PUBLISHABLE_KEY` y `CLERK_SECRET_KEY` (Dashboard de Clerk →
-API Keys). Sin ellas el arranque falla — ver `.env.template`.
+| Camino | Quién decide | Cuándo |
+|---|---|---|
+| Cliente → Supabase (`supabase-js`) | **Las políticas RLS** | La mayoría de las consultas de web y móvil |
+| Cliente → esta API | **`requireAuth` / `requireRole`** | Import del ERP, alta de vendedores, `/me` |
+
+La API se conecta como rol `postgres`, que **ignora RLS**. Es decir: en el camino de la API no hay
+una segunda línea de defensa detrás del middleware. Un grupo de rutas montado sin `requireAuth`
+queda público. Hoy la única ruta pública es `/api/health`.
+
+Para levantar la API hacen falta `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. Sin ellas el arranque
+falla — ver `.env.template`.
+
+> La `service_role` key es un **bypass total de RLS usable por HTTP desde cualquier parte**.
+> Filtrarla es peor que filtrar la `DATABASE_URL`. Solo servidor: nunca en el bundle web ni en el APK.
 
 ### Cómo llama un cliente
 
-El token va en el header `Authorization`. En web y móvil se obtiene con `getToken()` del SDK de
-Clerk:
+El token va en el header `Authorization`. En web y móvil lo da el SDK de Supabase
+(`supabase.auth.getSession()`); para probar a mano:
 
 ```bash
-curl http://localhost:3000/api/v1/me -H "Authorization: Bearer <token>"
+TOKEN=$(curl -s "$SUPABASE_URL/auth/v1/token?grant_type=password" \
+  -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' \
+  -d '{"email":"admin@pragma.test","password":"..."}' | jq -r .access_token)
+
+curl http://localhost:3000/api/v1/me -H "Authorization: Bearer $TOKEN"
 ```
 
 ```json
@@ -199,7 +212,7 @@ curl http://localhost:3000/api/v1/me -H "Authorization: Bearer <token>"
   "message": "Sesión válida",
   "data": {
     "id": "…uuid de app_user…",
-    "clerkUserId": "user_2ab…",
+    "authUserId": "…uuid de auth.users…",
     "role": "Administrador",
     "name": "…",
     "email": "…"
@@ -207,8 +220,9 @@ curl http://localhost:3000/api/v1/me -H "Authorization: Bearer <token>"
 }
 ```
 
-`/api/v1/me` es el endpoint con el que web y móvil resuelven su estado inicial: quién es el usuario
-y qué rol tiene. Lo pueden llamar los dos roles.
+`/api/v1/me` es como web y móvil resuelven su estado inicial. Importa más que antes: **el rol no
+viaja en el token**, vive en `app_user`, así que este endpoint es el único lugar donde un cliente
+descubre su rol y se entera de que está deshabilitado.
 
 ### Cómo se protege un endpoint
 
@@ -218,58 +232,57 @@ Los guards se aplican **por grupo de rutas** en `src/presentation/routes.ts`:
 router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
 ```
 
-- `requireAuth` — exige sesión de Clerk y deja el usuario resuelto en `req.authUser`.
+- `requireAuth` — verifica el JWT contra el JWKS del proyecto y deja el usuario en `req.authUser`.
 - `requireRole(...roles)` — se encadena **después** de `requireAuth`.
+
+En rutas con subida de archivos, los guards van **en `routes.ts`, no dentro del módulo**: así una
+petición anónima se rechaza antes de bufferizar el archivo entero en memoria.
 
 ### Códigos de respuesta
 
 | Situación                                              | Código |
 | ------------------------------------------------------ | ------ |
-| Sin token, token expirado o firma inválida              | 401    |
-| Token válido, `clerk_user_id` sin registro en `app_user` | 403    |
+| Sin token, expirado, firma inválida, o emitido por otro proyecto | 401 |
+| Token válido, `auth_user_id` sin registro en `app_user` | 403    |
 | Usuario con `active = false` o borrado (`deleted_at`)   | 403    |
 | `app_user.role` fuera de `Administrador` / `Vendedor`   | 403    |
 | Rol válido pero sin permiso sobre el endpoint           | 403    |
+| El JWKS de Supabase no responde                         | 503    |
 
-La distinción importa para el cliente: **401 se resuelve volviendo a iniciar sesión; 403 no** — es
-un problema de aprovisionamiento que resuelve un administrador.
+**401 se resuelve volviendo a iniciar sesión; 403 no** — es aprovisionamiento. El **503** es
+deliberado: si el JWKS no responde, el token podría ser perfecto, y mandar a todos al login por un
+problema de red sería peor.
 
-### Probar un endpoint protegido sin frontend
+### Alta de un vendedor
 
-Mientras web y móvil no existan, no hay quién inicie sesión y por tanto no hay token. Para eso está
-`npm run dev:token`, que crea una sesión en la instancia de **desarrollo** de Clerk y devuelve un
-token de sesión real — el mismo que emitiría el SDK en la app:
+`POST /api/v1/sellers` crea la cuenta en Supabase Auth y el perfil en `app_user` en ese orden, así
+que `auth_user_id` queda enlazado desde el primer momento — no hay paso manual ni webhook.
 
-```bash
-# 1. Crea el usuario en el dashboard de Clerk (Users → Create user), luego:
-npm run dev:token -- juan@pragma.com
-```
+La respuesta incluye `inviteLink` **una sola vez**. No se envía correo —así que no hace falta SMTP—:
+el administrador se lo pasa al vendedor por el canal que ya use. Caduca a las **24 horas**
+(`otp_expiry` en `config.toml`) y no se guarda en ninguna parte.
 
-Imprime el `clerk_user_id`, el `UPDATE` para enlazarlo (ver abajo) y un `curl` listo para pegar. Para
-capturar solo el token:
+**No hay contraseña temporal.** La cuenta nace sin contraseña: no hay nada que comunicar aparte del
+enlace, ni ningún estado de "debe cambiarla" que gestionar. Supabase no tiene un campo
+`must_change_password` y aquí no hace falta, porque el estado es observable en `auth.users`:
+`encrypted_password` vacío, `invited_at` con fecha y `last_sign_in_at` en null.
 
-```bash
-TOKEN=$(npm run --silent dev:token -- juan@pragma.com --quiet)
-curl http://localhost:3000/api/v1/me -H "Authorization: Bearer $TOKEN"
-```
+El flujo que **el frontend web tiene que implementar**:
 
-El token dura 600 s por defecto (`--expires <segundos>` para cambiarlo; Clerk puede recortarlo, así
-que el script informa la vigencia real que quedó en el `exp`, no la pedida).
+1. El vendedor abre el `inviteLink`. Supabase valida el token y redirige a `SELLER_INVITE_REDIRECT_URL`
+   con la sesión en el fragmento de la URL.
+2. Esa ruta del dashboard le pide una contraseña y la fija con `supabase.auth.updateUser({ password })`.
+3. A partir de ahí entra normal con `signInWithPassword`.
 
-> El script se niega a correr con una llave `sk_live_` o con `STAGE=prod`. Crear sesiones desde el
-> backend está restringido por Clerk a instancias de desarrollo — no existe forma de usarlo contra
-> producción, ni por accidente.
+`SELLER_INVITE_REDIRECT_URL` debe apuntar **al dashboard web**, no a esta API. Si se deja sin
+definir, Supabase usa `site_url` —que es la API— y el vendedor aterriza en un 404.
 
-### Enlazar un usuario a mano
+Si el enlace caduca sin usarse, el vendedor queda sin contraseña y no puede entrar: hay que generarle
+uno nuevo. Hoy eso se hace volviendo a invitarlo desde el dashboard de Supabase.
 
-Mientras no exista el webhook `user.created`, el vínculo se carga manualmente. El `clerk_user_id` es
-el ID del usuario en el Dashboard de Clerk (`user_2ab…`), que es el claim `sub` del token:
-
-```sql
-UPDATE public.app_user
-   SET clerk_user_id = 'user_2ab…'
- WHERE email = 'persona@pragma.com';
-```
+Deshabilitar a un vendedor (`PATCH /:id/active`) lo corta por los dos caminos: la API responde 403,
+las políticas RLS dejan de devolverle filas, y además se banea su cuenta para que la sesión viva
+muera en vez de durar hasta que expire el token.
 
 ## Estructura
 

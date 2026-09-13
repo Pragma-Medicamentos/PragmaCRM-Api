@@ -17,11 +17,14 @@ import { stageSalesFile } from '../services/salesStaging.service';
 const TRANSACTION_TIMEOUT_MS = 120_000;
 const TRANSACTION_MAX_WAIT_MS = 10_000;
 
-export const importSalesFile = async (fileBuffer: Buffer): Promise<StagingResult> =>
+export const importSalesFile = async (
+  fileBuffer: Buffer,
+  uploadedBy: string
+): Promise<StagingResult> =>
   prisma.$transaction(
     async (tx) => {
       // STEP 1 — Intake: validate the file and queue it. PCRM-32 / PCRM-33.
-      const result = await stageSalesFile(tx, fileBuffer);
+      const result = await stageSalesFile(tx, fileBuffer, uploadedBy);
 
       // STEP 2 — Synchronize: drain the queue and upsert into `customer`,
       // `product`, `sale`, `sale_detail` and `balance_snapshot`.
