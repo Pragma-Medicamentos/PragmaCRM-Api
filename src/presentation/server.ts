@@ -1,3 +1,4 @@
+import cors from 'cors';
 import express, {
   NextFunction,
   Request,
@@ -9,6 +10,15 @@ import { handleError } from '../lib/handleError';
 import { ApiResponse } from '../domain/interfaces';
 import { requestMetadata } from './middleware/requestMetadata';
 import { warmUpJwks } from '../lib/supabaseJwt';
+import { envs } from '../config/envs';
+
+// CORS_ORIGIN is comma-separated so one deploy can allow more than one origin
+// (e.g. the web dashboard's own domain plus a preview deployment) without a
+// second env var.
+const corsOrigins = (): string[] =>
+  envs.CORS_ORIGIN.split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin.length > 0);
 
 interface Options {
   port: number;
@@ -39,6 +49,7 @@ export class Server {
 
     //* Middlewares
     this.app.use(requestMetadata);
+    this.app.use(cors({ origin: corsOrigins() }));
     this.app.use(express.json({ limit: '1mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
