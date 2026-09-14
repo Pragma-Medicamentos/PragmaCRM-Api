@@ -9,8 +9,13 @@ import { syncStagedSales } from '../salesSync.service';
 const createClientMock = (
   options: {
     existingCustomerId?: string | null;
-    existingSale?: { erp_created_at: Date | null; last_payment_at: Date | null } | null;
+    existingSale?: {
+      erp_created_at: Date | null;
+      last_payment_at: Date | null;
+      visit_id?: string | null;
+    } | null;
     existingUserId?: string | null;
+    matchingVisitId?: string | null;
   } = {}
 ) => {
   const customers: Record<string, unknown>[] = [];
@@ -50,6 +55,13 @@ const createClientMock = (
       findFirst: jest.fn(async () =>
         options.existingUserId !== undefined && options.existingUserId !== null
           ? { id: options.existingUserId }
+          : null
+      ),
+    },
+    visit: {
+      findFirst: jest.fn(async () =>
+        options.matchingVisitId !== undefined && options.matchingVisitId !== null
+          ? { id: options.matchingVisitId }
           : null
       ),
     },
@@ -195,6 +207,47 @@ describe('syncStagedSales — new sale', () => {
 
     expect(sales[0].user_id).toBeNull();
   });
+
+  it('links the sale to the visit of the same customer and Salvadoran calendar day', async () => {
+    const { client, sales, spies } = createClientMock({
+      existingCustomerId: 'existing-customer-id',
+      matchingVisitId: 'matching-visit-id',
+    });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect(sales[0].visit_id).toBe('matching-visit-id');
+    expect(spies.visit.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ customer_id: 'existing-customer-id', deleted_at: null }),
+      })
+    );
+  });
+
+  it('leaves visit_id null when no visit matches, without failing the import', async () => {
+    const { client, sales } = createClientMock({
+      existingCustomerId: 'existing-customer-id',
+      matchingVisitId: null,
+    });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect(sales[0].visit_id).toBeNull();
+  });
+
+  it('does not look up a visit for a counter sale with no customer', async () => {
+    const { client, sales, spies } = createClientMock();
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { id_cliente: null } }),
+    ]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect(sales[0].visit_id).toBeNull();
+    expect(spies.visit.findFirst).not.toHaveBeenCalled();
+  });
 });
 
 describe('syncStagedSales — re-processing an existing sale (idempotency)', () => {
@@ -216,6 +269,21 @@ describe('syncStagedSales — re-processing an existing sale (idempotency)', () 
     // pending_balance is the one field always overwritten (CLAUDE.md 5.5).
     expect(sales[0].pending_balance).toBe('10.00');
     expect(uploadUpdates[0]).toMatchObject({ inserted: 0, updated: 1 });
+  });
+
+  it('does not overwrite an already-linked visit_id, and does not query for a new match', async () => {
+    const firstStamp = new Date('2026-08-01T00:00:00.000Z');
+    const { client, sales, spies } = createClientMock({
+      existingCustomerId: 'existing-customer-id',
+      existingSale: { erp_created_at: firstStamp, last_payment_at: firstStamp, visit_id: 'already-linked-visit' },
+      matchingVisitId: 'a-different-visit',
+    });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect(sales[0].visit_id).toBe('already-linked-visit');
+    expect(spies.visit.findFirst).not.toHaveBeenCalled();
   });
 
   it('updates the existing customer instead of creating a duplicate', async () => {
