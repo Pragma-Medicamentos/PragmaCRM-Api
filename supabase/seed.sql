@@ -3,8 +3,21 @@
 -- re-run: truncates the tables it touches before inserting.
 --
 -- Produces:
---   * 1 admin + 5 sellers (app_user), 10 routes, recurring route_user
---     assignments (one seller/route/weekday combo each).
+--   * 1 admin + 5 sellers (app_user), each backed by a real auth.users /
+--     auth.identities row and linked via auth_user_id, so
+--     `/auth/v1/token?grant_type=password` (see CLAUDE.md 8.1) issues real
+--     JWTs to exercise requireAuth/requireRole locally. All six share the
+--     password below; clerk_user_id stays NULL on every row -- it is the
+--     deprecated column (see 20260912042024_auth_link_app_user.sql).
+--       - admin@pragma.test               (Administrador)
+--       - rosa.alvarado@pragma.test        (Vendedor)
+--       - carlos.melendez@pragma.test      (Vendedor)
+--       - ana.cordero@pragma.test          (Vendedor)
+--       - luis.portillo@pragma.test        (Vendedor)
+--       - diana.reyes@pragma.test          (Vendedor)
+--     Password for all of them: Pragma123!
+--   * 10 routes, recurring route_user assignments (one seller/route/weekday
+--     combo each).
 --   * 60 customers, split into three performance tiers plus one deliberately
 --     empty customer, so listCustomers' A/B/C/uncategorized scoring and all
 --     of 1n's filters (search, zone, establishment_type, category,
@@ -49,6 +62,20 @@ DECLARE
   v_seller_names text[] := ARRAY[
     'Rosa Alvarado', 'Carlos Melendez', 'Ana Cordero', 'Luis Portillo', 'Diana Reyes'
   ];
+
+  -- Supabase Auth identities backing app_user.auth_user_id. Index 1 is the
+  -- admin, 2-6 line up 1:1 with v_sellers / v_seller_names.
+  v_auth_ids uuid[] := ARRAY[
+    '33333333-3333-3333-3333-333333333100',
+    '33333333-3333-3333-3333-333333333101',
+    '33333333-3333-3333-3333-333333333102',
+    '33333333-3333-3333-3333-333333333103',
+    '33333333-3333-3333-3333-333333333104',
+    '33333333-3333-3333-3333-333333333105'
+  ]::uuid[];
+  v_seed_password text := 'Pragma123!';
+  v_auth_email    text;
+  k int;
 
   v_routes uuid[] := ARRAY[
     '22222222-2222-2222-2222-222222222201',
@@ -118,15 +145,53 @@ DECLARE
   v_linked_visit uuid;
   v_sale_deleted timestamptz;
 BEGIN
+  -- Supabase Auth identities ---------------------------------------------
+  -- Real auth.users / auth.identities rows, not just app_user placeholders:
+  -- assert_auth_user_exists (20260912042024_auth_link_app_user.sql) requires
+  -- auth_user_id to resolve, and requireAuth needs a real JWT to verify.
+  -- `supabase db reset` wipes auth.* along with everything else, but delete
+  -- by id first so a manual re-run of this file alone stays idempotent.
+  DELETE FROM auth.identities WHERE user_id = ANY(v_auth_ids);
+  DELETE FROM auth.users WHERE id = ANY(v_auth_ids);
+
+  FOR k IN 1..6 LOOP
+    v_auth_email := CASE
+      WHEN k = 1 THEN 'admin@pragma.test'
+      ELSE lower(replace(v_seller_names[k - 1], ' ', '.')) || '@pragma.test'
+    END;
+
+    INSERT INTO auth.users (
+      instance_id, id, aud, role, email, encrypted_password,
+      email_confirmed_at, raw_app_meta_data, raw_user_meta_data,
+      created_at, updated_at, confirmation_token, recovery_token,
+      email_change, email_change_token_new, email_change_token_current,
+      is_sso_user, is_anonymous
+    ) VALUES (
+      '00000000-0000-0000-0000-000000000000', v_auth_ids[k], 'authenticated', 'authenticated',
+      v_auth_email, extensions.crypt(v_seed_password, extensions.gen_salt('bf')),
+      now(), '{"provider":"email","providers":["email"]}'::jsonb, '{}'::jsonb,
+      now(), now(), '', '', '', '', '', false, false
+    );
+
+    INSERT INTO auth.identities (
+      provider_id, user_id, identity_data, provider, last_sign_in_at, created_at, updated_at
+    ) VALUES (
+      v_auth_ids[k]::text, v_auth_ids[k],
+      jsonb_build_object('sub', v_auth_ids[k]::text, 'email', v_auth_email),
+      'email', now(), now(), now()
+    );
+  END LOOP;
+
   -- Identity ------------------------------------------------------------
-  INSERT INTO app_user (id, role, name, email, active)
-  VALUES (v_admin_id, 'Administrador', 'Patricia Nunez', 'admin@pragma.test', true);
+  INSERT INTO app_user (id, role, name, email, active, auth_user_id, password_set_at)
+  VALUES (v_admin_id, 'Administrador', 'Patricia Nunez', 'admin@pragma.test', true, v_auth_ids[1], now());
 
   FOR i IN 1..5 LOOP
-    INSERT INTO app_user (id, role, name, email, active)
+    INSERT INTO app_user (id, role, name, email, active, auth_user_id, password_set_at)
     VALUES (
       v_sellers[i], 'Vendedor', v_seller_names[i],
-      lower(replace(v_seller_names[i], ' ', '.')) || '@pragma.test', true
+      lower(replace(v_seller_names[i], ' ', '.')) || '@pragma.test', true,
+      v_auth_ids[i + 1], now()
     );
   END LOOP;
 

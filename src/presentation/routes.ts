@@ -6,6 +6,7 @@ import { AuthRoutes } from './auth/routes';
 import { SellersRoutes } from './sellers/routes';
 import { CustomersRoutes } from './customers/routes';
 import { requireAuth, requireRole } from './middleware/auth';
+import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
 
 export class AppRoutes {
@@ -14,6 +15,12 @@ export class AppRoutes {
 
     // Publica: la consume el monitoreo del VPS.
     router.use('/api/health', HealthRoutes.routes);
+
+    // Transport-level gate: every request to the CRM (everything except
+    // /api/health, mounted above) must present the static x-api-key from the
+    // environment. Runs before any route group so a caller without the key is
+    // rejected before hitting body parsers, multer or other middlewares.
+    router.use(requireApiKey);
 
     // CRM modules are mounted here under /api/v1/<resource>.
     // RF-03: solo el Administrador puede importar el JSON del ERP.
@@ -37,9 +44,14 @@ export class AppRoutes {
     );
 
     // RF-02: customer profile, sales history and outstanding credit.
-    // TODO: mount with requireAuth + requireRole(ROLES.ADMIN) once the auth
-    // middleware changes on the other branch land here (currently unstable).
-    router.use('/api/v1/customers', CustomersRoutes.routes);
+    // Solo el Administrador: la ficha de cliente expone datos comerciales y
+    // de credito que un Vendedor no debe ver en el dashboard.
+    router.use(
+      '/api/v1/customers',
+      requireAuth,
+      requireRole(ROLES.ADMIN),
+      CustomersRoutes.routes
+    );
 
     // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
 

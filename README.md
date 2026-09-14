@@ -183,11 +183,13 @@ Hay **dos caminos** hacia los datos, y conviene tenerlos claros:
 | Cliente → Supabase (`supabase-js`) | **Las políticas RLS** | La mayoría de las consultas de web y móvil |
 | Cliente → esta API | **`requireAuth` / `requireRole`** | Import del ERP, alta de vendedores, `/me` |
 
+Además, **toda petición a esta API (excepto `/api/health`) debe traer la `API_KEY` estática del entorno en el header `x-api-key`** (`requireApiKey`, ver `src/presentation/middleware/apiKey.ts`). Es una compuerta de transporte, no de identidad: no reemplaza al JWT ni otorga rol; solo garantiza que quien llama comparte el secreto.
+
 La API se conecta como rol `postgres`, que **ignora RLS**. Es decir: en el camino de la API no hay
 una segunda línea de defensa detrás del middleware. Un grupo de rutas montado sin `requireAuth`
 queda público. Hoy la única ruta pública es `/api/health`.
 
-Para levantar la API hacen falta `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. Sin ellas el arranque
+Para levantar la API hacen falta `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` y `API_KEY`. Sin ellas el arranque
 falla — ver `.env.template`.
 
 > La `service_role` key es un **bypass total de RLS usable por HTTP desde cualquier parte**.

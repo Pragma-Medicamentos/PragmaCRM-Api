@@ -2,6 +2,7 @@ import request from 'supertest';
 import { verifyAccessToken } from '../../../lib/supabaseJwt';
 import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
+import { envs } from '../../../config/envs';
 import { findUserByAuthUserId } from '../../../services/auth.service';
 import { ROLES } from '../../../domain/types/auth.types';
 
@@ -26,6 +27,8 @@ const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
 const app = server.app;
 
+const API_KEY = envs.API_KEY;
+
 describe('GET /api/v1/me', () => {
   it('devuelve usuario, rol y passwordSetAt para una sesion valida', async () => {
     verifyAccessTokenMock.mockResolvedValue({ sub: AUTH_ID });
@@ -41,7 +44,8 @@ describe('GET /api/v1/me', () => {
 
     const res = await request(app)
       .get('/api/v1/me')
-      .set('Authorization', 'Bearer token-de-prueba');
+      .set('Authorization', 'Bearer token-de-prueba')
+.set('x-api-key', API_KEY);
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
@@ -72,14 +76,15 @@ describe('GET /api/v1/me', () => {
 
     const res = await request(app)
       .get('/api/v1/me')
-      .set('Authorization', 'Bearer token-de-prueba');
+      .set('Authorization', 'Bearer token-de-prueba')
+.set('x-api-key', API_KEY);
 
     expect(res.status).toBe(200);
     expect(res.body.data.passwordSetAt).toBeNull();
   });
 
   it('responde 401 sin token', async () => {
-    const res = await request(app).get('/api/v1/me');
+    const res = await request(app).get('/api/v1/me').set('x-api-key', API_KEY);
 
     expect(res.status).toBe(401);
     expect(res.body.success).toBe(false);
