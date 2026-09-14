@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
+import { envs } from '../../../config/envs';
 import {
   getCreditStatus,
   getCustomerProfile,
@@ -28,6 +29,8 @@ const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
 const app = server.app;
 
+const API_KEY = envs.API_KEY;
+
 const CUSTOMER_ID = '9f1c2e4a-7b3d-4e21-9c88-0a5d6f2b1e10';
 
 const emptyPage = { items: [], page: 1, page_size: 20, total: 0, total_pages: 0 };
@@ -42,7 +45,7 @@ beforeEach(() => {
 
 describe('GET /api/v1/customers', () => {
   it('aplica los valores por defecto de paginación', async () => {
-    await request(app).get('/api/v1/customers');
+    await request(app).get('/api/v1/customers').set('x-api-key', API_KEY);
 
     expect(listCustomersMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -51,9 +54,11 @@ describe('GET /api/v1/customers', () => {
   });
 
   it('convierte los filtros de query a sus tipos', async () => {
-    await request(app).get(
-      '/api/v1/customers?page=3&limit=50&without_gps=true&active=false&zone=Escal%C3%B3n'
-    );
+    await request(app)
+      .get(
+        '/api/v1/customers?page=3&limit=50&without_gps=true&active=false&zone=Escal%C3%B3n'
+      )
+      .set('x-api-key', API_KEY);
 
     expect(listCustomersMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -68,14 +73,18 @@ describe('GET /api/v1/customers', () => {
   });
 
   it('rechaza una categoría fuera del dominio', async () => {
-    const res = await request(app).get('/api/v1/customers?category=Z');
+    const res = await request(app)
+      .get('/api/v1/customers?category=Z')
+      .set('x-api-key', API_KEY);
 
     expect(res.status).toBe(400);
     expect(res.body.errors[0].field).toBe('category');
   });
 
   it('rechaza un limit por encima del tope', async () => {
-    const res = await request(app).get('/api/v1/customers?limit=500');
+    const res = await request(app)
+      .get('/api/v1/customers?limit=500')
+      .set('x-api-key', API_KEY);
 
     expect(res.status).toBe(400);
   });
@@ -89,7 +98,7 @@ describe('GET /api/v1/customers', () => {
       total_pages: 18,
     });
 
-    const res = await request(app).get('/api/v1/customers');
+    const res = await request(app).get('/api/v1/customers').set('x-api-key', API_KEY);
 
     expect(res.body.data).toMatchObject({ total: 352, total_pages: 18 });
     expect(res.body.data.items).toHaveLength(1);
@@ -98,7 +107,9 @@ describe('GET /api/v1/customers', () => {
 
 describe('GET /api/v1/customers/:id', () => {
   it('rechaza un id que no es uuid', async () => {
-    const res = await request(app).get('/api/v1/customers/no-es-uuid');
+    const res = await request(app)
+      .get('/api/v1/customers/no-es-uuid')
+      .set('x-api-key', API_KEY);
 
     expect(res.status).toBe(400);
     expect(res.body.errors[0].field).toBe('id');
@@ -108,7 +119,9 @@ describe('GET /api/v1/customers/:id', () => {
     const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
     getCustomerProfileMock.mockRejectedValue(CustomError.notFound('Customer not found'));
 
-    const res = await request(app).get(`/api/v1/customers/${CUSTOMER_ID}`);
+    const res = await request(app)
+      .get(`/api/v1/customers/${CUSTOMER_ID}`)
+      .set('x-api-key', API_KEY);
 
     expect(res.status).toBe(404);
     expect(res.body.message).toBe('Customer not found');
@@ -117,24 +130,30 @@ describe('GET /api/v1/customers/:id', () => {
 
 describe('GET /api/v1/customers/:id/sales', () => {
   it('no acepta un filtro de cotizaciones: el parámetro ya no existe', async () => {
-    await request(app).get(`/api/v1/customers/${CUSTOMER_ID}/sales?type=quotes`);
+    await request(app)
+      .get(`/api/v1/customers/${CUSTOMER_ID}/sales?type=quotes`)
+      .set('x-api-key', API_KEY);
 
     const query = listCustomerSalesMock.mock.calls[0][2];
     expect(query).not.toHaveProperty('type');
   });
 
   it('rechaza un rango de fechas invertido', async () => {
-    const res = await request(app).get(
-      `/api/v1/customers/${CUSTOMER_ID}/sales?from=2026-06-01&to=2026-01-01`
-    );
+    const res = await request(app)
+      .get(
+        `/api/v1/customers/${CUSTOMER_ID}/sales?from=2026-06-01&to=2026-01-01`
+      )
+      .set('x-api-key', API_KEY);
 
     expect(res.status).toBe(400);
   });
 
   it('pasa el rango de fechas ya convertido a Date', async () => {
-    await request(app).get(
-      `/api/v1/customers/${CUSTOMER_ID}/sales?from=2026-01-01&to=2026-06-30`
-    );
+    await request(app)
+      .get(
+        `/api/v1/customers/${CUSTOMER_ID}/sales?from=2026-01-01&to=2026-06-30`
+      )
+      .set('x-api-key', API_KEY);
 
     const query = listCustomerSalesMock.mock.calls[0][2];
     expect(query.from).toBeInstanceOf(Date);
@@ -155,7 +174,9 @@ describe('GET /api/v1/customers/:id/credits', () => {
       },
     });
 
-    const res = await request(app).get(`/api/v1/customers/${CUSTOMER_ID}/credits`);
+    const res = await request(app)
+      .get(`/api/v1/customers/${CUSTOMER_ID}/credits`)
+      .set('x-api-key', API_KEY);
 
     expect(res.status).toBe(200);
     expect(res.body.data.totals.credit_available).toBe('4855.00');

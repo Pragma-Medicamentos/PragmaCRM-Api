@@ -1,5 +1,6 @@
 import { Express } from 'express';
 import request from 'supertest';
+import { envs } from '../../../config/envs';
 
 /**
  * The size limit is read from `envs` at import time, so this case lives in its
@@ -68,6 +69,7 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
     const res = await request(app)
       .post('/api/v1/uploads/sales')
       .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', envs.API_KEY)
       .attach('file', tooBig, 'sales.json');
 
     expect(res.status).toBe(413);
@@ -96,6 +98,7 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
     const res = await request(app)
       .post('/api/v1/uploads/sales')
       .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', envs.API_KEY)
       .attach('file', small, 'sales.json');
 
     expect(res.status).toBe(201);

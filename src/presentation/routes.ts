@@ -6,6 +6,7 @@ import { AuthRoutes } from './auth/routes';
 import { SellersRoutes } from './sellers/routes';
 import { CustomersRoutes } from './customers/routes';
 import { requireAuth, requireRole } from './middleware/auth';
+import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
 
 export class AppRoutes {
@@ -14,6 +15,12 @@ export class AppRoutes {
 
     // Publica: la consume el monitoreo del VPS.
     router.use('/api/health', HealthRoutes.routes);
+
+    // Transport-level gate: every request to the CRM (everything except
+    // /api/health, mounted above) must present the static x-api-key from the
+    // environment. Runs before any route group so a caller without the key is
+    // rejected before hitting body parsers, multer or other middlewares.
+    router.use(requireApiKey);
 
     // CRM modules are mounted here under /api/v1/<resource>.
     // RF-03: solo el Administrador puede importar el JSON del ERP.
