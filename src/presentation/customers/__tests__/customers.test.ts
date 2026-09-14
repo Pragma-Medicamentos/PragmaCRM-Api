@@ -9,9 +9,26 @@ import {
   listCustomers,
 } from '../../../services/customer.service';
 
-// No auth middleware is mounted on /api/v1/customers yet: the requireAuth /
-// requireRole wiring is pending changes landing from another branch (see
-// TODO in presentation/routes.ts). No @clerk/express mock is needed here.
+// The customers module is admin-only now (RF-02). The auth chain is stubbed
+// so these tests keep exercising the HTTP layer, not token verification.
+jest.mock('../../../lib/supabaseJwt', () => ({
+  verifyAccessToken: jest.fn().mockResolvedValue({ sub: 'auth-admin' }),
+  JwksUnavailableError: class extends Error {},
+  warmUpJwks: jest.fn(),
+}));
+
+jest.mock('../../../services/auth.service', () => ({
+  findUserByAuthUserId: jest.fn().mockResolvedValue({
+    id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    auth_user_id: 'auth-admin',
+    role: 'Administrador',
+    name: 'Admin',
+    email: 'admin@pragma.test',
+    active: true,
+    password_set_at: new Date('2026-09-11T12:00:00.000Z'),
+  }),
+}));
+
 jest.mock('../../../services/customer.service', () => ({
   listCustomers: jest.fn(),
   getCustomerProfile: jest.fn(),
@@ -29,7 +46,12 @@ const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
 const app = server.app;
 
-const API_KEY = envs.API_KEY;
+// Every request needs both layers: the transport x-api-key gate and an admin
+// session whose JWT is stubbed above.
+const AUTH = {
+  'x-api-key': envs.API_KEY,
+  Authorization: 'Bearer token-de-prueba',
+};
 
 const CUSTOMER_ID = '9f1c2e4a-7b3d-4e21-9c88-0a5d6f2b1e10';
 
@@ -45,7 +67,7 @@ beforeEach(() => {
 
 describe('GET /api/v1/customers', () => {
   it('aplica los valores por defecto de paginación', async () => {
-    await request(app).get('/api/v1/customers').set('x-api-key', API_KEY);
+    await request(app).get('/api/v1/customers').set(AUTH);
 
     expect(listCustomersMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -58,7 +80,7 @@ describe('GET /api/v1/customers', () => {
       .get(
         '/api/v1/customers?page=3&limit=50&without_gps=true&active=false&zone=Escal%C3%B3n'
       )
-      .set('x-api-key', API_KEY);
+      .set(AUTH);
 
     expect(listCustomersMock).toHaveBeenCalledWith(
       expect.anything(),
@@ -73,18 +95,14 @@ describe('GET /api/v1/customers', () => {
   });
 
   it('rechaza una categoría fuera del dominio', async () => {
-    const res = await request(app)
-      .get('/api/v1/customers?category=Z')
-      .set('x-api-key', API_KEY);
+    const res = await request(app).get('/api/v1/customers?category=Z').set(AUTH);
 
     expect(res.status).toBe(400);
     expect(res.body.errors[0].field).toBe('category');
   });
 
   it('rechaza un limit por encima del tope', async () => {
-    const res = await request(app)
-      .get('/api/v1/customers?limit=500')
-      .set('x-api-key', API_KEY);
+    const res = await request(app).get('/api/v1/customers?limit=500').set(AUTH);
 
     expect(res.status).toBe(400);
   });
@@ -98,7 +116,7 @@ describe('GET /api/v1/customers', () => {
       total_pages: 18,
     });
 
-    const res = await request(app).get('/api/v1/customers').set('x-api-key', API_KEY);
+    const res = await request(app).get('/api/v1/customers').set(AUTH);
 
     expect(res.body.data).toMatchObject({ total: 352, total_pages: 18 });
     expect(res.body.data.items).toHaveLength(1);
@@ -109,7 +127,7 @@ describe('GET /api/v1/customers/:id', () => {
   it('rechaza un id que no es uuid', async () => {
     const res = await request(app)
       .get('/api/v1/customers/no-es-uuid')
-      .set('x-api-key', API_KEY);
+      .set(AUTH);
 
     expect(res.status).toBe(400);
     expect(res.body.errors[0].field).toBe('id');
@@ -121,7 +139,7 @@ describe('GET /api/v1/customers/:id', () => {
 
     const res = await request(app)
       .get(`/api/v1/customers/${CUSTOMER_ID}`)
-      .set('x-api-key', API_KEY);
+      .set(AUTH);
 
     expect(res.status).toBe(404);
     expect(res.body.message).toBe('Customer not found');
@@ -132,7 +150,7 @@ describe('GET /api/v1/customers/:id/sales', () => {
   it('no acepta un filtro de cotizaciones: el parámetro ya no existe', async () => {
     await request(app)
       .get(`/api/v1/customers/${CUSTOMER_ID}/sales?type=quotes`)
-      .set('x-api-key', API_KEY);
+      .set(AUTH);
 
     const query = listCustomerSalesMock.mock.calls[0][2];
     expect(query).not.toHaveProperty('type');
@@ -143,7 +161,7 @@ describe('GET /api/v1/customers/:id/sales', () => {
       .get(
         `/api/v1/customers/${CUSTOMER_ID}/sales?from=2026-06-01&to=2026-01-01`
       )
-      .set('x-api-key', API_KEY);
+      .set(AUTH);
 
     expect(res.status).toBe(400);
   });
@@ -153,7 +171,7 @@ describe('GET /api/v1/customers/:id/sales', () => {
       .get(
         `/api/v1/customers/${CUSTOMER_ID}/sales?from=2026-01-01&to=2026-06-30`
       )
-      .set('x-api-key', API_KEY);
+      .set(AUTH);
 
     const query = listCustomerSalesMock.mock.calls[0][2];
     expect(query.from).toBeInstanceOf(Date);
@@ -176,7 +194,7 @@ describe('GET /api/v1/customers/:id/credits', () => {
 
     const res = await request(app)
       .get(`/api/v1/customers/${CUSTOMER_ID}/credits`)
-      .set('x-api-key', API_KEY);
+      .set(AUTH);
 
     expect(res.status).toBe(200);
     expect(res.body.data.totals.credit_available).toBe('4855.00');
