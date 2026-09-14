@@ -1,21 +1,49 @@
-MIT License
+PROPRIETARY SOFTWARE LICENSE
 
-Copyright (c) 2023 Fernando Herrera
+Pragma CRM
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Copyright (c) 2026 Droguería Pragma, El Salvador. Todos los derechos reservados.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Este software (código fuente, documentación técnica, esquema de base de datos,
+migraciones y demás materiales de este repositorio) fue desarrollado por
+estudiantes de la Universidad Católica de El Salvador en el marco de la
+asignatura de Gestión de Proyectos Informáticos, para Droguería Pragma como
+cliente y patrocinador del proyecto. La titularidad del software, incluyendo
+el código fuente y todos sus derivados, corresponde a Droguería Pragma desde
+el momento de su entrega.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+1. Confidencialidad.
+   El código fuente y la documentación técnica son información confidencial.
+   No pueden divulgarse, publicarse ni ponerse a disposición de terceros sin
+   autorización expresa y por escrito del titular.
+
+2. Acceso restringido.
+   Solo tienen derecho de acceso, uso, modificación y ejecución de este
+   software las personas expresamente autorizadas por el titular: personal
+   contratado por Droguería Pragma y terceros que operen bajo un acuerdo de
+   confidencialidad (NDA) con el titular. Queda prohibida la copia,
+   redistribución, sublicencia, venta o cesión a cualquier otra persona o
+   entidad.
+
+3. Sin licencia implícita.
+   La entrega del código fuente al titular no constituye una licencia
+   abierta ni de código abierto. No se concede ningún derecho sobre el
+   software a quien no esté cubierto por la sección 2, incluyendo a los
+   propios desarrolladores una vez finalizada su relación con el proyecto o
+   con la universidad.
+
+4. Uso académico.
+   Se reserva a la Universidad Católica de El Salvador y a los estudiantes
+   que desarrollaron el proyecto el derecho de referenciar, describir y
+   documentar la existencia, el alcance y los aprendizajes del proyecto con
+   fines académicos (evaluación de curso, portafolio, tesis), sin que ello
+   implique autorización para divulgar el código fuente, la documentación
+   técnica ni datos del cliente. Cualquier material académico derivado debe
+   preservar la confidencialidad establecida en la sección 1.
+
+5. Sin garantía.
+   Este software se entrega "tal cual", sin garantía de ningún tipo, expresa
+   o implícita, incluyendo sin limitación garantías de comerciabilidad,
+   idoneidad para un propósito particular o no infracción. En ningún caso los
+   autores o el equipo de desarrollo serán responsables por reclamos, daños u
+   otra responsabilidad derivada del uso del software.
