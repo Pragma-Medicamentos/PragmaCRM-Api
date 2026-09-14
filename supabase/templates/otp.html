@@ -1,4 +1,67 @@
-<h2>Pragma CRM</h2>
-<p>Tu codigo de acceso es:</p>
-<p><strong>{{ .Token }}</strong></p>
-<p>Expira en 10 minutos. Si no lo solicitaste, ignora este correo.</p>
+<!--
+  Plantilla del codigo de acceso (Supabase Auth -> Email Templates -> Magic Link).
+
+  Reglas que no se pueden romper:
+    * La variable del codigo va como TEXTO, nunca dentro de un href: es un
+      numero, no una URL. En un enlace, el codigo queda escondido en el atributo
+      y el destinatario recibe un link roto.
+    * No referenciar la variable del enlace de confirmacion en NINGUNA parte del
+      archivo, ni siquiera dentro de un comentario como este: el motor de
+      plantillas de Go procesa las llaves aunque esten dentro de un comentario
+      HTML, y su sola presencia hace que Supabase mande un enlace magico en vez
+      de un codigo.
+    * No se dice cuantos digitos tiene ni cuanto dura: ambas cosas dependen de
+      otp_length y otp_expiry del proyecto, y el texto quedaria mintiendo si
+      alguien los cambia en el dashboard.
+
+  Estilos en linea y maquetado con tablas a proposito: Gmail y Outlook descartan
+  buena parte de un <style> en el head.
+-->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+    style="background-color:#f4f5f7;margin:0;padding:24px 12px;">
+    <tr>
+        <td align="center">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;background-color:#ffffff;border-radius:12px;
+                    border:1px solid #e3e5e8;padding:32px 28px;
+                    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+                <tr>
+                    <td align="center" style="font-size:18px;font-weight:700;color:#0274DF;padding-bottom:24px;
+                     letter-spacing:0.5px;">
+                        PRAGMA CRM
+                    </td>
+                </tr>
+
+                <tr>
+                    <td align="center" style="font-size:16px;line-height:24px;color:#1a1a1a;padding-bottom:20px;">
+                        Tu código de acceso es:
+                    </td>
+                </tr>
+
+                <tr>
+                    <td align="center" style="padding-bottom:24px;">
+                        <div style="display:inline-block;background-color:#f0f0f3;border-radius:10px;
+                        padding:16px 28px;font-size:32px;font-weight:700;color:#1a1a1a;
+                        letter-spacing:8px;
+                        font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;">
+                            {{ .Token }}
+                        </div>
+                    </td>
+                </tr>
+
+                <tr>
+                    <td align="center" style="font-size:14px;line-height:21px;color:#60646C;padding-bottom:8px;">
+                        Escríbelo en la aplicación para continuar.
+                    </td>
+                </tr>
+
+                <tr>
+                    <td align="center" style="font-size:13px;line-height:20px;color:#8b8f96;
+                     border-top:1px solid #e3e5e8;padding-top:20px;">
+                        Si no solicitaste este código, ignora este correo. Nadie puede acceder a tu
+                        cuenta sin él.
+                    </td>
+                </tr>
+            </table>
+        </td>
+    </tr>
+</table>
