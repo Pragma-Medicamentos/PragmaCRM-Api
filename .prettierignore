@@ -1,0 +1,7 @@
+node_modules/
+dist/
+docs/
+.github/
+package-lock.json
+*.prisma
+src/generated/
