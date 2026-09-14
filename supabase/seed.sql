@@ -7,8 +7,7 @@
 --     auth.identities row and linked via auth_user_id, so
 --     `/auth/v1/token?grant_type=password` (see CLAUDE.md 8.1) issues real
 --     JWTs to exercise requireAuth/requireRole locally. All six share the
---     password below; clerk_user_id stays NULL on every row -- it is the
---     deprecated column (see 20260912042024_auth_link_app_user.sql).
+--     password below.
 --       - admin@pragma.test               (Administrador)
 --       - rosa.alvarado@pragma.test        (Vendedor)
 --       - carlos.melendez@pragma.test      (Vendedor)
@@ -147,7 +146,7 @@ DECLARE
 BEGIN
   -- Supabase Auth identities ---------------------------------------------
   -- Real auth.users / auth.identities rows, not just app_user placeholders:
-  -- assert_auth_user_exists (20260912042024_auth_link_app_user.sql) requires
+  -- app_user_auth_user_id_fkey (20260914010000_app_user_auth_fk.sql) requires
   -- auth_user_id to resolve, and requireAuth needs a real JWT to verify.
   -- `supabase db reset` wipes auth.* along with everything else, but delete
   -- by id first so a manual re-run of this file alone stays idempotent.
