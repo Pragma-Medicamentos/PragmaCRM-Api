@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - prod
+      - staging
+      - dev
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      # Audita solo lo que se despliega: --omit=dev deja fuera el toolchain
+      # (linter, jest, CLI de Prisma) que nunca corre en el proceso que sirve
+      # trafico real. --omit=optional acompana porque package-lock marca varias
+      # dependencias como devOptional (dev + optional a la vez) y npm audit no
+      # las excluye a menos que tambien se omitan los optionals.
+      - run: npm audit --omit=dev --omit=optional --audit-level=high
+      - run: npx prisma generate
+      - run: npm run lint
+      - run: npm run tsc
+      - run: npm run test
+
+  validate-migrations:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # Levanta Postgres local via Docker y reaplica TODO el historial de
+      # migraciones desde una DB vacia, en orden. Falla si hay una migracion
+      # fuera de orden o rota -> red de seguridad antes de mergear.
+      - run: supabase db start
+      - run: supabase db reset --no-seed
