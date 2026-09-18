@@ -7,3 +7,4 @@ process.env.DATABASE_URL =
 process.env.SUPABASE_URL = process.env.SUPABASE_URL ?? 'http://127.0.0.1:54321';
 process.env.SUPABASE_SERVICE_ROLE_KEY =
   process.env.SUPABASE_SERVICE_ROLE_KEY ?? 'fake-service-role-key';
+process.env.API_KEY = process.env.API_KEY ?? 'test-api-key';

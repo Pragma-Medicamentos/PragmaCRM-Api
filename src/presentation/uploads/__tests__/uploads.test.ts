@@ -3,6 +3,7 @@ import { CustomError } from '../../../domain/errors/CustomError';
 import { ImportSalesResult } from '../../../use-cases/importSalesFile.use-case';
 import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
+import { envs } from '../../../config/envs';
 
 // The use case hits the database; only the HTTP layer is exercised here.
 // Verification against real Postgres lives in the integration tests.
@@ -41,6 +42,8 @@ const app = server.app;
 
 const ENDPOINT = '/api/v1/uploads/sales';
 
+const API_KEY = envs.API_KEY;
+
 const stagingResult = (overrides: Partial<ImportSalesResult> = {}): ImportSalesResult => ({
   upload_id: '3f1c8e2a-0000-4000-8000-000000000001',
   sales_received: 2,
@@ -64,7 +67,7 @@ describe('POST /api/v1/uploads/sales', () => {
     importSalesFileMock.mockResolvedValue(stagingResult());
 
     const res = await request(app).post(ENDPOINT)
-      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({
@@ -84,7 +87,7 @@ describe('POST /api/v1/uploads/sales', () => {
     importSalesFileMock.mockResolvedValue(stagingResult());
 
     await request(app).post(ENDPOINT)
-      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('file', validFile, 'sales.json');
 
     expect(importSalesFileMock).toHaveBeenCalledWith(
       expect.any(Buffer),
@@ -103,7 +106,7 @@ describe('POST /api/v1/uploads/sales', () => {
     );
 
     const res = await request(app).post(ENDPOINT)
-      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(201);
     expect(res.body.message).toContain('1 rejected');
@@ -116,7 +119,7 @@ describe('POST /api/v1/uploads/sales', () => {
     importSalesFileMock.mockResolvedValue(stagingResult({ range: { from: null, to: null } }));
 
     const res = await request(app).post(ENDPOINT)
-      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('file', validFile, 'sales.json');
 
     expect(res.body.data.range).toEqual({ from: null, to: null });
   });
@@ -129,7 +132,7 @@ describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
 
   it('responds 400 when no file was sent', async () => {
     const res = await request(app).post(ENDPOINT)
-      .set('Authorization', 'Bearer token-de-prueba');
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY);
 
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
@@ -139,7 +142,7 @@ describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
 
   it('responds 400 when the multipart field has another name', async () => {
     const res = await request(app).post(ENDPOINT)
-      .set('Authorization', 'Bearer token-de-prueba').attach('archivo', validFile, 'sales.json');
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('archivo', validFile, 'sales.json');
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/unexpected file field/i);
@@ -147,7 +150,7 @@ describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
 
   it('responds 400 when the extension is not .json', async () => {
     const res = await request(app).post(ENDPOINT)
-      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.txt');
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('file', validFile, 'sales.txt');
 
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/\.json extension/i);
@@ -160,7 +163,7 @@ describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
     );
 
     const res = await request(app).post(ENDPOINT)
-      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(422);
     expect(res.body).toEqual({
@@ -173,7 +176,7 @@ describe('POST /api/v1/uploads/sales — upload errors (PCRM-33)', () => {
     importSalesFileMock.mockRejectedValue(new Error('connection string: postgres://user:pass@host'));
 
     const res = await request(app).post(ENDPOINT)
-      .set('Authorization', 'Bearer token-de-prueba').attach('file', validFile, 'sales.json');
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('file', validFile, 'sales.json');
 
     expect(res.status).toBe(500);
     expect(res.body.message).toBe('Internal server error');

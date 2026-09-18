@@ -183,11 +183,13 @@ Hay **dos caminos** hacia los datos, y conviene tenerlos claros:
 | Cliente → Supabase (`supabase-js`) | **Las políticas RLS** | La mayoría de las consultas de web y móvil |
 | Cliente → esta API | **`requireAuth` / `requireRole`** | Import del ERP, alta de vendedores, `/me` |
 
+Además, **toda petición a esta API (excepto `/api/health`) debe traer la `API_KEY` estática del entorno en el header `x-api-key`** (`requireApiKey`, ver `src/presentation/middleware/apiKey.ts`). Es una compuerta de transporte, no de identidad: no reemplaza al JWT ni otorga rol; solo garantiza que quien llama comparte el secreto.
+
 La API se conecta como rol `postgres`, que **ignora RLS**. Es decir: en el camino de la API no hay
 una segunda línea de defensa detrás del middleware. Un grupo de rutas montado sin `requireAuth`
 queda público. Hoy la única ruta pública es `/api/health`.
 
-Para levantar la API hacen falta `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. Sin ellas el arranque
+Para levantar la API hacen falta `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` y `API_KEY`. Sin ellas el arranque
 falla — ver `.env.template`.
 
 > La `service_role` key es un **bypass total de RLS usable por HTTP desde cualquier parte**.
@@ -300,6 +302,83 @@ supabase/migrations/  migraciones SQL — fuente de verdad del esquema
 ```
 
 Convenciones detalladas en [CLAUDE.md](./CLAUDE.md).
+
+## Perfil de cliente (RF-02)
+
+Cuatro endpoints, todos `GET`, todos bajo `requireAuth` + `requireRole(ADMIN)`.
+Alimentan las pantallas `1n` (listado) y `1o` (perfil) del dashboard web.
+
+| Endpoint | Pantalla |
+|---|---|
+| `/api/v1/customers` | `1n` · listado con filtros |
+| `/api/v1/customers/:id` | `1o` · pestaña Resumen |
+| `/api/v1/customers/:id/sales` | `1o` · pestaña Historial |
+| `/api/v1/customers/:id/credits` | `1o` · pestaña Créditos y cobros |
+
+### Ventas y créditos
+
+El módulo maneja dos cosas y solo dos. Juntas son una **partición exacta** de
+las ventas confirmadas: sin solape y sin huecos.
+
+| | Filtro | Endpoint |
+|---|---|---|
+| **Venta** | `erp_status = 2` y `pending_balance = 0` | `/sales` |
+| **Crédito** | `erp_status = 2` y `pending_balance > 0` | `/credits` |
+
+Las **cotizaciones** (`erp_status = 1`) están fuera del alcance. Se siguen
+guardando en `sale_staging` —el importador no filtra por estado— pero ningún
+endpoint las expone y ningún agregado las contó nunca.
+
+Una factura **se mueve entre los dos endpoints** con el tiempo. El ERP marca la
+transición: al cobrarse, Efactsoft cambia `id_pago` de `5` (Crédito) a `6`
+(Crédito Pagado) y pone `saldop` en 0.
+
+```
+Crédito   payment_id 5 · saldo > 0   →  /credits
+  ↓ se cobra
+Venta     payment_id 6 · saldo = 0   →  /sales, con paid_at y payment_days
+Contado   payment_id 1 · saldo = 0   →  /sales desde el inicio
+```
+
+No es un estado guardado: se deriva del `pending_balance` actual, que se
+sobrescribe en cada carga de JSON. `balance_snapshot` es lo único que conserva
+la historia de saldos, así que `/credits` responde siempre "al día de hoy".
+
+### Paginación
+
+Los tres endpoints de listado aceptan `page` y `limit` (tope 100, 20 por
+defecto) y devuelven la página anidada en `data`:
+
+```jsonc
+{
+  "success": true,
+  "message": "Customers retrieved successfully",
+  "data": {
+    "items": [ /* … */ ],
+    "page": 1, "page_size": 20, "total": 352, "total_pages": 18
+  }
+}
+```
+
+El envelope `ApiResponse<T>` no cambia. Es el contrato a seguir en los demás
+listados del proyecto.
+
+**Los montos viajan como string** (`"12480.00"`). Son `numeric(14,2)`;
+convertirlos a `number` mete la moneda en punto flotante. El formateo es del
+frontend.
+
+### Clasificación A/B/C
+
+`GET /customers` y `GET /customers/:id` devuelven un campo `category` derivado
+en runtime — no hay columna en la base. Sale de un score ponderado sobre tres
+insumos de los últimos 12 meses: compras netas (50 %), conversión
+visitas→compras (30 %) y días promedio de pago (20 %); `A` desde 70, `B` desde
+40. Un cliente sin ventas en la ventana, o sin ninguna factura de crédito
+liquidada, cae en `uncategorized` — que **no** es lo mismo que `C`.
+
+Los pesos, los cortes y la ventana son supuestos documentados, pendientes de
+confirmar con el cliente. Viven como constantes en `services/customer.service.ts`
+y el detalle está en [docs/Contexto_KPIs_Pragma_CRM.md](./docs/Contexto_KPIs_Pragma_CRM.md) §5.
 
 ## Carga de archivos (RF-03)
 

@@ -1,6 +1,7 @@
 import request from 'supertest';
 import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
+import { envs } from '../../../config/envs';
 
 // setup() wires middlewares and routes without opening a port, so supertest
 // can hit the real app without starting the server.
@@ -32,7 +33,9 @@ describe('GET /api/health', () => {
 
 describe('unknown routes', () => {
   it('responds 404 with the ApiResponse envelope', async () => {
-    const res = await request(app).get('/non-existent-route');
+    const res = await request(app)
+      .get('/non-existent-route')
+      .set('x-api-key', envs.API_KEY);
 
     expect(res.status).toBe(404);
     expect(res.body).toEqual({ success: false, message: 'Not found' });

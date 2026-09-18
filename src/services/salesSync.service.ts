@@ -1,3 +1,5 @@
+import { DateTime } from 'luxon';
+
 import {
   EfactsoftSaleDetail,
   EfactsoftSaleHeader,
@@ -5,7 +7,7 @@ import {
   formatZodIssues,
 } from '../domain/schemas/efactsoft-sale.schema';
 import { SyncResult } from '../domain/types/sales-import.types';
-import { parseErpTimestamp } from '../lib/parseErpDate';
+import { ERP_TIMEZONE, parseErpTimestamp } from '../lib/parseErpDate';
 import { Client } from '../lib/prisma';
 
 /**
@@ -16,6 +18,12 @@ import { Client } from '../lib/prisma';
  * `balance_snapshot`. Every row that reaches this module is already a
  * confirmed sale (`estado = 2`) — quotations never make it into
  * `sale_staging` (CLAUDE.md 5.5, confirmed 2026-09-11).
+ *
+ * Also attempts to attribute each sale to the visit that produced it
+ * (CLAUDE.md 5.4): same customer, same Salvadoran calendar day. This is the
+ * only path onto `sale.visit_id` — there is no `sale.route_id` — and it is
+ * optional by design: a sale with no matching visit is imported anyway, with
+ * `visit_id = null` (CLAUDE.md Anexo A #2).
  *
  * Idempotent by construction: it upserts on the ERP natural keys
  * (`customer.erp_customer_id`, `product.erp_product_id`, `sale.erp_sale_id`,
@@ -94,6 +102,51 @@ const upsertCustomer = async (client: Client, venta: EfactsoftSaleHeader): Promi
   return created.id;
 };
 
+/**
+ * Salvadoran calendar-day bounds of a UTC instant, as `[start, end)`.
+ *
+ * `erp_created_at` is a `timestamptz` instant; comparing it to `visit.started_at`
+ * with a range predicate on the raw column — instead of casting either side to
+ * `::date` — is what CLAUDE.md 5.7 asks for: a `::date` cast on the column would
+ * both apply the wrong calendar day for a sale booked after 6 p.m. and defeat
+ * the column's index.
+ */
+const getSalvadoranDayBounds = (instant: Date): { start: Date; end: Date } => {
+  const start = DateTime.fromJSDate(instant).setZone(ERP_TIMEZONE).startOf('day');
+  return { start: start.toJSDate(), end: start.plus({ days: 1 }).toJSDate() };
+};
+
+/**
+ * Attributes a sale to the visit that produced it (CLAUDE.md 5.4): same
+ * customer, same Salvadoran calendar day. The ERP payload carries no field
+ * that names the visit directly, so this is inference, not a foreign key
+ * copied from the source — and it is expected to come up empty: a sale with
+ * no matching visit stays with `visit_id = null` (CLAUDE.md Anexo A #2).
+ *
+ * A customer can legitimately have more than one visit the same day (visit,
+ * dispatch and collection are separate `visit_type` rows, CLAUDE.md 5.2), and
+ * the payload gives no way to tell which one this sale belongs to. Ties are
+ * broken by taking the earliest `started_at` of the day — deterministic, but
+ * not guaranteed correct; there is no RF that requires better than this.
+ */
+const findMatchingVisitId = async (
+  client: Client,
+  customerId: string | null,
+  erpCreatedAt: Date
+): Promise<string | null> => {
+  if (!customerId) return null;
+
+  const { start, end } = getSalvadoranDayBounds(erpCreatedAt);
+
+  const visit = await client.visit.findFirst({
+    where: { customer_id: customerId, deleted_at: null, started_at: { gte: start, lt: end } },
+    orderBy: { started_at: 'asc' },
+    select: { id: true },
+  });
+
+  return visit?.id ?? null;
+};
+
 /** Finds an existing salesperson by the ERP link. Never creates one — sellers are managed via RF-01. */
 const findUserId = async (client: Client, erpUserId: number | null | undefined): Promise<string | null> => {
   if (erpUserId === null || erpUserId === undefined) return null;
@@ -138,7 +191,7 @@ const upsertSale = async (
 ): Promise<{ wasInsert: boolean }> => {
   const existing = await client.sale.findUnique({
     where: { erp_sale_id: venta.id_venta },
-    select: { erp_created_at: true, last_payment_at: true },
+    select: { erp_created_at: true, last_payment_at: true, visit_id: true },
   });
 
   // Timestamps come from the payload's `updated_at`, never the import time
@@ -150,9 +203,17 @@ const upsertSale = async (
   const erpCreatedAt = existing?.erp_created_at ?? updatedAt;
   const lastPaymentAt = existing?.last_payment_at ?? (balanceIsZero ? updatedAt : null);
 
+  // visit_id follows the same "stamp once" rule: once a sale is linked to a
+  // visit it stays linked, even if a later re-import would have matched a
+  // different one. A sale still unlinked keeps trying on every re-sync, since
+  // the matching visit may only get recorded in the field after the sale was
+  // first imported.
+  const visitId = existing?.visit_id ?? (await findMatchingVisitId(client, customerId, erpCreatedAt));
+
   const shared = {
     customer_id: customerId,
     user_id: userId,
+    visit_id: visitId,
     erp_created_at: erpCreatedAt,
     last_payment_at: lastPaymentAt,
     total: toDecimalInput(venta.total),

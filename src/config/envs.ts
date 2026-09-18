@@ -51,4 +51,11 @@ export const envs = {
   CORS_ORIGIN: get('CORS_ORIGIN')
     .default('http://localhost:5173')
     .asString(),
+
+  // Static shared secret sent in the `x-api-key` header. Every request to the
+  // API except `/api/health` must present it (middleware/apiKey.ts). It is a
+  // transport-level gate on top of the caller's own JWT auth: it carries no
+  // identity, is not tied to any user or role, and grants nothing on its own.
+  // Required: without it the server refuses to boot.
+  API_KEY: get('API_KEY').required().asString(),
 };
