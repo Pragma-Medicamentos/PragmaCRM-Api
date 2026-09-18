@@ -4,6 +4,7 @@ import { UploadsRoutes } from './uploads/routes';
 import { MeRoutes } from './me/routes';
 import { AuthRoutes } from './auth/routes';
 import { SellersRoutes } from './sellers/routes';
+import { CustomersRoutes } from './customers/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { ROLES } from '../domain/types/auth.types';
 
@@ -33,6 +34,14 @@ export class AppRoutes {
       requireAuth,
       requireRole(ROLES.ADMIN),
       SellersRoutes.routes
+    );
+
+    // RF-02: el administrador establece la ubicación GPS exacta del cliente.
+    router.use(
+      '/api/v1/customers',
+      requireAuth,
+      requireRole(ROLES.ADMIN),
+      CustomersRoutes.routes
     );
 
     // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
