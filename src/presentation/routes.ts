@@ -5,6 +5,7 @@ import { MeRoutes } from './me/routes';
 import { AuthRoutes } from './auth/routes';
 import { SellersRoutes } from './sellers/routes';
 import { CustomersRoutes } from './customers/routes';
+import { RoutesRoutes } from './routes/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
@@ -51,6 +52,14 @@ export class AppRoutes {
       requireAuth,
       requireRole(ROLES.ADMIN),
       CustomersRoutes.routes
+    );
+
+    // RF-04: creating routes and assigning/reassigning them to vendors.
+    router.use(
+      '/api/v1/routes',
+      requireAuth,
+      requireRole(ROLES.ADMIN),
+      RoutesRoutes.routes
     );
 
     // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
