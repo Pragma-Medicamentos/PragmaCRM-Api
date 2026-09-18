@@ -6,6 +6,7 @@ import {
   getCustomerRoutes,
   getRecentVisitNotes,
   listCustomerSales,
+  updateCustomerLocation,
 } from '../customer.service';
 
 const CUSTOMER_ID = '9f1c2e4a-7b3d-4e21-9c88-0a5d6f2b1e10';
@@ -31,6 +32,7 @@ const buildClient = (overrides: Record<string, unknown> = {}) =>
     visit: { findMany: jest.fn() },
     route_customer: { findMany: jest.fn() },
     $queryRaw: jest.fn(),
+    $executeRaw: jest.fn(),
     ...overrides,
   }) as unknown as Client;
 
@@ -305,5 +307,57 @@ describe('getCustomerRoutes', () => {
       })
     );
     expect(routes).toEqual([{ id: 'r1', name: 'Zona Escalón' }]);
+  });
+});
+
+describe('updateCustomerLocation', () => {
+  const locationInput = { latitude: 13.6929, longitude: -89.2182 };
+
+  const coreRow = (overrides: Record<string, unknown> = {}) => ({
+    id: CUSTOMER_ID,
+    erp_customer_id: 1001,
+    name: 'Farmacia San José',
+    trade_name: null,
+    establishment_type: null,
+    address: null,
+    municipality: null,
+    zone: null,
+    phone: null,
+    mobile: null,
+    attends: null,
+    personality: null,
+    potential: null,
+    credit: false,
+    credit_limit: null,
+    origin: null,
+    active: true,
+    lat: 13.6929,
+    lng: -89.2182,
+    ...overrides,
+  });
+
+  it('lanza 404 si el cliente no existe antes de actualizar', async () => {
+    const client = buildClient({
+      customer: { findFirst: jest.fn().mockResolvedValue(null) },
+    });
+
+    await expect(
+      updateCustomerLocation(client, CUSTOMER_ID, locationInput)
+    ).rejects.toMatchObject({ statusCode: 404 });
+
+    expect(client.$executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('ejecuta el UPDATE y devuelve la ubicación como lat/lng', async () => {
+    const client = buildClient({
+      customer: { findFirst: jest.fn().mockResolvedValue({ id: CUSTOMER_ID }) },
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      $queryRaw: jest.fn().mockResolvedValue([coreRow()]),
+    });
+
+    const core = await updateCustomerLocation(client, CUSTOMER_ID, locationInput);
+
+    expect(client.$executeRaw).toHaveBeenCalledTimes(1);
+    expect(core.location).toEqual({ lat: 13.6929, lng: -89.2182 });
   });
 });

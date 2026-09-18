@@ -43,7 +43,7 @@ export class AppRoutes {
       SellersRoutes.routes
     );
 
-    // RF-02: customer profile, sales history and outstanding credit.
+    // RF-02: customer profile, sales history, outstanding credit and GPS pin.
     // Solo el Administrador: la ficha de cliente expone datos comerciales y
     // de credito que un Vendedor no debe ver en el dashboard.
     router.use(

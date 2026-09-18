@@ -50,3 +50,13 @@ export const listCustomerCreditsQuerySchema = paginationQuerySchema;
 export type ListCustomerCreditsQuery = z.infer<
   typeof listCustomerCreditsQuerySchema
 >;
+
+// RF-02: the administrator sets the customer's exact GPS for routing.
+// WGS84 (SRID 4326), same as `customer.location`.
+export const updateCustomerLocationSchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+});
+export type UpdateCustomerLocationInput = z.infer<
+  typeof updateCustomerLocationSchema
+>;
