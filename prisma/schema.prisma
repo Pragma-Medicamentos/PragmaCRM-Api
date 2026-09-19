@@ -802,6 +802,7 @@ model scheduled_visit {
   customer      customer?  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   prospect      prospect?  @relation(fields: [prospect_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   route_user    route_user @relation(fields: [route_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  visit         visit?
 
   @@index([customer_id, visit_date], map: "scheduled_visit_customer_date_idx", where: raw("(deleted_at IS NULL)"))
   @@index([prospect_id], where: raw("((prospect_id IS NOT NULL) AND (deleted_at IS NULL))"))
@@ -833,28 +834,30 @@ model upload {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model visit {
-  id                String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  customer_id       String                    @db.Uuid
-  user_id           String                    @db.Uuid
-  route_user_id     String?                   @db.Uuid
-  route_customer_id String?                   @db.Uuid
-  started_at        DateTime?                 @db.Timestamptz(6)
-  finished_at       DateTime?                 @db.Timestamptz(6)
-  checkin_location  Unsupported("geography")?
-  distance_meters   Decimal?                  @db.Decimal(8, 2)
-  visit_type        String?
-  successful        Boolean?
-  no_order_reason   String?
-  notes             String?
-  created_at        DateTime                  @default(now()) @db.Timestamptz(6)
-  updated_at        DateTime                  @default(now()) @db.Timestamptz(6)
-  deleted_at        DateTime?                 @db.Timestamptz(6)
-  product_request   product_request[]
-  sale              sale[]
-  customer          customer                  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  route_customer    route_customer?           @relation(fields: [route_customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  route_user        route_user?               @relation(fields: [route_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  app_user          app_user                  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  id                 String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  customer_id        String                    @db.Uuid
+  user_id            String                    @db.Uuid
+  route_user_id      String?                   @db.Uuid
+  route_customer_id  String?                   @db.Uuid
+  started_at         DateTime?                 @db.Timestamptz(6)
+  finished_at        DateTime?                 @db.Timestamptz(6)
+  checkin_location   Unsupported("geography")?
+  distance_meters    Decimal?                  @db.Decimal(8, 2)
+  visit_type         String?
+  successful         Boolean?
+  no_order_reason    String?
+  notes              String?
+  created_at         DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime                  @default(now()) @db.Timestamptz(6)
+  deleted_at         DateTime?                 @db.Timestamptz(6)
+  scheduled_visit_id String?                   @unique(map: "visit_scheduled_visit_uq", where: raw("((scheduled_visit_id IS NOT NULL) AND (deleted_at IS NULL))")) @db.Uuid
+  product_request    product_request[]
+  sale               sale[]
+  customer           customer                  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  route_customer     route_customer?           @relation(fields: [route_customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  route_user         route_user?               @relation(fields: [route_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  scheduled_visit    scheduled_visit?          @relation(fields: [scheduled_visit_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  app_user           app_user                  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@index([customer_id, started_at(sort: Desc)], map: "visit_customer_started_idx", where: raw("(deleted_at IS NULL)"))
   @@index([route_user_id], where: raw("(deleted_at IS NULL)"))
