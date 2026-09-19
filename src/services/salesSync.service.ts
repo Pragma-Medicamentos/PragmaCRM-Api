@@ -52,10 +52,16 @@ const toDecimalInput = (value: string | number | null | undefined): string | nul
 
 const isZeroBalance = (value: string | number): boolean => Number(value) === 0;
 
-const buildCustomerName = (venta: EfactsoftSaleHeader): string => {
-  const fullName = [venta.nombres, venta.apellidos].filter(Boolean).join(' ').trim();
-  return fullName || venta.cliente?.trim() || venta.nombre_comercial?.trim() || 'Sin nombre';
-};
+/**
+ * `venta.nombres` / `venta.apellidos` are NOT the customer: they correlate
+ * 1:1 with `id_usuario` / `usuario` in the real export (the salesperson who
+ * processed the sale). `venta.nombre_comercial` and `venta.razon_social` are
+ * constant across every sale — Droguería Pragma's own issuer identity, not
+ * the customer's. The only field that actually varies per customer is
+ * `venta.cliente`. Verified against a full production export, 2026-09-19.
+ */
+const buildCustomerName = (venta: EfactsoftSaleHeader): string =>
+  venta.cliente?.trim() || 'Sin nombre';
 
 /**
  * Upserts the customer embedded in the sale header (CLAUDE.md 6.2/9.2).
