@@ -67,17 +67,24 @@ export interface DailyRouteStop {
   reason: string | null;
   /**
    * `visit.started_at` of the execution linked through
-   * `visit.scheduled_visit_id`, as an ISO-8601 instant. Null means pending.
+   * `visit.scheduled_visit_id`. Null means pending.
    *
-   * Serialised to a string in the service rather than left as a Date, so the
-   * payload matches the contract on its own instead of relying on Express's
-   * JSON serializer to do the conversion.
+   * A Date, not a pre-stringified instant: Express serialises it to the same
+   * ISO 8601 the contract shows, so the wire payload is identical, and every
+   * other date field in the domain types is a Date. Stringifying here would
+   * only cost the next consumer a reparse.
    */
-  completed_at: string | null;
+  completed_at: Date | null;
 }
 
 export interface DailyRoute {
-  /** The day actually served, `YYYY-MM-DD`. Echoes back the resolved default. */
+  /**
+   * The day actually served, `YYYY-MM-DD`. Echoes back the resolved default.
+   *
+   * A string and not a Date, unlike `completed_at`: this is a calendar day in
+   * the business timezone, not an instant. A Date would force a timezone onto
+   * it and reintroduce exactly the off-by-one-day the default guards against.
+   */
   date: string;
   /**
    * Empty when the seller has no stops for the day. `routes` and `stops` are

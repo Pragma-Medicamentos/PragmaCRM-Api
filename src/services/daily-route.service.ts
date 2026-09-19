@@ -132,7 +132,6 @@ const toStop = (row: DailyRouteStopRow): DailyRouteStop => {
   const {
     lat,
     lng,
-    completed_at,
     route_id,
     route_name,
     // Route metadata that belongs to `routes[]`, not to the stop card.
@@ -146,7 +145,6 @@ const toStop = (row: DailyRouteStopRow): DailyRouteStop => {
     ...rest,
     route: { id: route_id, name: route_name },
     location: lat !== null && lng !== null ? { lat, lng } : null,
-    completed_at: completed_at === null ? null : completed_at.toISOString(),
   };
 };
 
@@ -201,11 +199,13 @@ interface DailyRouteStopRow {
  * `scheduled_visit` and joining upwards gives the planner nothing to seek on
  * and degrades to a sequential scan.
  *
- * Every one of the six tables carries its own `deleted_at IS NULL`, and on the
- * LEFT JOINs the predicate sits in the ON clause — moved to the WHERE it would
- * turn them into inner joins and drop the stops it was meant to filter.
+ * All seven tables it touches carry their own `deleted_at IS NULL` —
+ * `route_user`, `route`, `scheduled_visit`, `customer`, `prospect`,
+ * `route_customer` and `visit`. On the LEFT JOINs the predicate sits in the ON
+ * clause: moved to the WHERE it would turn them into inner joins and drop the
+ * very stops it was meant to keep.
  *
- * Three things worth reading twice:
+ * Four things worth reading twice:
  *
  *   - `visit` is joined on `scheduled_visit_id`, never on a
  *     (customer, route_user, day) heuristic. `visit_scheduled_visit_uq` is a
@@ -222,6 +222,15 @@ interface DailyRouteStopRow {
  *   - `zone` and `municipality` are read from `customer` only. `prospect` has
  *     no such columns, which is exactly the contract's "always null for
  *     prospects"; a COALESCE here would be inventing data.
+ *
+ *   - Two clauses here drop rows silently, and they are the same class of
+ *     problem: the INNER JOIN to `route`, and the
+ *     `COALESCE(c.id, p.id) IS NOT NULL` in the WHERE. Both exist because the
+ *     contract promises a non-null `name`, and both make a live
+ *     `scheduled_visit` disappear when the thing it points at was soft-deleted
+ *     — a route in the first case, a customer or prospect in the second. The
+ *     query cannot even report how many it dropped: they are gone before the
+ *     projection runs. See the comments at each site.
  */
 const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
   SELECT sv.id::text              AS id,
@@ -248,6 +257,15 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
          sv.reason,
          v.started_at             AS completed_at
   FROM   route_user ru
+  /* INNER on purpose, not the LEFT JOIN the rest of this query uses.
+     route.name is NOT NULL and RouteRef.name is typed as a plain string; a
+     LEFT JOIN would let a soft-deleted route project a NULL name and make
+     that type a lie. The cost is real and unsignalled: soft-delete a route whose
+     assignment still has stops today and the seller gets an empty 200 with no
+     explanation, rather than a route he can see is gone. The missing half is
+     cascading the soft delete from route to route_user and scheduled_visit,
+     which belongs to its own ticket -- this query only refuses to invent a
+     name it does not have. */
   JOIN   route r ON r.id = ru.route_id
                AND r.deleted_at IS NULL
   JOIN   scheduled_visit sv ON sv.route_user_id = ru.id
@@ -267,9 +285,15 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
     /* A stop whose target was soft-deleted would project name and target_id
        as NULL, and the contract says name is never null. Dropping it is the
        only honest option: the business deleted the target, so the card has
-       nothing left to show. A block comment, not a line comment: a line
-       comment would swallow the rest of the query if anything ever collapsed
-       the newlines. */
+       nothing left to show.
+
+       Same class of silent drop as the INNER JOIN to route above, and it
+       shares the same gap: the stop vanishes with nothing to tell the seller
+       it existed, and the query cannot count what it removed. The real fix is
+       cascading the soft delete down to scheduled_visit, in its own ticket.
+
+       A block comment, not a line comment: a line comment would swallow the
+       rest of the query if anything ever collapsed the newlines. */
     AND  COALESCE(c.id, p.id) IS NOT NULL
   ORDER  BY COALESCE(rc.sort_order, ${UNPLANNED_SORT_ORDER}) ASC,
             lower(COALESCE(c.name, p.name)) ASC,

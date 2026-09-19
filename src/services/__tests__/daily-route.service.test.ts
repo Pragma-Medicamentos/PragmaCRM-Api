@@ -10,6 +10,22 @@ const ROUTE_USER_ID = '1f41e2d0-d81c-45a4-baea-912674c63dae';
 const DATE = '2026-09-19';
 
 /**
+ * What this file can and cannot prove.
+ *
+ * With $queryRaw mocked, the row→DTO mapping is fully testable: the mapper is
+ * ordinary TypeScript. The *derivations* are not — is_extra, target_kind, the
+ * null zone of a prospect and the ordering are all computed by Postgres, and a
+ * mock row simply hands back whatever it was given. Feeding in
+ * `is_extra: true` and asserting `is_extra === true` would be a test that
+ * cannot fail.
+ *
+ * So the derivations are covered from the other side: by asserting the shape
+ * of the SQL the service actually builds (see `clausesOf`), and by running the
+ * real query against the seeded database — that run, not this file, is what
+ * proves the SQL returns the right rows.
+ */
+
+/**
  * Mirrors DailyRouteStopRow, which the service keeps private: the test asserts
  * the row→DTO mapping, so it has to be able to build a raw row by hand.
  */
@@ -69,10 +85,58 @@ const buildClient = (rows: StopRow[]) => {
   return { client, $queryRaw };
 };
 
-/** The Prisma.Sql the service ran, with its formatting whitespace collapsed. */
-const ranSql = ($queryRaw: jest.Mock): string => {
-  const query: Prisma.Sql = $queryRaw.mock.calls[0][0];
-  return query.sql.replace(/\s+/g, ' ').trim();
+const ranQuery = ($queryRaw: jest.Mock): Prisma.Sql => $queryRaw.mock.calls[0][0];
+
+/**
+ * The SQL the service ran, with block comments removed and formatting
+ * whitespace collapsed, so the assertions can match on structure.
+ */
+const ranSql = ($queryRaw: jest.Mock): string =>
+  ranQuery($queryRaw)
+    .sql.replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+interface SqlClauses {
+  /** Body of each JOIN's ON clause, keyed by the joined table's alias. */
+  on: Record<string, string>;
+  /** 'inner' or 'left', keyed by the same alias. */
+  kind: Record<string, 'inner' | 'left'>;
+  /** Body of the WHERE clause, without the trailing ORDER BY. */
+  where: string;
+}
+
+/**
+ * Cuts the query into its top-level clauses.
+ *
+ * Asserting that "<alias>.deleted_at IS NULL" appears *somewhere* in the SQL
+ * proves nothing: the substring is identical whether the predicate sits in its
+ * own ON clause or has been moved into the WHERE. That move is precisely the
+ * regression the service's own comment warns about — it silently turns a LEFT
+ * JOIN into an inner one and drops the stops the join exists to keep — so the
+ * assertions have to be able to tell the two apart.
+ */
+const clausesOf = (sql: string): SqlClauses => {
+  const body = sql.slice(sql.indexOf('FROM route_user'));
+  const clauses: SqlClauses = { on: {}, kind: {}, where: '' };
+
+  // ranSql has already collapsed every run of whitespace to one space, so the
+  // pattern can use literal spaces. Each ON clause runs up to the next join or
+  // to the WHERE; "LEFT JOIN" is matched as a whole so a boundary can never
+  // fall between LEFT and JOIN and turn a left join into an apparent inner one.
+  const joins = /(LEFT )?JOIN \w+ (\w+) ON (.*?)(?= (?:LEFT )?JOIN | WHERE )/g;
+
+  let join: RegExpExecArray | null;
+  while ((join = joins.exec(body)) !== null) {
+    const [, left, alias, on] = join;
+    clauses.on[alias] = on;
+    clauses.kind[alias] = left ? 'left' : 'inner';
+  }
+
+  const where = / WHERE (.*?)(?= ORDER BY |$)/.exec(body);
+  if (where) clauses.where = where[1];
+
+  return clauses;
 };
 
 describe('getDailyRoute — mapeo fila→DTO', () => {
@@ -92,8 +156,8 @@ describe('getDailyRoute — mapeo fila→DTO', () => {
 
     const route = await getDailyRoute(client, SELLER_ID, DATE);
 
-    // Caso corriente, no un error: la lista de clientes tiene filtro
-    // without_gps. La tarjeta degrada a "{zona} ›" y no dibuja pin.
+    // An ordinary case, not an error: the customer list even has a
+    // `without_gps` filter. The card degrades to the zone with no distance.
     expect(route.stops[0].location).toBeNull();
     expect(route.stops[0]).toHaveProperty('location');
   });
@@ -115,7 +179,11 @@ describe('getDailyRoute — mapeo fila→DTO', () => {
     expect(route.stops[0]).not.toHaveProperty('lng');
   });
 
-  it('marca is_extra cuando no hay fila viva en route_customer', async () => {
+  it('pasa is_extra y sort_order al DTO tal como vienen de la fila', async () => {
+    // Pass-through only. is_extra is derived by the SQL from the absence of a
+    // live route_customer row, and a mocked $queryRaw cannot exercise that —
+    // the derivation is covered by the SQL-shape test below and by the run
+    // against the seeded database.
     const { client } = buildClient([
       stopRow({ sort_order: null, is_extra: true, reason: 'Reclamo' }),
     ]);
@@ -123,28 +191,34 @@ describe('getDailyRoute — mapeo fila→DTO', () => {
     const route = await getDailyRoute(client, SELLER_ID, DATE);
 
     expect(route.stops[0].is_extra).toBe(true);
-    // El extra no tiene puesto en la composición de la ruta.
     expect(route.stops[0].sort_order).toBeNull();
     expect(route.stops[0].reason).toBe('Reclamo');
   });
 
-  it('no marca is_extra en una parada planificada', async () => {
-    const { client } = buildClient([stopRow()]);
-
-    const route = await getDailyRoute(client, SELLER_ID, DATE);
-
-    expect(route.stops[0].is_extra).toBe(false);
-    expect(route.stops[0].sort_order).toBe(1);
-  });
-
-  it('devuelve completed_at como instante ISO cuando la parada ya se ejecutó', async () => {
+  it('devuelve completed_at como Date cuando la parada ya se ejecutó', async () => {
     const { client } = buildClient([
       stopRow({ completed_at: new Date('2026-09-19T15:10:00.000Z') }),
     ]);
 
     const route = await getDailyRoute(client, SELLER_ID, DATE);
 
-    expect(route.stops[0].completed_at).toBe('2026-09-19T15:10:00.000Z');
+    expect(route.stops[0].completed_at).toEqual(
+      new Date('2026-09-19T15:10:00.000Z')
+    );
+  });
+
+  it('serializa completed_at al instante ISO que pide el contrato', async () => {
+    const { client } = buildClient([
+      stopRow({ completed_at: new Date('2026-09-19T15:10:00.000Z') }),
+    ]);
+
+    const route = await getDailyRoute(client, SELLER_ID, DATE);
+
+    // The DTO keeps a Date, like every other date field in the domain types;
+    // what the contract pins down is the wire shape, which is what Express
+    // produces here.
+    const wire = JSON.parse(JSON.stringify(route.stops[0]));
+    expect(wire.completed_at).toBe('2026-09-19T15:10:00.000Z');
   });
 
   it('deja completed_at en null mientras la parada está pendiente', async () => {
@@ -155,20 +229,20 @@ describe('getDailyRoute — mapeo fila→DTO', () => {
     expect(route.stops[0].completed_at).toBeNull();
   });
 
-  it('da zone y municipality en null a los prospectos', async () => {
+  it('pasa al DTO el zone y municipality nulos de un prospecto', async () => {
+    // Pass-through only, again: that a prospect *always* has them null is a
+    // property of the SQL projection, asserted in 'getDailyRoute — consulta'.
     const { client } = buildClient([
       stopRow({
         target_kind: 'prospect',
         target_id: '139f1343-55af-4731-84eb-aa082fe76cd6',
         name: 'Farmacia Nueva Vida',
         trade_name: 'Nueva Vida',
-        // prospect no tiene columnas zone ni municipality: la consulta las lee
-        // solo de customer, así que el prospecto llega con null.
         zone: null,
         municipality: null,
         sort_order: null,
         is_extra: true,
-      })
+      }),
     ]);
 
     const route = await getDailyRoute(client, SELLER_ID, DATE);
@@ -176,8 +250,6 @@ describe('getDailyRoute — mapeo fila→DTO', () => {
     expect(route.stops[0].target_kind).toBe('prospect');
     expect(route.stops[0].zone).toBeNull();
     expect(route.stops[0].municipality).toBeNull();
-    // Un prospecto nunca tiene fila en route_customer: es extra por definición.
-    expect(route.stops[0].is_extra).toBe(true);
   });
 
   it('expone la ruta de la parada como {id, name}, sin metadata de ruta', async () => {
@@ -213,8 +285,8 @@ describe('getDailyRoute — routes[]', () => {
   });
 
   it('devuelve las dos rutas cuando el vendedor tiene dos asignaciones ese día', async () => {
-    // route_user es UQ(route_id, user_id, day): dos rutas el mismo día son
-    // legales, por eso routes es arreglo y no objeto.
+    // route_user is UQ(route_id, user_id, day), so two routes on the same day
+    // are legal -- which is why `routes` is an array and not a single object.
     const { client } = buildClient([
       stopRow(),
       stopRow({
@@ -260,8 +332,8 @@ describe('getDailyRoute — routes[]', () => {
 
     const route = await getDailyRoute(client, SELLER_ID, DATE);
 
-    // "No tengo ruta hoy" es una respuesta legítima: un 404 encendería la UI
-    // de error del vendedor.
+    // "No route today" is a legitimate answer: a 404 would light up the
+    // seller's error screen instead.
     expect(route).toEqual({ date: DATE, routes: [], stops: [] });
   });
 });
@@ -277,21 +349,29 @@ describe('getDailyRoute — fecha', () => {
     const route = await getDailyRoute(client, SELLER_ID, '2026-01-31');
 
     expect(route.date).toBe('2026-01-31');
-    const query: Prisma.Sql = $queryRaw.mock.calls[0][0];
-    expect(query.values).toContain('2026-01-31');
+    expect(ranQuery($queryRaw).values).toContain('2026-01-31');
   });
 
   it('sin date, toma hoy en America/El_Salvador y no el del servidor', async () => {
-    // 03:30 UTC del 20 son las 21:30 del 19 en El Salvador. Tomar el día del
-    // servidor le daría al vendedor la ruta de mañana, es decir, ninguna.
+    // 03:30 UTC on the 20th is 21:30 on the 19th in El Salvador. Taking the
+    // server's day would hand the seller tomorrow's route -- that is, none.
     jest.useFakeTimers().setSystemTime(new Date('2026-09-20T03:30:00.000Z'));
     const { client, $queryRaw } = buildClient([]);
 
     const route = await getDailyRoute(client, SELLER_ID);
 
     expect(route.date).toBe('2026-09-19');
-    const query: Prisma.Sql = $queryRaw.mock.calls[0][0];
-    expect(query.values).toContain('2026-09-19');
+    expect(ranQuery($queryRaw).values).toContain('2026-09-19');
+  });
+
+  it('devuelve date como día calendario, no como instante', async () => {
+    const { client } = buildClient([]);
+
+    const route = await getDailyRoute(client, SELLER_ID, DATE);
+
+    // A Date here would force a timezone onto a calendar day and reintroduce
+    // the off-by-one the default exists to prevent.
+    expect(typeof route.date).toBe('string');
   });
 });
 
@@ -301,14 +381,13 @@ describe('getDailyRoute — consulta', () => {
 
     await getDailyRoute(client, SELLER_ID, DATE);
 
-    // El desempate por sv.id es lo que mantiene estables las keys de lista y
-    // la identidad de los pines entre refetches.
+    // The sv.id tiebreak is what keeps list keys and map-pin identity stable
+    // across refetches.
     expect(ranSql($queryRaw)).toMatch(
       /ORDER BY COALESCE\(rc\.sort_order, \?\) ASC, lower\(COALESCE\(c\.name, p\.name\)\) ASC, sv\.id ASC/
     );
-    // 32767 = máximo de smallint: manda extras y prospectos al final.
-    const query: Prisma.Sql = $queryRaw.mock.calls[0][0];
-    expect(query.values).toContain(32767);
+    // 32767 = smallint's maximum: sends extras and prospects to the end.
+    expect(ranQuery($queryRaw).values).toContain(32767);
   });
 
   it('no reordena en memoria lo que la base ya ordenó', async () => {
@@ -328,22 +407,69 @@ describe('getDailyRoute — consulta', () => {
 
     await getDailyRoute(client, SELLER_ID, DATE);
 
-    // scheduled_visit_route_user_date_idx lidera por route_user_id: al revés,
-    // el planner no tiene por dónde buscar y cae en seq scan.
+    // scheduled_visit_route_user_date_idx leads on route_user_id: the other
+    // way round the planner has nothing to seek on and falls back to a seq
+    // scan.
     expect(ranSql($queryRaw)).toContain('FROM route_user ru');
-    const query: Prisma.Sql = $queryRaw.mock.calls[0][0];
-    expect(query.values).toContain(SELLER_ID);
+    expect(ranQuery($queryRaw).values).toContain(SELLER_ID);
   });
 
-  it('filtra deleted_at en las seis tablas que toca', async () => {
+  it('filtra deleted_at en las siete tablas que toca', async () => {
     const { client, $queryRaw } = buildClient([]);
 
     await getDailyRoute(client, SELLER_ID, DATE);
 
-    const sql = ranSql($queryRaw);
-    for (const alias of ['ru', 'sv', 'c', 'p', 'rc', 'v']) {
-      expect(sql).toContain(`${alias}.deleted_at IS NULL`);
+    const clauses = clausesOf(ranSql($queryRaw));
+
+    // route_user is the driving table, so its predicate belongs in the WHERE.
+    expect(clauses.where).toContain('ru.deleted_at IS NULL');
+
+    // Every joined table carries its own, inside its own ON clause.
+    for (const alias of ['r', 'sv', 'c', 'p', 'rc', 'v']) {
+      expect(clauses.on[alias]).toContain(`${alias}.deleted_at IS NULL`);
     }
+  });
+
+  it('mantiene los predicados de las tablas opcionales en el ON y no en el WHERE', async () => {
+    const { client, $queryRaw } = buildClient([]);
+
+    await getDailyRoute(client, SELLER_ID, DATE);
+
+    const clauses = clausesOf(ranSql($queryRaw));
+
+    // Moving any of these into the WHERE turns its LEFT JOIN into an inner
+    // join and silently drops stops -- a stop at a customer with no live
+    // route_customer row would vanish instead of coming back as an extra.
+    for (const alias of ['c', 'p', 'rc', 'v']) {
+      expect(clauses.kind[alias]).toBe('left');
+      expect(clauses.where).not.toContain(`${alias}.deleted_at IS NULL`);
+    }
+  });
+
+  it('une route con INNER JOIN, porque route.name no puede ser null', async () => {
+    const { client, $queryRaw } = buildClient([]);
+
+    await getDailyRoute(client, SELLER_ID, DATE);
+
+    const clauses = clausesOf(ranSql($queryRaw));
+
+    // Deliberate, and the one place this query drops a live scheduled_visit on
+    // purpose: a LEFT JOIN would let a soft-deleted route project a null name
+    // and make RouteRef.name: string a lie.
+    expect(clauses.kind['r']).toBe('inner');
+    expect(clauses.kind['sv']).toBe('inner');
+  });
+
+  it('descarta la parada cuyo destino fue borrado en blando', async () => {
+    const { client, $queryRaw } = buildClient([]);
+
+    await getDailyRoute(client, SELLER_ID, DATE);
+
+    // Same class of silent drop as the route INNER JOIN: the contract says
+    // `name` is never null, and a soft-deleted target has no name to give.
+    expect(clausesOf(ranSql($queryRaw)).where).toContain(
+      'COALESCE(c.id, p.id) IS NOT NULL'
+    );
   });
 
   it('enlaza la ejecución por scheduled_visit_id, no por una heurística', async () => {
@@ -351,18 +477,45 @@ describe('getDailyRoute — consulta', () => {
 
     await getDailyRoute(client, SELLER_ID, DATE);
 
-    // visit_scheduled_visit_uq es lo que prueba que el LEFT JOIN devuelve como
-    // mucho una fila de ejecución por parada planificada.
-    expect(ranSql($queryRaw)).toContain(
-      'LEFT JOIN visit v ON v.scheduled_visit_id = sv.id'
-    );
+    const clauses = clausesOf(ranSql($queryRaw));
+
+    // visit_scheduled_visit_uq is what proves this LEFT JOIN returns at most
+    // one execution row per planned stop. A (customer, route_user, day)
+    // heuristic could not tell a dispatch from a collection at the same
+    // customer on the same day.
+    expect(clauses.on['v']).toContain('v.scheduled_visit_id = sv.id');
+    expect(clauses.on['v']).not.toContain('customer_id');
   });
 
-  it('deriva is_extra de la ausencia de route_customer vivo', async () => {
+  it('deriva is_extra de la ausencia de un route_customer vivo', async () => {
     const { client, $queryRaw } = buildClient([]);
 
     await getDailyRoute(client, SELLER_ID, DATE);
 
-    expect(ranSql($queryRaw)).toContain('(rc.id IS NULL) AS is_extra');
+    const sql = ranSql($queryRaw);
+    const clauses = clausesOf(sql);
+
+    expect(sql).toContain('(rc.id IS NULL) AS is_extra');
+    // "Live route_customer row for THIS route and THIS customer" -- drop any
+    // of the three and is_extra stops meaning what the contract says.
+    expect(clauses.on['rc']).toContain('rc.route_id = ru.route_id');
+    expect(clauses.on['rc']).toContain('rc.customer_id = sv.customer_id');
+    expect(clauses.on['rc']).toContain('rc.deleted_at IS NULL');
+  });
+
+  it('lee zone y municipality solo de customer, nunca del prospecto', async () => {
+    const { client, $queryRaw } = buildClient([]);
+
+    await getDailyRoute(client, SELLER_ID, DATE);
+
+    const sql = ranSql($queryRaw);
+
+    // This projection is the whole reason a prospect's zone and municipality
+    // are always null. `prospect` has no such columns, so a COALESCE here
+    // would have to invent them.
+    expect(sql).toContain('c.zone AS zone');
+    expect(sql).toContain('c.municipality AS municipality');
+    expect(sql).not.toMatch(/COALESCE\(c\.zone/);
+    expect(sql).not.toMatch(/COALESCE\(c\.municipality/);
   });
 });
