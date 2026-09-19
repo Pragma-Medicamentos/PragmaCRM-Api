@@ -5,6 +5,7 @@ import { MeRoutes } from './me/routes';
 import { AuthRoutes } from './auth/routes';
 import { SellersRoutes } from './sellers/routes';
 import { CustomersRoutes } from './customers/routes';
+import { DailyRouteRoutes } from './daily-route/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
@@ -31,6 +32,17 @@ export class AppRoutes {
       UploadsRoutes.routes
     );
     router.use('/api/v1/me', MeRoutes.routes);
+
+    // Must stay after the '/api/v1/me' mount above: MeRoutes only declares
+    // GET '/', so '/api/v1/me/route' falls through to this router today, but
+    // any future GET '/:param' added to MeRoutes would shadow it first.
+    // First ROLES.SELLER route in the repo: that guard path never ran before.
+    router.use(
+      '/api/v1/me/route',
+      requireAuth,
+      requireRole(ROLES.SELLER),
+      DailyRouteRoutes.routes
+    );
 
     // Public: sends OTP for accounts provisioned by the API (sellers/admins).
     router.use('/api/v1/auth', AuthRoutes.routes);
