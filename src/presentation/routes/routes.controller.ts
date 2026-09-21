@@ -7,6 +7,7 @@ import {
   CreateRouteInput,
   ListRoutesQuery,
   ReassignRouteInput,
+  RouteAssignmentParams,
   RouteParams,
   UpdateRouteInput,
 } from '../../domain/schemas/route.schema';
@@ -17,6 +18,7 @@ import {
   getRouteById,
   listRouteAssignments,
   listRoutes,
+  unassignRouteDay,
   updateRoute,
 } from '../../services/route.service';
 import { assignRoute } from '../../use-cases/assign-route.use-case';
@@ -135,6 +137,21 @@ export class RoutesController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'RoutesController.reassign');
+    }
+  }
+
+  public async unassign(req: Request, res: Response) {
+    try {
+      const { id, day } = req.params as unknown as RouteAssignmentParams;
+      await unassignRouteDay(prisma, id, day);
+
+      const response: ApiResponse<null> = {
+        success: true,
+        message: 'Assignment removed successfully',
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'RoutesController.unassign');
     }
   }
 }

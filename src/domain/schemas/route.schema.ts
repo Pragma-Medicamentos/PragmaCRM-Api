@@ -32,6 +32,12 @@ export const routeParamsSchema = z.object({
 
 export type RouteParams = z.infer<typeof routeParamsSchema>;
 
+export const routeAssignmentParamsSchema = routeParamsSchema.extend({
+  day: z.coerce.number().int().min(1, 'day must be between 1 and 7').max(7, 'day must be between 1 and 7'),
+});
+
+export type RouteAssignmentParams = z.infer<typeof routeAssignmentParamsSchema>;
+
 export const listRoutesQuerySchema = z.object({
   active: z
     .enum(['true', 'false'])

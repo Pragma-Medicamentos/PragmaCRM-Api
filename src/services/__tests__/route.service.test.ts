@@ -9,6 +9,7 @@ import {
   listRouteAssignments,
   listRoutes,
   softDeleteRouteAssignment,
+  unassignRouteDay,
   updateRoute,
 } from '../route.service';
 
@@ -239,6 +240,31 @@ describe('createRouteAssignment', () => {
       })
     );
     expect(result).toMatchObject({ id: ASSIGNMENT_ID, user_name: 'Juan Pérez' });
+  });
+});
+
+describe('unassignRouteDay', () => {
+  it('throws 404 when there is no active assignment for that day', async () => {
+    const client = buildClient({ route_user: { findFirst: jest.fn().mockResolvedValue(null) } });
+
+    await expect(unassignRouteDay(client, ROUTE_ID, 3)).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('soft-deletes the active assignment', async () => {
+    const findFirst = jest
+      .fn()
+      .mockResolvedValue({ id: ASSIGNMENT_ID, user_id: USER_ID });
+    const update = jest.fn().mockResolvedValue({});
+    const client = buildClient({ route_user: { findFirst, update } });
+
+    await unassignRouteDay(client, ROUTE_ID, 3);
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: ASSIGNMENT_ID },
+        data: expect.objectContaining({ deleted_at: expect.any(Date) }),
+      })
+    );
   });
 });
 

@@ -10,6 +10,7 @@ import {
   createRouteSchema,
   listRoutesQuerySchema,
   reassignRouteSchema,
+  routeAssignmentParamsSchema,
   routeParamsSchema,
   updateRouteSchema,
 } from '../../domain/schemas/route.schema';
@@ -46,6 +47,11 @@ export class RoutesRoutes {
       validateParams(routeParamsSchema),
       validateBody(reassignRouteSchema),
       controller.reassign
+    );
+    router.delete(
+      '/:id/assignments/:day',
+      validateParams(routeAssignmentParamsSchema),
+      controller.unassign
     );
 
     return router;

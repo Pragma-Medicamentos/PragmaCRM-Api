@@ -7,6 +7,7 @@ import {
   getRouteById,
   listRouteAssignments,
   listRoutes,
+  unassignRouteDay,
   updateRoute,
 } from '../../../services/route.service';
 import { assignRoute } from '../../../use-cases/assign-route.use-case';
@@ -38,6 +39,7 @@ jest.mock('../../../services/route.service', () => ({
   createRoute: jest.fn(),
   updateRoute: jest.fn(),
   listRouteAssignments: jest.fn(),
+  unassignRouteDay: jest.fn(),
 }));
 
 jest.mock('../../../use-cases/assign-route.use-case', () => ({
@@ -53,6 +55,7 @@ const getRouteByIdMock = getRouteById as jest.Mock;
 const createRouteMock = createRoute as jest.Mock;
 const updateRouteMock = updateRoute as jest.Mock;
 const listRouteAssignmentsMock = listRouteAssignments as jest.Mock;
+const unassignRouteDayMock = unassignRouteDay as jest.Mock;
 const assignRouteMock = assignRoute as jest.Mock;
 const reassignRouteMock = reassignRoute as jest.Mock;
 
@@ -252,5 +255,32 @@ describe('POST /api/v1/routes/:id/reassign', () => {
       .send({ user_id: USER_ID, day: 1 });
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe('DELETE /api/v1/routes/:id/assignments/:day', () => {
+  it('removes the assignment for that day', async () => {
+    unassignRouteDayMock.mockResolvedValue(undefined);
+
+    const res = await request(app).delete(`/api/v1/routes/${ROUTE_ID}/assignments/1`).set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(unassignRouteDayMock).toHaveBeenCalledWith(expect.anything(), ROUTE_ID, 1);
+  });
+
+  it('rejects a day outside 1-7', async () => {
+    const res = await request(app).delete(`/api/v1/routes/${ROUTE_ID}/assignments/9`).set(AUTH);
+
+    expect(res.status).toBe(400);
+    expect(unassignRouteDayMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates the 404 when there is no active assignment', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    unassignRouteDayMock.mockRejectedValue(CustomError.notFound('No active assignment for this day'));
+
+    const res = await request(app).delete(`/api/v1/routes/${ROUTE_ID}/assignments/1`).set(AUTH);
+
+    expect(res.status).toBe(404);
   });
 });

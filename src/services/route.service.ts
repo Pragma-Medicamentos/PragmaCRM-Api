@@ -186,7 +186,22 @@ export const lockRouteDay = (
   day: number
 ): Promise<unknown> => {
   const key = `${routeId}:${day}`;
-  return client.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+  // pg_advisory_xact_lock returns void, which the pg driver adapter cannot
+  // decode as a $queryRaw result column (P2010/UnsupportedNativeDataType).
+  // $executeRaw only reports the affected-row count, so it sidesteps that.
+  return client.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${key}))`;
+};
+
+/** Vacates a day with no replacement vendor — the symmetric operation to createRouteAssignment. */
+export const unassignRouteDay = async (
+  client: Client,
+  routeId: string,
+  day: number
+): Promise<void> => {
+  const current = await getActiveAssignmentForDay(client, routeId, day);
+  if (!current) throw CustomError.notFound('No active assignment for this day');
+
+  await softDeleteRouteAssignment(client, current.id);
 };
 
 export const softDeleteRouteAssignment = (
