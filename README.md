@@ -386,15 +386,21 @@ y el detalle está en [docs/Contexto_KPIs_Pragma_CRM.md](./docs/Contexto_KPIs_Pr
 `multipart/form-data`, en el campo `file`. El tamaño máximo lo fija
 `UPLOAD_MAX_FILE_SIZE_MB` (100 por defecto).
 
-> **Al desplegar detrás de nginx hay que subir `client_max_body_size` al mismo
-> valor.** Por defecto nginx corta en **1 MB** y responde un 413 en HTML antes
-> de que la petición llegue a la API — con esa configuración ni siquiera un
-> export mensual de 5 MB pasaría, y el dashboard no podría mostrar el mensaje
-> de error real.
+> **El proxy que quede delante tiene que permitir un body de ese tamaño.** Si
+> lo corta, responde un 413 en HTML antes de que la petición llegue a la API y
+> el dashboard no puede mostrar el mensaje de error real.
+>
+> En el VPS el proxy es **Traefik** (lo gestiona Dokploy) y no impone límite de
+> body por defecto: no hay nada que configurar. Solo si alguien pone **nginx**
+> delante hay que subir el límite, porque corta en 1 MB — con eso ni un export
+> mensual de 5 MB pasaría:
+>
+> ```nginx
+> client_max_body_size 100m;
+> ```
 
-```nginx
-client_max_body_size 100m;
-```
+El archivo se procesa **en memoria**, así que el contenedor necesita holgura:
+ver la nota de memoria en [docs/DEPLOY_DOKPLOY.md](./docs/DEPLOY_DOKPLOY.md).
 
 ## Despliegue de migraciones
 
@@ -405,7 +411,16 @@ Ver [docs/CI_CD.md](./docs/CI_CD.md).
 
 ## Docker
 
+Probar la imagen en local, la misma que Dokploy construye en el VPS:
+
 ```bash
-docker build -t pragmacrm-api .
-docker run --rm -p 3000:3000 --env-file .env pragmacrm-api
+docker build -t pragmacrm-api:local .
+docker run --rm -p 3000:3000 --env-file .env --name pcrm pragmacrm-api:local
 ```
+
+El contenedor arranca con `node dist/app.js` (el `CMD` de la imagen). **No usar
+`npm start`**: ese script recompila con `tsc`, que es una devDependency y no
+está en la etapa de runtime.
+
+El despliegue en el VPS —variables por entorno, dominio, memoria, verificación
+y rollback— está en [docs/DEPLOY_DOKPLOY.md](./docs/DEPLOY_DOKPLOY.md).

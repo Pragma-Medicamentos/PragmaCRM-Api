@@ -1,0 +1,60 @@
+# Contexto de build. Todo lo que no excluyamos aqui se sube al daemon de Docker
+# en cada build, aunque el Dockerfile no lo copie nunca.
+#
+# El Dockerfile solo hace COPY de: package*.json, prisma/, tsconfig.json y src/.
+
+# Dependencias: se reinstalan con `npm ci` dentro de la imagen. Las de la
+# maquina local ademas estan compiladas para Windows.
+node_modules/
+
+# Artefactos de build y de pruebas: la imagen compila su propio dist/.
+dist/
+build/
+coverage/
+
+# Secretos. Ningun COPY los alcanza, pero no tienen por que viajar al daemon.
+.env
+.env.*
+!.env.template
+!.env.test.example
+*.pem
+
+# Cliente de Prisma: el build lo regenera para Linux (`npx prisma generate`).
+# Copiar el generado en Windows solo arriesga pisarlo.
+src/generated/
+generated/
+
+# Historial y automatizacion: irrelevantes para el runtime.
+.git/
+.gitignore
+.github/
+.vscode/
+.claude/
+
+# Base de datos: las migraciones las aplica GitHub Actions, no el contenedor.
+supabase/
+prisma.config.ts
+
+# Documentacion y material de apoyo pesado.
+docs/
+*.md
+!README.md
+LICENSE
+
+# Datos de ejemplo y fixtures (ventas_json_example.json pesa 5.5 MB).
+test-files/
+ventas_json_example.json
+
+# Tests: tsconfig incluye src/**/*, asi que sin esta exclusion acabarian
+# compilados dentro de dist/. Ningun archivo de produccion los importa.
+src/**/__tests__/
+
+# Herramientas que solo corren en local.
+scripts/
+eslint.config.js
+.prettierrc
+.prettierignore
+jest.config.js
+jest.integration.config.js
+Dockerfile
+.dockerignore
