@@ -117,8 +117,8 @@ afterAll(async () => {
   await prisma.product.deleteMany({ where: { erp_product_id: 2 } });
   await prisma.app_user.delete({ where: { id: adminId } });
   await prisma.$executeRaw`delete from auth.users where id = ${ADMIN_AUTH_ID}::uuid`;
-  await prisma.$disconnect();
-  server.close();
+  // close() disconnects Prisma too.
+  await server.close();
 });
 
 describe('upload of the real ERP export', () => {
