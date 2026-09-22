@@ -13,9 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Misma version que la imagen de produccion (node:24-alpine).
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - run: npm ci
@@ -29,6 +30,17 @@ jobs:
       - run: npm run lint
       - run: npm run tsc
       - run: npm run test
+
+  # `npm run tsc` compila con --noEmit: nadie ejecuta el build real ni arranca
+  # dist/app.js. Este job construye la misma imagen que Dokploy levanta en el
+  # VPS, para que un fallo de build aparezca en el PR y no en el despliegue.
+  # Solo construye: no publica en ningun registry.
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: docker build -t pragmacrm-api:ci .
 
   validate-migrations:
     runs-on: ubuntu-latest
