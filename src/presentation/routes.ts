@@ -7,6 +7,7 @@ import { SellersRoutes } from './sellers/routes';
 import { CustomersRoutes } from './customers/routes';
 import { RoutesRoutes } from './routes/routes';
 import { VisitsRoutes } from './visits/routes';
+import { ProspectsRoutes } from './prospects/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
@@ -69,6 +70,14 @@ export class AppRoutes {
       requireAuth,
       requireRole(ROLES.SELLER),
       VisitsRoutes.routes
+    );
+
+    // PCRM-62: prospect registration from the field. Only the Vendedor creates prospects.
+    router.use(
+      '/api/v1/prospects',
+      requireAuth,
+      requireRole(ROLES.SELLER),
+      ProspectsRoutes.routes
     );
 
     // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
