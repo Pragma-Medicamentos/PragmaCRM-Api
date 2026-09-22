@@ -262,4 +262,33 @@ describe('PATCH /api/v1/customers/:id/location', () => {
       locationBody
     );
   });
+
+  it('acepta address y place_id opcionales de Places', async () => {
+    const body = {
+      ...locationBody,
+      address: 'Av. La Revolución 123, San Salvador',
+      place_id: 'ChIJplace123',
+    };
+    updateCustomerLocationMock.mockResolvedValue({
+      id: CUSTOMER_ID,
+      name: 'Farmacia San José',
+      address: body.address,
+      place_id: body.place_id,
+      location: { lat: 13.6929, lng: -89.2182 },
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/customers/${CUSTOMER_ID}/location`)
+      .set(AUTH)
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.address).toBe(body.address);
+    expect(res.body.data.place_id).toBe(body.place_id);
+    expect(updateCustomerLocationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      CUSTOMER_ID,
+      body
+    );
+  });
 });

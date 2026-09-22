@@ -320,6 +320,7 @@ describe('updateCustomerLocation', () => {
     trade_name: null,
     establishment_type: null,
     address: null,
+    place_id: null,
     municipality: null,
     zone: null,
     phone: null,
@@ -359,5 +360,53 @@ describe('updateCustomerLocation', () => {
 
     expect(client.$executeRaw).toHaveBeenCalledTimes(1);
     expect(core.location).toEqual({ lat: 13.6929, lng: -89.2182 });
+  });
+
+  it('persiste address y place_id cuando vienen en el body', async () => {
+    const update = jest.fn().mockResolvedValue({});
+    const client = buildClient({
+      customer: {
+        findFirst: jest.fn().mockResolvedValue({ id: CUSTOMER_ID }),
+        update,
+      },
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      $queryRaw: jest.fn().mockResolvedValue([
+        coreRow({
+          address: 'Av. La Revolución 123, San Salvador',
+          place_id: 'ChIJplace123',
+        }),
+      ]),
+    });
+
+    const core = await updateCustomerLocation(client, CUSTOMER_ID, {
+      ...locationInput,
+      address: 'Av. La Revolución 123, San Salvador',
+      place_id: 'ChIJplace123',
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CUSTOMER_ID },
+      data: {
+        address: 'Av. La Revolución 123, San Salvador',
+        place_id: 'ChIJplace123',
+      },
+    });
+    expect(core.address).toBe('Av. La Revolución 123, San Salvador');
+    expect(core.place_id).toBe('ChIJplace123');
+  });
+
+  it('omite address/place_id si no vienen (no toca columnas)', async () => {
+    const update = jest.fn();
+    const client = buildClient({
+      customer: {
+        findFirst: jest.fn().mockResolvedValue({ id: CUSTOMER_ID }),
+        update,
+      },
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      $queryRaw: jest.fn().mockResolvedValue([coreRow()]),
+    });
+
+    await updateCustomerLocation(client, CUSTOMER_ID, locationInput);
+    expect(update).not.toHaveBeenCalled();
   });
 });
