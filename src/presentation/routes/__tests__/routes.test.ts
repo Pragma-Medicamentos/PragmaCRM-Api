@@ -3,15 +3,20 @@ import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
 import { envs } from '../../../config/envs';
 import {
+  addRouteStop,
   createRoute,
   getRouteById,
   listRouteAssignments,
+  listRouteStops,
   listRoutes,
+  softDeleteRouteStop,
   unassignRouteDay,
   updateRoute,
+  updateRouteStop,
 } from '../../../services/route.service';
 import { assignRoute } from '../../../use-cases/assign-route.use-case';
 import { reassignRoute } from '../../../use-cases/reassign-route.use-case';
+import { reorderRouteStops } from '../../../use-cases/reorder-route-stops.use-case';
 
 // The routes module is admin-only (RF-04). The auth chain is stubbed so these
 // tests keep exercising the HTTP layer, not token verification.
@@ -40,6 +45,10 @@ jest.mock('../../../services/route.service', () => ({
   updateRoute: jest.fn(),
   listRouteAssignments: jest.fn(),
   unassignRouteDay: jest.fn(),
+  listRouteStops: jest.fn(),
+  addRouteStop: jest.fn(),
+  updateRouteStop: jest.fn(),
+  softDeleteRouteStop: jest.fn(),
 }));
 
 jest.mock('../../../use-cases/assign-route.use-case', () => ({
@@ -50,6 +59,10 @@ jest.mock('../../../use-cases/reassign-route.use-case', () => ({
   reassignRoute: jest.fn(),
 }));
 
+jest.mock('../../../use-cases/reorder-route-stops.use-case', () => ({
+  reorderRouteStops: jest.fn(),
+}));
+
 const listRoutesMock = listRoutes as jest.Mock;
 const getRouteByIdMock = getRouteById as jest.Mock;
 const createRouteMock = createRoute as jest.Mock;
@@ -58,6 +71,11 @@ const listRouteAssignmentsMock = listRouteAssignments as jest.Mock;
 const unassignRouteDayMock = unassignRouteDay as jest.Mock;
 const assignRouteMock = assignRoute as jest.Mock;
 const reassignRouteMock = reassignRoute as jest.Mock;
+const listRouteStopsMock = listRouteStops as jest.Mock;
+const addRouteStopMock = addRouteStop as jest.Mock;
+const updateRouteStopMock = updateRouteStop as jest.Mock;
+const softDeleteRouteStopMock = softDeleteRouteStop as jest.Mock;
+const reorderRouteStopsMock = reorderRouteStops as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
@@ -70,6 +88,8 @@ const AUTH = {
 
 const ROUTE_ID = '9f1c2e4a-7b3d-4e21-9c88-0a5d6f2b1e10';
 const USER_ID = '8f1c2e4a-7b3d-4e21-9c88-0a5d6f2b1e11';
+const CUSTOMER_ID = '7f1c2e4a-7b3d-4e21-9c88-0a5d6f2b1e12';
+const STOP_ID = '6f1c2e4a-7b3d-4e21-9c88-0a5d6f2b1e13';
 
 const route = { id: ROUTE_ID, name: 'Zona Escalón', municipality: null, zone: null, active: true };
 const assignment = {
@@ -81,11 +101,23 @@ const assignment = {
   status: null,
 };
 
+const stop = {
+  id: STOP_ID,
+  route_id: ROUTE_ID,
+  customer_id: CUSTOMER_ID,
+  customer_name: 'Farmacia San José',
+  sort_order: 1,
+  stop_type: 'visit',
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+};
+
 beforeEach(() => {
   jest.clearAllMocks();
   listRoutesMock.mockResolvedValue([route]);
   getRouteByIdMock.mockResolvedValue(route);
   listRouteAssignmentsMock.mockResolvedValue([assignment]);
+  listRouteStopsMock.mockResolvedValue([stop]);
 });
 
 describe('GET /api/v1/routes', () => {
@@ -280,6 +312,186 @@ describe('DELETE /api/v1/routes/:id/assignments/:day', () => {
     unassignRouteDayMock.mockRejectedValue(CustomError.notFound('No active assignment for this day'));
 
     const res = await request(app).delete(`/api/v1/routes/${ROUTE_ID}/assignments/1`).set(AUTH);
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/v1/routes/:id/stops', () => {
+  it('returns the active stops for the route', async () => {
+    const res = await request(app).get(`/api/v1/routes/${ROUTE_ID}/stops`).set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual([stop]);
+  });
+
+  it('propagates a 404 when the route does not exist', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    getRouteByIdMock.mockRejectedValue(CustomError.notFound('Route not found'));
+
+    const res = await request(app).get(`/api/v1/routes/${ROUTE_ID}/stops`).set(AUTH);
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /api/v1/routes/:id/stops', () => {
+  it('adds a customer to the route', async () => {
+    addRouteStopMock.mockResolvedValue(stop);
+
+    const res = await request(app)
+      .post(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({ customer_id: CUSTOMER_ID });
+
+    expect(res.status).toBe(201);
+    expect(addRouteStopMock).toHaveBeenCalledWith(
+      expect.anything(),
+      ROUTE_ID,
+      expect.objectContaining({ customer_id: CUSTOMER_ID })
+    );
+    expect(res.body.data).toEqual(stop);
+  });
+
+  it('rejects a non-uuid customer id', async () => {
+    const res = await request(app)
+      .post(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({ customer_id: 'not-a-uuid' });
+
+    expect(res.status).toBe(400);
+    expect(addRouteStopMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid stop_type', async () => {
+    const res = await request(app)
+      .post(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({ customer_id: CUSTOMER_ID, stop_type: 'delivery' });
+
+    expect(res.status).toBe(400);
+    expect(addRouteStopMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates the 409 when the customer is already an active stop', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    addRouteStopMock.mockRejectedValue(
+      CustomError.conflict('Customer is already a stop on this route')
+    );
+
+    const res = await request(app)
+      .post(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({ customer_id: CUSTOMER_ID });
+
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('PUT /api/v1/routes/:id/stops/order', () => {
+  it('reorders the active stops', async () => {
+    reorderRouteStopsMock.mockResolvedValue([stop]);
+
+    const res = await request(app)
+      .put(`/api/v1/routes/${ROUTE_ID}/stops/order`)
+      .set(AUTH)
+      .send({ stop_ids: [STOP_ID] });
+
+    expect(res.status).toBe(200);
+    expect(reorderRouteStopsMock).toHaveBeenCalledWith(expect.anything(), ROUTE_ID, [STOP_ID]);
+    expect(res.body.data).toEqual([stop]);
+  });
+
+  it('rejects an empty stop_ids array', async () => {
+    const res = await request(app)
+      .put(`/api/v1/routes/${ROUTE_ID}/stops/order`)
+      .set(AUTH)
+      .send({ stop_ids: [] });
+
+    expect(res.status).toBe(400);
+    expect(reorderRouteStopsMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates the 400 when stop_ids do not match the active set', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    reorderRouteStopsMock.mockRejectedValue(
+      CustomError.badRequest("stop_ids must match the route's current active stops exactly")
+    );
+
+    const res = await request(app)
+      .put(`/api/v1/routes/${ROUTE_ID}/stops/order`)
+      .set(AUTH)
+      .send({ stop_ids: [STOP_ID] });
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('PATCH /api/v1/routes/:id/stops/:stopId', () => {
+  it('rejects an empty body', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/routes/${ROUTE_ID}/stops/${STOP_ID}`)
+      .set(AUTH)
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(updateRouteStopMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-uuid stop id', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/routes/${ROUTE_ID}/stops/not-a-uuid`)
+      .set(AUTH)
+      .send({ stop_type: 'dispatch' });
+
+    expect(res.status).toBe(400);
+    expect(updateRouteStopMock).not.toHaveBeenCalled();
+  });
+
+  it('updates the stop', async () => {
+    updateRouteStopMock.mockResolvedValue({ ...stop, stop_type: 'dispatch' });
+
+    const res = await request(app)
+      .patch(`/api/v1/routes/${ROUTE_ID}/stops/${STOP_ID}`)
+      .set(AUTH)
+      .send({ stop_type: 'dispatch' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.stop_type).toBe('dispatch');
+  });
+
+  it('propagates the 404 when the stop does not exist', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    updateRouteStopMock.mockRejectedValue(CustomError.notFound('Stop not found'));
+
+    const res = await request(app)
+      .patch(`/api/v1/routes/${ROUTE_ID}/stops/${STOP_ID}`)
+      .set(AUTH)
+      .send({ stop_type: 'dispatch' });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('DELETE /api/v1/routes/:id/stops/:stopId', () => {
+  it('removes the stop', async () => {
+    softDeleteRouteStopMock.mockResolvedValue(undefined);
+
+    const res = await request(app)
+      .delete(`/api/v1/routes/${ROUTE_ID}/stops/${STOP_ID}`)
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(softDeleteRouteStopMock).toHaveBeenCalledWith(expect.anything(), ROUTE_ID, STOP_ID);
+  });
+
+  it('propagates the 404 when the stop does not exist', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    softDeleteRouteStopMock.mockRejectedValue(CustomError.notFound('Stop not found'));
+
+    const res = await request(app)
+      .delete(`/api/v1/routes/${ROUTE_ID}/stops/${STOP_ID}`)
+      .set(AUTH);
 
     expect(res.status).toBe(404);
   });

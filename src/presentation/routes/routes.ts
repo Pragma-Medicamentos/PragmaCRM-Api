@@ -8,11 +8,15 @@ import {
 import {
   assignRouteSchema,
   createRouteSchema,
+  createRouteStopSchema,
   listRoutesQuerySchema,
   reassignRouteSchema,
+  reorderRouteStopsSchema,
   routeAssignmentParamsSchema,
   routeParamsSchema,
+  routeStopParamsSchema,
   updateRouteSchema,
+  updateRouteStopSchema,
 } from '../../domain/schemas/route.schema';
 
 export class RoutesRoutes {
@@ -52,6 +56,32 @@ export class RoutesRoutes {
       '/:id/assignments/:day',
       validateParams(routeAssignmentParamsSchema),
       controller.unassign
+    );
+
+    router.get('/:id/stops', validateParams(routeParamsSchema), controller.listStops);
+    router.post(
+      '/:id/stops',
+      validateParams(routeParamsSchema),
+      validateBody(createRouteStopSchema),
+      controller.addStop
+    );
+    // Must precede /:id/stops/:stopId so 'order' is not parsed as a stop id.
+    router.put(
+      '/:id/stops/order',
+      validateParams(routeParamsSchema),
+      validateBody(reorderRouteStopsSchema),
+      controller.reorderStops
+    );
+    router.patch(
+      '/:id/stops/:stopId',
+      validateParams(routeStopParamsSchema),
+      validateBody(updateRouteStopSchema),
+      controller.updateStop
+    );
+    router.delete(
+      '/:id/stops/:stopId',
+      validateParams(routeStopParamsSchema),
+      controller.removeStop
     );
 
     return router;

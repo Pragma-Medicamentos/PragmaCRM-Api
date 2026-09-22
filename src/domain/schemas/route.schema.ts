@@ -70,3 +70,40 @@ export const reassignRouteSchema = z.object({
 });
 
 export type ReassignRouteInput = z.infer<typeof reassignRouteSchema>;
+
+// route_customer.stop_type mirrors scheduled_visit.stop_type / visit.visit_type
+// (CLAUDE.md 5.2): the planned stop kind on the static route package.
+export const stopTypeSchema = z.enum(['visit', 'dispatch', 'collection']);
+
+export type StopType = z.infer<typeof stopTypeSchema>;
+
+export const createRouteStopSchema = z.object({
+  customer_id: z.string().uuid('Invalid customer id'),
+  stop_type: stopTypeSchema.optional(),
+  sort_order: z.number().int().optional(),
+});
+
+export type CreateRouteStopInput = z.infer<typeof createRouteStopSchema>;
+
+export const updateRouteStopSchema = z
+  .object({
+    stop_type: stopTypeSchema.optional(),
+    sort_order: z.number().int().optional(),
+  })
+  .refine((data) => data.stop_type !== undefined || data.sort_order !== undefined, {
+    message: 'At least one field must be provided',
+  });
+
+export type UpdateRouteStopInput = z.infer<typeof updateRouteStopSchema>;
+
+export const routeStopParamsSchema = routeParamsSchema.extend({
+  stopId: z.string().uuid('Invalid stop id'),
+});
+
+export type RouteStopParams = z.infer<typeof routeStopParamsSchema>;
+
+export const reorderRouteStopsSchema = z.object({
+  stop_ids: z.array(z.string().uuid('Invalid stop id')).min(1, 'stop_ids must not be empty'),
+});
+
+export type ReorderRouteStopsInput = z.infer<typeof reorderRouteStopsSchema>;
