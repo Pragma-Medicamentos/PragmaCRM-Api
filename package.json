@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "tsnd --respawn --clear --files src/app.ts",
     "dev:debug": "tsnd --inspect --respawn --clear --files src/app.ts",
+    "dev-up": "bash scripts/dev-up.sh",
+    "seed": "npx supabase db reset",
+    "reset": "npx supabase db reset --no-seed",
+    "smoke": "bash scripts/smoke.sh",
     "build": "rimraf ./dist && tsc",
     "start": "npm run build && node dist/app.js",
     "lint": "eslint src/",

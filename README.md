@@ -12,6 +12,21 @@ Supabase y Prisma como cliente de acceso a datos.
 ## Puesta en marcha
 
 ```bash
+npm install
+npm run dev-up
+```
+
+`npm run dev-up` (`scripts/dev-up.sh`) hace todo el bootstrap: copia `.env.template` a `.env` si
+falta, levanta Supabase local, corre `prisma generate`, arranca `npm run dev` en background y
+espera a `/api/health`. Al terminar imprime el mapa de puertos y los nombres de las variables
+críticas (sin secretos) — detalle completo en [docs/dx-ports-env.md](./docs/dx-ports-env.md).
+
+> La primera vez, `npx supabase start` descarga varias imágenes de Docker y puede tardar unos
+> minutos. Si falla con `failed to connect to the docker API`, Docker Desktop no está arriba.
+
+Los pasos manuales, por si hace falta ejecutarlos por separado:
+
+```bash
 # 1. Variables de entorno
 cp .env.template .env
 
@@ -31,25 +46,28 @@ npm run dev
 Comprobación rápida:
 
 ```bash
-curl http://localhost:3000/api/health
+npm run smoke
+# GET http://localhost:3000/api/health
 # {"success":true,"message":"API is healthy","data":{"uptime":1.2,"version":"1.0.0"}}
 ```
 
-> La primera vez, `npx supabase start` descarga varias imágenes de Docker y puede tardar unos
-> minutos. Si falla con `failed to connect to the docker API`, Docker Desktop no está arriba.
-
 ## Scripts
 
-| Script                     | Qué hace                                    |
-| -------------------------- | ------------------------------------------- |
-| `npm run dev`              | Servidor con hot-reload                     |
+| Script                     | Qué hace                                                    |
+| -------------------------- | ------------------------------------------------------------ |
+| `npm run dev-up`           | Bootstrap completo: Supabase local + prisma generate + Api + smoke |
+| `npm run dev`              | Servidor con hot-reload                                       |
+| `npm run build`            | Compila a `dist/`                                             |
+| `npm run start`            | Build + ejecuta el compilado                                  |
+| `npm run seed`             | Reset de la DB local aplicando el seed (`supabase/seed.sql`)  |
+| `npm run reset`            | Reset de la DB local sin seed (solo migraciones)              |
+| `npm run smoke`            | Health check + OTP dry-run contra la Api ya levantada         |
+| `npm run lint`             | ESLint sobre `src/`                                           |
+| `npm run tsc`              | Type-check sin emitir                                         |
+| `npm run test`             | Tests unitarios                                               |
+| `npm run test:integration` | Tests de integración (requiere `.env.test`)                   |
 
-| `npm run build`            | Compila a `dist/`                           |
-| `npm run start`            | Build + ejecuta el compilado                |
-| `npm run lint`             | ESLint sobre `src/`                         |
-| `npm run tsc`              | Type-check sin emitir                       |
-| `npm run test`             | Tests unitarios                             |
-| `npm run test:integration` | Tests de integración (requiere `.env.test`) |
+Detalle de puertos y variables de entorno (Api/Web/Mobile): [docs/dx-ports-env.md](./docs/dx-ports-env.md).
 
 ## Base de datos
 
