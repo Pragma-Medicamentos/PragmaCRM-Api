@@ -17,9 +17,17 @@ Gate de transporte: header **`x-api-key`** (mismo valor en Api/Web/Mobile). Exen
 | Web (Vite)              | **5173**  | default; `CORS_ORIGIN` suele apuntar aca             |
 | Mobile (Metro/Expo)     | **8081**  | default, sin pin fijo                                |
 
-Arranque tipico: `npx supabase start` (en este repo, Api) → Api en 3000 → Web `vite` en 5173 → Mobile `expo start`.
+Con un solo comando (ver README, seccion "Puesta en marcha"): `npm run dev-api` levanta Supabase +
+Api; `npm run dev-web` hace lo mismo y ademas Web; `npm run dev-mobile` hace lo mismo y ademas
+`expo start` (en foreground) — los dos ultimos si `PragmaCRM-Web` / `PragmaCRM-Mobile` estan
+clonados como carpeta hermana de `PragmaCRM-Api` (mismo directorio padre). Los tres devuelven la
+terminal al terminar, sin quedarse mostrando logs. `npm run dev-down` apaga lo que haya quedado
+arriba (Api, Web y Supabase; Expo se cierra aparte con Ctrl+C). `npm run log-api` sigue en vivo el
+log de la Api ya levantada (Ctrl+C solo corta la vista, no apaga nada).
 
-Con un solo comando: `npm run dev-up` (ver README, seccion "Puesta en marcha").
+Mobile no comparte el stack local de Supabase por defecto: su `.env.example` apunta a un proyecto
+real (`https://<project-ref>.supabase.co`), no a `127.0.0.1:54321`, porque un emulador o dispositivo
+fisico no siempre puede alcanzar el localhost de la Mac. Ver la tabla de variables de Mobile abajo.
 
 ## Api — variables (`.env`, ver `.env.template`)
 

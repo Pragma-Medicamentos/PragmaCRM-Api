@@ -13,13 +13,33 @@ Supabase y Prisma como cliente de acceso a datos.
 
 ```bash
 npm install
-npm run dev-up
+npm run dev-api      # Solo Api
+# o bien
+npm run dev-web      # Api + Web
+# o bien
+npm run dev-mobile   # Api + Mobile (Expo)
 ```
 
-`npm run dev-up` (`scripts/dev-up.sh`) hace todo el bootstrap: copia `.env.template` a `.env` si
-falta, levanta Supabase local, corre `prisma generate`, arranca `npm run dev` en background y
-espera a `/api/health`. Al terminar imprime el mapa de puertos y los nombres de las variables
-críticas (sin secretos) — detalle completo en [docs/dx-ports-env.md](./docs/dx-ports-env.md).
+Los tres hacen el mismo bootstrap de base: copian `.env.template` a `.env` si falta, levantan
+Supabase local, corren `prisma generate`, arrancan `npm run dev` en background y esperan a
+`/api/health`. Al terminar imprimen el mapa de puertos (Supabase Studio, Mail, Web) y los nombres
+de las variables críticas (sin secretos) y devuelven la terminal — detalle completo en
+[docs/dx-ports-env.md](./docs/dx-ports-env.md). Para ver los logs de la Api en vivo despues,
+`npm run log-api` (Ctrl+C solo corta la vista, la Api sigue corriendo).
+
+`npm run dev-api` (`scripts/dev-api.sh`) hace solo la parte de Api, sin tocar Web ni Mobile.
+
+`npm run dev-web` (`scripts/dev-web.sh`) además, **si `PragmaCRM-Web` existe como carpeta hermana**
+(mismo padre que `PragmaCRM-Api`), copia su `.env`, levanta `npm run dev` de Web en background y
+espera a que responda en `http://localhost:5173`.
+
+`npm run dev-mobile` (`scripts/dev-mobile.sh`) además, **si `PragmaCRM-Mobile` existe como carpeta
+hermana**, copia su `.env` si falta y arranca `npx expo start`. A diferencia de Web, Expo se deja en
+**foreground** — su CLI es interactivo (QR, teclas `a`/`i`/`w` para abrir Android/iOS/Web) — así que
+el script no vuelve hasta que salís de Expo con Ctrl+C; Api y Supabase quedan corriendo igual y se
+apagan después con `npm run dev-down`. El `.env` de Mobile no apunta al stack local por defecto
+(usa un proyecto real de Supabase y necesita la URL de la Api según el destino: emulador Android,
+simulador iOS o dispositivo físico) — el script te dice qué completar a mano la primera vez.
 
 > La primera vez, `npx supabase start` descarga varias imágenes de Docker y puede tardar unos
 > minutos. Si falla con `failed to connect to the docker API`, Docker Desktop no está arriba.
@@ -55,7 +75,11 @@ npm run smoke
 
 | Script                     | Qué hace                                                    |
 | -------------------------- | ------------------------------------------------------------ |
-| `npm run dev-up`           | Bootstrap completo: Supabase local + prisma generate + Api + smoke |
+| `npm run dev-api`          | Bootstrap solo Api: Supabase local + prisma generate + Api + smoke |
+| `npm run dev-web`          | Igual que `dev-api`, y ademas Web (si esta clonado como carpeta hermana) |
+| `npm run dev-mobile`       | Igual que `dev-api`, y ademas `expo start` en foreground (si Mobile esta clonado como carpeta hermana) |
+| `npm run dev-down`         | Apaga Api, Web y Supabase local levantados por `dev-api` / `dev-web` / `dev-mobile` |
+| `npm run log-api`          | Sigue en vivo el log de la Api ya levantada (Ctrl+C para dejar de ver, la Api sigue corriendo) |
 | `npm run dev`              | Servidor con hot-reload                                       |
 | `npm run build`            | Compila a `dist/`                                             |
 | `npm run start`            | Build + ejecuta el compilado                                  |
