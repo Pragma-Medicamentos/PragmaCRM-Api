@@ -72,13 +72,9 @@ export class AppRoutes {
       VisitsRoutes.routes
     );
 
-    // PCRM-62: prospect registration from the field. Only the Vendedor creates prospects.
-    router.use(
-      '/api/v1/prospects',
-      requireAuth,
-      requireRole(ROLES.SELLER),
-      ProspectsRoutes.routes
-    );
+    // PCRM-62: prospects. Auth here; role per verb inside ProspectsRoutes
+    // (SELLER POST, ADMIN GET) so PCRM-64 can list without a second mount.
+    router.use('/api/v1/prospects', requireAuth, ProspectsRoutes.routes);
 
     // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
 

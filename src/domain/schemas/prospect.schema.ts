@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { paginationQuerySchema } from './pagination.schema';
 
 /**
  * ISO 8601 with an explicit offset ("2026-09-21T14:05:00-06:00" or "...Z").
@@ -28,3 +29,10 @@ export const createProspectSchema = z.object({
   captured_at: isoTimestamp,
 });
 export type CreateProspectInput = z.infer<typeof createProspectSchema>;
+
+
+/** PCRM-62 / PCRM-64: admin list of prospects. */
+export const listProspectsQuerySchema = paginationQuerySchema.extend({
+  user_id: z.string().uuid('Invalid user id').optional(),
+});
+export type ListProspectsQuery = z.infer<typeof listProspectsQuerySchema>;

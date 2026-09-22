@@ -2,9 +2,19 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
-import { CreateProspectInput } from '../../domain/schemas/prospect.schema';
-import { CreatedProspect } from '../../domain/types/prospect.types';
-import { createProspect } from '../../services/prospect.service';
+import {
+  CreateProspectInput,
+  ListProspectsQuery,
+} from '../../domain/schemas/prospect.schema';
+import {
+  CreatedProspect,
+  ProspectListItem,
+} from '../../domain/types/prospect.types';
+import { Paginated } from '../../domain/types/pagination.types';
+import {
+  createProspect,
+  listProspects,
+} from '../../services/prospect.service';
 
 export class ProspectsController {
   /**
@@ -29,6 +39,25 @@ export class ProspectsController {
       res.status(201).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'ProspectsController.create');
+    }
+  }
+
+  /**
+   * PCRM-62 / PCRM-64: paginated prospect list for the admin web. Always 200.
+   */
+  public async list(req: Request, res: Response) {
+    try {
+      const query = req.query as unknown as ListProspectsQuery;
+      const page = await listProspects(prisma, query);
+
+      const response: ApiResponse<Paginated<ProspectListItem>> = {
+        success: true,
+        message: 'Prospects retrieved successfully',
+        data: page,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProspectsController.list');
     }
   }
 }

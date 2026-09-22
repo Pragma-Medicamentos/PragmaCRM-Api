@@ -3,7 +3,7 @@ import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
 import { envs } from '../../../config/envs';
 import { CustomError } from '../../../domain/errors/CustomError';
-import { createProspect } from '../../../services/prospect.service';
+import { createProspect, listProspects } from '../../../services/prospect.service';
 import { findUserByAuthUserId } from '../../../services/auth.service';
 
 jest.mock('../../../lib/supabaseJwt', () => ({
@@ -23,9 +23,11 @@ jest.mock('../../../lib/prisma', () => ({
 
 jest.mock('../../../services/prospect.service', () => ({
   createProspect: jest.fn(),
+  listProspects: jest.fn(),
 }));
 
 const createProspectMock = createProspect as jest.Mock;
+const listProspectsMock = listProspects as jest.Mock;
 const findUserMock = findUserByAuthUserId as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
@@ -70,6 +72,24 @@ beforeEach(() => {
     created_at: '2026-09-21T20:10:00.000Z',
     captured_at: '2026-09-21T20:05:00.000Z',
     status: null,
+  });
+  listProspectsMock.mockResolvedValue({
+    items: [
+      {
+        id: 'prospect-1',
+        name: 'Farmacia El Sol',
+        phone: '7777-1234',
+        user_id: SELLER_ID,
+        seller_name: 'Seller',
+        location: { lat: 13.7, lng: -89.2 },
+        created_at: '2026-09-21T20:10:00.000Z',
+        status: null,
+      },
+    ],
+    page: 1,
+    page_size: 20,
+    total: 1,
+    total_pages: 1,
   });
 });
 
@@ -160,5 +180,63 @@ describe('POST /api/v1/prospects', () => {
 
     expect(res.status).toBe(422);
     expect(res.body.message).toBe('Seller cannot register prospects');
+  });
+});
+
+
+describe('GET /api/v1/prospects', () => {
+  beforeEach(() => {
+    findUserMock.mockResolvedValue(user('Administrador'));
+  });
+
+  it('lists prospects for the admin and answers 200', async () => {
+    const res = await request(app).get('/api/v1/prospects').set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.items).toHaveLength(1);
+    expect(res.body.data.items[0].seller_name).toBe('Seller');
+    expect(listProspectsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ page: 1, limit: 20 })
+    );
+  });
+
+  it('forwards page, limit and user_id', async () => {
+    const res = await request(app)
+      .get(`/api/v1/prospects?page=2&limit=10&user_id=${SELLER_ID}`)
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(listProspectsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ page: 2, limit: 10, user_id: SELLER_ID })
+    );
+  });
+
+  it('forbids the Vendedor', async () => {
+    findUserMock.mockResolvedValue(user('Vendedor'));
+
+    const res = await request(app).get('/api/v1/prospects').set(AUTH);
+
+    expect(res.status).toBe(403);
+    expect(listProspectsMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 without a session', async () => {
+    const res = await request(app)
+      .get('/api/v1/prospects')
+      .set({ 'x-api-key': envs.API_KEY });
+
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects an invalid user_id', async () => {
+    const res = await request(app)
+      .get('/api/v1/prospects?user_id=nope')
+      .set(AUTH);
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe('user_id');
+    expect(listProspectsMock).not.toHaveBeenCalled();
   });
 });
