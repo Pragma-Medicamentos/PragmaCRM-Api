@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 
+import { DateTime } from 'luxon';
+
+import { ERP_TIMEZONE } from '../src/lib/parseErpDate';
 import { downloadYesterdaySales } from './lib/download-efactsoft-sales';
+import { sendDailySalesEmail } from './lib/send-daily-sales-email';
 import {
   DEFAULT_CUTOFF,
   ErpSale,
@@ -61,8 +65,18 @@ const main = async (): Promise<void> => {
 
   const cutoff = process.env.DAILY_CUTOFF ?? DEFAULT_CUTOFF;
   const aggregates = summarizeYesterdaySales(sales, { cutoff });
+  const message = formatWhatsAppMessage(aggregates, cutoff);
 
-  process.stdout.write(`${formatWhatsAppMessage(aggregates, cutoff)}\n`);
+  process.stdout.write(`${message}\n`);
+
+  if (process.env.SKIP_EMAIL === 'true') return;
+
+  const yesterday = DateTime.now().setZone(ERP_TIMEZONE).minus({ days: 1 }).toFormat('dd/MM/yyyy');
+  try {
+    await sendDailySalesEmail(message, { subject: `Ventas de ayer (${yesterday})` });
+  } catch (error) {
+    return fail(`Could not send the daily sales email: ${(error as Error).message}`);
+  }
 };
 
 main().catch((error) => fail(`Unexpected error: ${(error as Error).message}`));

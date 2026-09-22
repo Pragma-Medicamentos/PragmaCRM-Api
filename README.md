@@ -396,14 +396,14 @@ y el detalle está en [docs/Contexto_KPIs_Pragma_CRM.md](./docs/Contexto_KPIs_Pr
 client_max_body_size 100m;
 ```
 
-## Resumen diario de ventas para WhatsApp
+## Resumen diario de ventas por correo
 
-`scripts/daily-sales-whatsapp-summary.ts` es un CLI de un solo uso que escribe a stdout un texto
-listo para pegar en un bot de WhatsApp, con la cantidad vendida de cada producto el día anterior.
-Solo nombre + cantidad — sin montos ni datos de cliente. No sube nada a la API ni envía mensajes:
-es puramente local.
+`scripts/daily-sales-whatsapp-summary.ts` es un CLI pensado para correr sin intervención (cron o un
+agente) que arma un texto con la cantidad vendida de cada producto el día anterior — solo nombre +
+cantidad, sin montos ni datos de cliente — lo imprime a stdout (para log o para pegar en WhatsApp a
+mano) y lo **envía por correo a `facturacion@pragmamed.com`**. No sube nada a la API.
 
-Tiene dos modos:
+Tiene dos modos para obtener las ventas:
 
 - **Por defecto (sin `--file`):** descarga el JSON de ayer directamente de Efactsoft con
   Playwright (mismo flujo de login y filtro de fechas que
@@ -443,6 +443,27 @@ Instalar el navegador de Playwright una sola vez por máquina:
 ```bash
 npx playwright install chromium
 ```
+
+**Envío de correo — variables de entorno:**
+
+El script envía el resumen por SMTP genérico ([nodemailer](https://nodemailer.com)), así que sirve
+con cualquier proveedor (buzón del VPS del cliente, Gmail con app password, Office365, etc.) sin
+atar el proyecto a una API de pago.
+
+| Variable | Requerida | Descripción |
+|---|---|---|
+| `SMTP_HOST` | Sí | Host del servidor SMTP |
+| `SMTP_PORT` | Sí | Puerto del servidor SMTP (`587` para STARTTLS, `465` para TLS implícito) |
+| `SMTP_USER` | Sí | Usuario para autenticar contra el SMTP |
+| `SMTP_PASSWORD` | Sí | Contraseña o app password del usuario SMTP |
+| `MAIL_FROM` | Sí | Dirección remitente del correo |
+| `SMTP_SECURE` | No | `true` para TLS implícito (puerto 465). Por defecto `false` (STARTTLS) |
+| `DAILY_SALES_EMAIL_TO` | No | Override del destinatario. Por defecto `facturacion@pragmamed.com` |
+| `SKIP_EMAIL` | No | `true` para imprimir el resumen a stdout sin enviar correo (pruebas locales sin SMTP) |
+
+Si falta alguna variable de SMTP requerida, o el envío falla, el proceso termina con código de
+salida distinto de cero y el error en stderr — pensado para que un cron o un agente detecte el
+fallo en vez de reportar éxito con el correo sin salir.
 
 ## Despliegue de migraciones
 
