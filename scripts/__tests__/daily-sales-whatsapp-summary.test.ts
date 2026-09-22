@@ -47,6 +47,20 @@ describe('summarizeYesterdaySales', () => {
     expect(result.find((line) => line.id_producto === 5)).toBeUndefined();
   });
 
+  it('excludes sales from a different salesperson (defaults to IRIS)', () => {
+    const result = summarizeYesterdaySales(fixtureSales, { now });
+
+    expect(result.find((line) => line.id_producto === 6)).toBeUndefined();
+  });
+
+  it('honors an explicit user, case-insensitively', () => {
+    const result = summarizeYesterdaySales(fixtureSales, { now, user: 'david' });
+
+    expect(result).toEqual([
+      { id_producto: 6, nombre: 'Otro vendedor, no debería contar', cantidad: 7 },
+    ]);
+  });
+
   it('honors a custom cutoff', () => {
     // At a 19:00 cutoff, only the 18:30 sale falls out of the window too.
     const result = summarizeYesterdaySales(fixtureSales, { now, cutoff: '19:00' });

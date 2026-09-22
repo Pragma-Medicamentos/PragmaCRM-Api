@@ -5,6 +5,9 @@ import { ERP_TIMEZONE, parseErpTimestamp } from '../../src/lib/parseErpDate';
 /** Default lower bound of "yesterday", per CLAUDE.md's daily summary rule 3. */
 export const DEFAULT_CUTOFF = '10:30';
 
+/** Default Efactsoft username (`venta.usuario`) this summary is scoped to. */
+export const DEFAULT_USER = 'IRIS';
+
 export interface ErpSaleDetailLine {
   id_producto: number;
   nombre: string;
@@ -15,6 +18,7 @@ export interface ErpSale {
   venta: {
     estado: number;
     fecha_emision: string;
+    usuario: string;
   };
   detalle: ErpSaleDetailLine[];
 }
@@ -30,6 +34,8 @@ export interface SummarizeYesterdaySalesOptions {
   now?: DateTime;
   /** Lower bound of the window, as "HH:mm" local time. Defaults to {@link DEFAULT_CUTOFF}. */
   cutoff?: string;
+  /** Efactsoft username (`venta.usuario`) to filter by, case-insensitive. Defaults to {@link DEFAULT_USER}. */
+  user?: string;
 }
 
 const parseCutoff = (cutoff: string): { hour: number; minute: number } => {
@@ -39,8 +45,9 @@ const parseCutoff = (cutoff: string): { hour: number; minute: number } => {
 
 /**
  * Aggregates quantity sold per product for "yesterday" in El Salvador,
- * counting only completed sales (estado 2) emitted at or after the cutoff
- * time on the previous calendar day and before today.
+ * counting only completed sales (estado 2) from the given salesperson
+ * (`venta.usuario`, defaults to {@link DEFAULT_USER}) emitted at or after
+ * the cutoff time on the previous calendar day and before today.
  *
  * Uses `parseErpTimestamp` for `fecha_emision` so the window boundaries are
  * evaluated in America/El_Salvador rather than the host machine's timezone
@@ -53,6 +60,7 @@ export const summarizeYesterdaySales = (
 ): ProductAggregate[] => {
   const now = options.now ?? DateTime.now().setZone(ERP_TIMEZONE);
   const { hour, minute } = parseCutoff(options.cutoff ?? DEFAULT_CUTOFF);
+  const targetUser = (options.user ?? DEFAULT_USER).trim().toLowerCase();
 
   const today = now.setZone(ERP_TIMEZONE).startOf('day');
   const windowStart = today.minus({ days: 1 }).set({ hour, minute, second: 0, millisecond: 0 });
@@ -65,6 +73,7 @@ export const summarizeYesterdaySales = (
 
   for (const sale of sales) {
     if (sale?.venta?.estado !== 2) continue;
+    if ((sale.venta.usuario ?? '').trim().toLowerCase() !== targetUser) continue;
 
     const emittedAt = parseErpTimestamp(sale.venta.fecha_emision);
     if (!emittedAt) continue;
