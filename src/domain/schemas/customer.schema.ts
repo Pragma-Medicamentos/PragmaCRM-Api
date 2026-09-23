@@ -56,6 +56,10 @@ export type ListCustomerCreditsQuery = z.infer<
 export const updateCustomerLocationSchema = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
+  /** Optional Places-formatted address. Omit = leave unchanged; null = clear. */
+  address: z.string().trim().min(1).max(500).nullable().optional(),
+  /** Optional Google Place ID. Omit = leave unchanged; null = clear. */
+  place_id: z.string().trim().min(1).max(255).nullable().optional(),
 });
 export type UpdateCustomerLocationInput = z.infer<
   typeof updateCustomerLocationSchema

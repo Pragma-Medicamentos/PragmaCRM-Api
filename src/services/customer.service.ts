@@ -353,6 +353,18 @@ export const updateCustomerLocation = async (
     WHERE id = ${id}::uuid AND deleted_at IS NULL
   `;
 
+  // address / place_id are plain columns — Prisma can write them. Only touch
+  // when the client sent the field (omit = leave unchanged; null = clear).
+  if (data.address !== undefined || data.place_id !== undefined) {
+    await client.customer.update({
+      where: { id },
+      data: {
+        ...(data.address !== undefined ? { address: data.address } : {}),
+        ...(data.place_id !== undefined ? { place_id: data.place_id } : {}),
+      },
+    });
+  }
+
   return getCustomerCore(client, id);
 };
 
@@ -582,6 +594,7 @@ interface CustomerCoreRow {
   trade_name: string | null;
   establishment_type: string | null;
   address: string | null;
+  place_id: string | null;
   municipality: string | null;
   zone: string | null;
   phone: string | null;
@@ -744,6 +757,7 @@ const customerCoreSql = (id: string): Prisma.Sql => Prisma.sql`
          c.trade_name,
          c.establishment_type,
          c.address,
+         c.place_id,
          c.municipality,
          c.zone,
          c.phone,
