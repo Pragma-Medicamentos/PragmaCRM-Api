@@ -1,11 +1,17 @@
 import 'dotenv/config';
 import { get } from 'env-var';
 
+// Application-level environment. Different from NODE_ENV: this one describes
+// the deployment (dev/staging/prod), NODE_ENV describes how Node runs and
+// must only ever be development or production.
+//
+// Read before the object below because a couple of variables are only optional
+// on a developer's machine.
+const STAGE = get('STAGE').required().asEnum(['dev', 'staging', 'prod'] as const);
+const isLocal = STAGE === 'dev';
+
 export const envs = {
-  // Application-level environment. Different from NODE_ENV: this one describes
-  // the deployment (dev/staging/prod), NODE_ENV describes how Node runs and
-  // must only ever be development or production.
-  STAGE: get('STAGE').required().asEnum(['dev', 'staging', 'prod'] as const),
+  STAGE,
   PORT: get('PORT').required().asPortNumber(),
 
   // PostgreSQL connection string. Consumed by the Prisma adapter
@@ -29,10 +35,11 @@ export const envs = {
   // memory. The peak only reaches ~330 MB if a 100 MB file is genuinely
   // uploaded, which in practice happens once, during the initial backfill.
   //
-  // MIND WHEN DEPLOYING: nginx caps at 1 MB by default and answers 413 before
-  // the request ever reaches here. `client_max_body_size` must be raised to
-  // the same value on the VPS, or the user sees nginx's HTML error instead of
-  // the ApiResponse envelope.
+  // MIND WHEN DEPLOYING: whatever proxy sits in front must allow a body this
+  // large, or the user sees the proxy's HTML error instead of the ApiResponse
+  // envelope. Traefik (what Dokploy runs on the VPS) has no body limit by
+  // default; nginx caps at 1 MB and needs `client_max_body_size` raised.
+  // See docs/DEPLOY_DOKPLOY.md.
   UPLOAD_MAX_FILE_SIZE_MB: get('UPLOAD_MAX_FILE_SIZE_MB').default('100').asIntPositive(),
   // Base URL of the Supabase project. Issuer and JWKS endpoint are derived
   // from it, so there is no point declaring three variables for one value.
@@ -48,9 +55,13 @@ export const envs = {
   // (the web dashboard's dev server and, later, its deployed origin). Not
   // needed by the Android app or server-to-server calls: those never send an
   // Origin header, so the browser-only CORS check does not apply to them.
-  CORS_ORIGIN: get('CORS_ORIGIN')
-    .default('http://localhost:5173')
-    .asString(),
+  //
+  // Required on a deployed environment: falling back to the Vite dev server
+  // there would let the API boot and then reject the dashboard silently, which
+  // reads as a frontend bug. Only `dev` keeps the default.
+  CORS_ORIGIN: isLocal
+    ? get('CORS_ORIGIN').default('http://localhost:5173').asString()
+    : get('CORS_ORIGIN').required().asString(),
 
   // Static shared secret sent in the `x-api-key` header. Every request to the
   // API except `/api/health` must present it (middleware/apiKey.ts). It is a

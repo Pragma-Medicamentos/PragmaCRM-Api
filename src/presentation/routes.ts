@@ -6,6 +6,8 @@ import { AuthRoutes } from './auth/routes';
 import { SellersRoutes } from './sellers/routes';
 import { CustomersRoutes } from './customers/routes';
 import { DailyRouteRoutes } from './daily-route/routes';
+import { RoutesRoutes } from './routes/routes';
+import { VisitsRoutes } from './visits/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
@@ -36,7 +38,10 @@ export class AppRoutes {
     // Must stay after the '/api/v1/me' mount above: MeRoutes only declares
     // GET '/', so '/api/v1/me/route' falls through to this router today, but
     // any future GET '/:param' added to MeRoutes would shadow it first.
-    // First ROLES.SELLER route in the repo: that guard path never ran before.
+    //
+    // Note it does not collide with the admin '/api/v1/routes' module mounted
+    // below: that one is RF-04 (building routes), this one is the seller's
+    // own agenda for a date, which is why it hangs off '/me'.
     router.use(
       '/api/v1/me/route',
       requireAuth,
@@ -63,6 +68,22 @@ export class AppRoutes {
       requireAuth,
       requireRole(ROLES.ADMIN),
       CustomersRoutes.routes
+    );
+
+    // RF-04: creating routes and assigning/reassigning them to vendors.
+    router.use(
+      '/api/v1/routes',
+      requireAuth,
+      requireRole(ROLES.ADMIN),
+      RoutesRoutes.routes
+    );
+
+    // RF-06: stop confirmation with GPS. Only the Vendedor executes stops.
+    router.use(
+      '/api/v1/visits',
+      requireAuth,
+      requireRole(ROLES.SELLER),
+      VisitsRoutes.routes
     );
 
     // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);

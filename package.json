@@ -6,6 +6,14 @@
   "scripts": {
     "dev": "tsnd --respawn --clear --files src/app.ts",
     "dev:debug": "tsnd --inspect --respawn --clear --files src/app.ts",
+    "dev-api": "bash scripts/dev-api.sh",
+    "dev-web": "bash scripts/dev-web.sh",
+    "dev-mobile": "bash scripts/dev-mobile.sh",
+    "dev-down": "bash scripts/dev-down.sh",
+    "log-api": "bash scripts/log-api.sh",
+    "seed": "npx supabase db reset",
+    "reset": "npx supabase db reset --no-seed",
+    "smoke": "bash scripts/smoke.sh",
     "build": "rimraf ./dist && tsc",
     "start": "npm run build && node dist/app.js",
     "lint": "eslint src/",
@@ -17,6 +25,9 @@
   "keywords": [],
   "author": "Pragma Medicamentos",
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=24"
+  },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^4.17.18",

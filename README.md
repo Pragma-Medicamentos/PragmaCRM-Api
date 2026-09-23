@@ -12,6 +12,41 @@ Supabase y Prisma como cliente de acceso a datos.
 ## Puesta en marcha
 
 ```bash
+npm install
+npm run dev-api      # Solo Api
+# o bien
+npm run dev-web      # Api + Web
+# o bien
+npm run dev-mobile   # Api + Mobile (Expo)
+```
+
+Los tres hacen el mismo bootstrap de base: copian `.env.template` a `.env` si falta, levantan
+Supabase local, corren `prisma generate`, arrancan `npm run dev` en background y esperan a
+`/api/health`. Al terminar imprimen el mapa de puertos (Supabase Studio, Mail, Web) y los nombres
+de las variables críticas (sin secretos) y devuelven la terminal — detalle completo en
+[docs/dx-ports-env.md](./docs/dx-ports-env.md). Para ver los logs de la Api en vivo despues,
+`npm run log-api` (Ctrl+C solo corta la vista, la Api sigue corriendo).
+
+`npm run dev-api` (`scripts/dev-api.sh`) hace solo la parte de Api, sin tocar Web ni Mobile.
+
+`npm run dev-web` (`scripts/dev-web.sh`) además, **si `PragmaCRM-Web` existe como carpeta hermana**
+(mismo padre que `PragmaCRM-Api`), copia su `.env`, levanta `npm run dev` de Web en background y
+espera a que responda en `http://localhost:5173`.
+
+`npm run dev-mobile` (`scripts/dev-mobile.sh`) además, **si `PragmaCRM-Mobile` existe como carpeta
+hermana**, copia su `.env` si falta y arranca `npx expo start`. A diferencia de Web, Expo se deja en
+**foreground** — su CLI es interactivo (QR, teclas `a`/`i`/`w` para abrir Android/iOS/Web) — así que
+el script no vuelve hasta que salís de Expo con Ctrl+C; Api y Supabase quedan corriendo igual y se
+apagan después con `npm run dev-down`. El `.env` de Mobile no apunta al stack local por defecto
+(usa un proyecto real de Supabase y necesita la URL de la Api según el destino: emulador Android,
+simulador iOS o dispositivo físico) — el script te dice qué completar a mano la primera vez.
+
+> La primera vez, `npx supabase start` descarga varias imágenes de Docker y puede tardar unos
+> minutos. Si falla con `failed to connect to the docker API`, Docker Desktop no está arriba.
+
+Los pasos manuales, por si hace falta ejecutarlos por separado:
+
+```bash
 # 1. Variables de entorno
 cp .env.template .env
 
@@ -31,25 +66,32 @@ npm run dev
 Comprobación rápida:
 
 ```bash
-curl http://localhost:3000/api/health
+npm run smoke
+# GET http://localhost:3000/api/health
 # {"success":true,"message":"API is healthy","data":{"uptime":1.2,"version":"1.0.0"}}
 ```
 
-> La primera vez, `npx supabase start` descarga varias imágenes de Docker y puede tardar unos
-> minutos. Si falla con `failed to connect to the docker API`, Docker Desktop no está arriba.
-
 ## Scripts
 
-| Script                     | Qué hace                                    |
-| -------------------------- | ------------------------------------------- |
-| `npm run dev`              | Servidor con hot-reload                     |
+| Script                     | Qué hace                                                    |
+| -------------------------- | ------------------------------------------------------------ |
+| `npm run dev-api`          | Bootstrap solo Api: Supabase local + prisma generate + Api + smoke |
+| `npm run dev-web`          | Igual que `dev-api`, y ademas Web (si esta clonado como carpeta hermana) |
+| `npm run dev-mobile`       | Igual que `dev-api`, y ademas `expo start` en foreground (si Mobile esta clonado como carpeta hermana) |
+| `npm run dev-down`         | Apaga Api, Web y Supabase local levantados por `dev-api` / `dev-web` / `dev-mobile` |
+| `npm run log-api`          | Sigue en vivo el log de la Api ya levantada (Ctrl+C para dejar de ver, la Api sigue corriendo) |
+| `npm run dev`              | Servidor con hot-reload                                       |
+| `npm run build`            | Compila a `dist/`                                             |
+| `npm run start`            | Build + ejecuta el compilado                                  |
+| `npm run seed`             | Reset de la DB local aplicando el seed (`supabase/seed.sql`)  |
+| `npm run reset`            | Reset de la DB local sin seed (solo migraciones)              |
+| `npm run smoke`            | Health check + OTP dry-run contra la Api ya levantada         |
+| `npm run lint`             | ESLint sobre `src/`                                           |
+| `npm run tsc`              | Type-check sin emitir                                         |
+| `npm run test`             | Tests unitarios                                               |
+| `npm run test:integration` | Tests de integración (requiere `.env.test`)                   |
 
-| `npm run build`            | Compila a `dist/`                           |
-| `npm run start`            | Build + ejecuta el compilado                |
-| `npm run lint`             | ESLint sobre `src/`                         |
-| `npm run tsc`              | Type-check sin emitir                       |
-| `npm run test`             | Tests unitarios                             |
-| `npm run test:integration` | Tests de integración (requiere `.env.test`) |
+Detalle de puertos y variables de entorno (Api/Web/Mobile): [docs/dx-ports-env.md](./docs/dx-ports-env.md).
 
 ## Base de datos
 
@@ -386,15 +428,21 @@ y el detalle está en [docs/Contexto_KPIs_Pragma_CRM.md](./docs/Contexto_KPIs_Pr
 `multipart/form-data`, en el campo `file`. El tamaño máximo lo fija
 `UPLOAD_MAX_FILE_SIZE_MB` (100 por defecto).
 
-> **Al desplegar detrás de nginx hay que subir `client_max_body_size` al mismo
-> valor.** Por defecto nginx corta en **1 MB** y responde un 413 en HTML antes
-> de que la petición llegue a la API — con esa configuración ni siquiera un
-> export mensual de 5 MB pasaría, y el dashboard no podría mostrar el mensaje
-> de error real.
+> **El proxy que quede delante tiene que permitir un body de ese tamaño.** Si
+> lo corta, responde un 413 en HTML antes de que la petición llegue a la API y
+> el dashboard no puede mostrar el mensaje de error real.
+>
+> En el VPS el proxy es **Traefik** (lo gestiona Dokploy) y no impone límite de
+> body por defecto: no hay nada que configurar. Solo si alguien pone **nginx**
+> delante hay que subir el límite, porque corta en 1 MB — con eso ni un export
+> mensual de 5 MB pasaría:
+>
+> ```nginx
+> client_max_body_size 100m;
+> ```
 
-```nginx
-client_max_body_size 100m;
-```
+El archivo se procesa **en memoria**, así que el contenedor necesita holgura:
+ver la nota de memoria en [docs/DEPLOY_DOKPLOY.md](./docs/DEPLOY_DOKPLOY.md).
 
 ## Despliegue de migraciones
 
@@ -405,7 +453,16 @@ Ver [docs/CI_CD.md](./docs/CI_CD.md).
 
 ## Docker
 
+Probar la imagen en local, la misma que Dokploy construye en el VPS:
+
 ```bash
-docker build -t pragmacrm-api .
-docker run --rm -p 3000:3000 --env-file .env pragmacrm-api
+docker build -t pragmacrm-api:local .
+docker run --rm -p 3000:3000 --env-file .env --name pcrm pragmacrm-api:local
 ```
+
+El contenedor arranca con `node dist/app.js` (el `CMD` de la imagen). **No usar
+`npm start`**: ese script recompila con `tsc`, que es una devDependency y no
+está en la etapa de runtime.
+
+El despliegue en el VPS —variables por entorno, dominio, memoria, verificación
+y rollback— está en [docs/DEPLOY_DOKPLOY.md](./docs/DEPLOY_DOKPLOY.md).

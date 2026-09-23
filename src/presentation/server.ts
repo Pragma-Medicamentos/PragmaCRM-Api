@@ -11,6 +11,7 @@ import { ApiResponse } from '../domain/interfaces';
 import { requestMetadata } from './middleware/requestMetadata';
 import { warmUpJwks } from '../lib/supabaseJwt';
 import { envs } from '../config/envs';
+import { prisma } from '../lib/prisma';
 
 // CORS_ORIGIN is comma-separated so one deploy can allow more than one origin
 // (e.g. the web dashboard's own domain plus a preview deployment) without a
@@ -84,12 +85,31 @@ export class Server {
     //* Pays the JWKS fetch at boot so the first request of the day does not.
     await warmUpJwks();
 
-    this.serverListener = this.app.listen(this.port, () => {
-      logger.info(`Server running on port ${this.port}`);
+    //* Resolves once the port is actually bound and rejects if it cannot be
+    //* (EADDRINUSE, for instance), so the caller decides what to do instead of
+    //* the failure surfacing as an uncaught 'error' event.
+    await new Promise<void>((resolve, reject) => {
+      const listener = this.app.listen(this.port, () => {
+        logger.info(`Server running on port ${this.port}`);
+        resolve();
+      });
+
+      listener.once('error', reject);
+      this.serverListener = listener;
     });
   }
 
-  public close() {
-    this.serverListener?.close();
+  /**
+   * Stops accepting connections, waits for the in-flight ones to finish and
+   * releases the database pool. Awaited on SIGTERM (src/app.ts) so a redeploy
+   * does not cut requests mid-flight.
+   */
+  public async close(): Promise<void> {
+    await new Promise<void>((resolve) => {
+      if (!this.serverListener) return resolve();
+      this.serverListener.close(() => resolve());
+    });
+
+    await prisma.$disconnect();
   }
 }
