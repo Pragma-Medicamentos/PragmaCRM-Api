@@ -41,17 +41,26 @@ let routeId: string;
 let routeUserId: string;
 let noPinCustomerId: string;
 
-const createStop = async (customer: string | null = customerId) =>
+const createStop = async (
+  customer: string | null = customerId,
+  stopType: 'visit' | 'dispatch' | 'collection' = 'visit'
+) =>
   (
     await prisma.scheduled_visit.create({
       data: {
         route_user_id: routeUserId,
         visit_date: new Date(`${PLANNED_DAY}T00:00:00.000Z`),
         customer_id: customer,
-        stop_type: 'visit',
+        stop_type: stopType,
       },
     })
   ).id;
+
+const getRoute = () =>
+  request(app)
+    .get('/api/v1/me/route')
+    .query({ date: PLANNED_DAY })
+    .set(HEADERS);
 
 const post = (body: Record<string, unknown>) =>
   request(app).post(ENDPOINT).set(HEADERS).send(body);
@@ -251,6 +260,72 @@ describe('POST /api/v1/visits (real PostGIS)', () => {
       where: { id: routeUserId },
       data: { user_id: sellerId },
     });
+  });
+
+  it('sets completed_at on GET /me/route after POST /visits', async () => {
+    const stopId = await createStop();
+    const captured = capturedAt('16:00:00');
+
+    const before = await getRoute();
+    expect(before.status).toBe(200);
+    expect(before.body.data.stops.find((stop: { id: string }) => stop.id === stopId)).toMatchObject({
+      id: stopId,
+      completed_at: null,
+    });
+
+    const confirmed = await post({
+      scheduled_visit_id: stopId,
+      latitude: PIN.lat,
+      longitude: PIN.lng,
+      captured_at: captured,
+    });
+
+    expect(confirmed.status).toBe(201);
+
+    const [stored] = await prisma.$queryRaw<{ scheduled_visit_id: string }[]>`
+      select scheduled_visit_id::text as scheduled_visit_id
+      from visit
+      where id = ${confirmed.body.data.id}::uuid`;
+    expect(stored.scheduled_visit_id).toBe(stopId);
+
+    const after = await getRoute();
+    expect(after.status).toBe(200);
+    expect(after.body.data.stops.find((stop: { id: string }) => stop.id === stopId)).toMatchObject({
+      id: stopId,
+      completed_at: '2026-09-14T22:00:00.000Z',
+    });
+  });
+
+  it('confirms two stops of the same type for the same customer and day', async () => {
+    const firstId = await createStop(customerId, 'visit');
+    const secondId = await createStop(customerId, 'visit');
+
+    const first = await post({
+      scheduled_visit_id: firstId,
+      latitude: PIN.lat,
+      longitude: PIN.lng,
+      captured_at: capturedAt('16:10:00'),
+    });
+    const second = await post({
+      scheduled_visit_id: secondId,
+      latitude: PIN.lat,
+      longitude: PIN.lng,
+      captured_at: capturedAt('16:40:00'),
+    });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(second.body.data.id).not.toBe(first.body.data.id);
+    expect(second.body.data.replayed).toBe(false);
+
+    const after = await getRoute();
+    const stops = after.body.data.stops as { id: string; completed_at: string | null }[];
+    expect(stops.find((stop) => stop.id === firstId)?.completed_at).toBe(
+      '2026-09-14T22:10:00.000Z'
+    );
+    expect(stops.find((stop) => stop.id === secondId)?.completed_at).toBe(
+      '2026-09-14T22:40:00.000Z'
+    );
   });
 });
 

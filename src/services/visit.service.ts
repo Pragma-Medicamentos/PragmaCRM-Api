@@ -48,8 +48,11 @@ const CLOCK_SKEW_TOLERANCE_MS = 2 * 60 * 1000;
  * be in the future and must fall on the stop's planned day.
  *
  * Idempotent: an offline client retries until it gets an answer. A request that
- * repeats an already confirmed stop with the same `captured_at` returns the
- * existing visit (`replayed: true`) instead of creating a second one.
+ * repeats an already confirmed stop — the same `scheduled_visit_id` — with the
+ * same `captured_at` returns the existing visit (`replayed: true`) instead of
+ * creating a second one. The link is the planned stop, not a
+ * (customer, route assignment, visit type, day) heuristic: two stops of the
+ * same type at the same customer on the same day are two confirmations.
  *
  * Must run inside a transaction: the advisory lock below is released at commit,
  * and is what stops two concurrent retries from both inserting.
@@ -93,18 +96,12 @@ export const confirmVisit = async (
     SELECT pg_advisory_xact_lock(hashtextextended(${stop.id}, 0))
   `;
 
-  const existing = await findVisitForStop(client, {
-    sellerId,
-    customerId: stop.customer_id,
-    routeUserId: stop.route_user_id,
-    visitType: stop.stop_type,
-    day,
-  });
+  const existing = await findVisitForStop(client, stop.id);
   if (existing) {
     if (existing.started_at.getTime() !== input.captured_at.getTime()) {
       throw CustomError.conflict('This stop was already confirmed');
     }
-    return toConfirmed(existing, stop.id, true);
+    return toConfirmed(existing, true);
   }
 
   const distance = await getDistanceToCustomer(
@@ -129,13 +126,14 @@ export const confirmVisit = async (
       customerId: stop.customer_id,
       routeUserId: stop.route_user_id,
       routeCustomerId: routeCustomer?.id ?? null,
+      scheduledVisitId: stop.id,
       visitType: stop.stop_type,
       distance,
       input,
     })
   );
 
-  return toConfirmed(rows[0], stop.id, false);
+  return toConfirmed(rows[0], false);
 };
 
 /*
@@ -214,41 +212,32 @@ const getDistanceToCustomer = async (
   return distance;
 };
 
-/** The visit already recorded for this stop, if any. */
+/**
+ * The visit already recorded for this planned stop, if any.
+ *
+ * Keyed on `scheduled_visit_id`, which `visit_scheduled_visit_uq` keeps unique
+ * among live rows. A (customer, route_user, visit_type, day) match cannot
+ * tell two stops of the same type apart, and it is not what getDailyRoute
+ * joins on.
+ */
 const findVisitForStop = async (
   client: Client,
-  stop: {
-    sellerId: string;
-    customerId: string;
-    routeUserId: string;
-    visitType: string;
-    day: DayRange;
-  }
+  scheduledVisitId: string
 ): Promise<VisitRow | null> => {
   const rows = await client.$queryRaw<VisitRow[]>(Prisma.sql`
     SELECT ${visitColumns('v')}
     FROM   visit v
-    WHERE  v.user_id = ${stop.sellerId}::uuid
-      AND  v.customer_id = ${stop.customerId}::uuid
-      AND  v.route_user_id = ${stop.routeUserId}::uuid
-      AND  v.visit_type = ${stop.visitType}
-      AND  v.started_at >= ${stop.day.start}::timestamptz
-      AND  v.started_at <  ${stop.day.end}::timestamptz
+    WHERE  v.scheduled_visit_id = ${scheduledVisitId}::uuid
       AND  v.deleted_at IS NULL
-    ORDER  BY v.started_at ASC
     LIMIT  1
   `);
 
   return rows[0] ?? null;
 };
 
-const toConfirmed = (
-  row: VisitRow,
-  scheduledVisitId: string,
-  replayed: boolean
-): ConfirmedVisit => ({
+const toConfirmed = (row: VisitRow, replayed: boolean): ConfirmedVisit => ({
   id: row.id,
-  scheduled_visit_id: scheduledVisitId,
+  scheduled_visit_id: row.scheduled_visit_id,
   customer_id: row.customer_id,
   visit_type: row.visit_type,
   started_at: row.started_at,
@@ -273,6 +262,7 @@ const toConfirmed = (
 /** Row shared by the INSERT ... RETURNING and the idempotency lookup. */
 interface VisitRow {
   id: string;
+  scheduled_visit_id: string;
   customer_id: string;
   visit_type: string;
   started_at: Date;
@@ -289,6 +279,7 @@ interface VisitRow {
 const visitColumns = (alias: string): Prisma.Sql =>
   Prisma.raw(`
     ${alias}.id::text                                             AS id,
+    ${alias}.scheduled_visit_id::text                             AS scheduled_visit_id,
     ${alias}.customer_id::text                                    AS customer_id,
     ${alias}.visit_type,
     ${alias}.started_at,
@@ -306,6 +297,7 @@ const insertVisitSql = (args: {
   customerId: string;
   routeUserId: string;
   routeCustomerId: string | null;
+  scheduledVisitId: string;
   visitType: string;
   distance: number;
   input: ConfirmVisitInput;
@@ -314,7 +306,7 @@ const insertVisitSql = (args: {
 
   return Prisma.sql`
     INSERT INTO visit AS v (
-      customer_id, user_id, route_user_id, route_customer_id,
+      customer_id, user_id, route_user_id, route_customer_id, scheduled_visit_id,
       started_at, finished_at, checkin_location, distance_meters,
       visit_type, successful, no_order_reason, notes
     )
@@ -323,6 +315,7 @@ const insertVisitSql = (args: {
       ${args.sellerId}::uuid,
       ${args.routeUserId}::uuid,
       ${args.routeCustomerId}::uuid,
+      ${args.scheduledVisitId}::uuid,
       ${input.captured_at}::timestamptz,
       ${input.finished_at ?? null}::timestamptz,
       extensions.ST_SetSRID(
