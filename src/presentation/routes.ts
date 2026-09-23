@@ -5,6 +5,7 @@ import { MeRoutes } from './me/routes';
 import { AuthRoutes } from './auth/routes';
 import { SellersRoutes } from './sellers/routes';
 import { CustomersRoutes } from './customers/routes';
+import { DailyRouteRoutes } from './daily-route/routes';
 import { RoutesRoutes } from './routes/routes';
 import { VisitsRoutes } from './visits/routes';
 import { ProspectsRoutes } from './prospects/routes';
@@ -34,6 +35,20 @@ export class AppRoutes {
       UploadsRoutes.routes
     );
     router.use('/api/v1/me', MeRoutes.routes);
+
+    // Must stay after the '/api/v1/me' mount above: MeRoutes only declares
+    // GET '/', so '/api/v1/me/route' falls through to this router today, but
+    // any future GET '/:param' added to MeRoutes would shadow it first.
+    //
+    // Note it does not collide with the admin '/api/v1/routes' module mounted
+    // below: that one is RF-04 (building routes), this one is the seller's
+    // own agenda for a date, which is why it hangs off '/me'.
+    router.use(
+      '/api/v1/me/route',
+      requireAuth,
+      requireRole(ROLES.SELLER),
+      DailyRouteRoutes.routes
+    );
 
     // Public: sends OTP for accounts provisioned by the API (sellers/admins).
     router.use('/api/v1/auth', AuthRoutes.routes);
