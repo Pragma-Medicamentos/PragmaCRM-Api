@@ -55,10 +55,13 @@ const isZeroBalance = (value: string | number): boolean => Number(value) === 0;
 /**
  * `venta.nombres` / `venta.apellidos` are NOT the customer: they correlate
  * 1:1 with `id_usuario` / `usuario` in the real export (the salesperson who
- * processed the sale). `venta.nombre_comercial` and `venta.razon_social` are
- * constant across every sale — Droguería Pragma's own issuer identity, not
- * the customer's. The only field that actually varies per customer is
- * `venta.cliente`. Verified against a full production export, 2026-09-19.
+ * processed the sale). `venta.nombre_comercial`, `venta.razon_social`,
+ * `venta.telefono`, `venta.celular` and `venta.direccion` are all constant
+ * across every sale — Droguería Pragma's own issuer identity (DTE receptor
+ * block), not the customer's. Confirmed 2026-09-23: every `customer.phone`
+ * had converged on the same value, the owner's own number. The only field
+ * that actually varies per customer is `venta.cliente`. Verified against a
+ * full production export, 2026-09-19.
  */
 const buildCustomerName = (venta: EfactsoftSaleHeader): string =>
   venta.cliente?.trim() || 'Sin nombre';
@@ -82,10 +85,12 @@ const upsertCustomer = async (client: Client, venta: EfactsoftSaleHeader): Promi
 
   const shared = {
     name: buildCustomerName(venta),
-    trade_name: venta.nombre_comercial ?? null,
-    address: venta.direccion ?? null,
-    phone: venta.telefono ?? null,
-    mobile: venta.celular ?? null,
+    // trade_name/address/phone/mobile are deliberately NOT sourced from
+    // venta.nombre_comercial/direccion/telefono/celular: those are the
+    // issuer's own constant fields (see buildCustomerName above), not the
+    // customer's. The payload carries no per-customer contact fields at all;
+    // they stay null on import and are set by hand from the dashboard (RF-02)
+    // if backend adds that field.
     credit_limit: toDecimalInput(venta.limite_credito ?? null),
     ...(venta.credito !== null && venta.credito !== undefined
       ? { credit: venta.credito === 1 }
