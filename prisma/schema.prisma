@@ -680,10 +680,10 @@ model route_customer {
   route_id    String    @db.Uuid
   customer_id String    @db.Uuid
   sort_order  Int?      @db.SmallInt
-  stop_type   String    @default("visit")
   created_at  DateTime  @default(now()) @db.Timestamptz(6)
   updated_at  DateTime  @default(now()) @db.Timestamptz(6)
   deleted_at  DateTime? @db.Timestamptz(6)
+  stop_type   String    @default("visit")
   customer    customer  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   route       route     @relation(fields: [route_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   visit       visit[]
