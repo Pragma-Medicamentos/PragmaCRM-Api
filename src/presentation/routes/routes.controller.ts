@@ -5,24 +5,36 @@ import { prisma } from '../../lib/prisma';
 import {
   AssignRouteInput,
   CreateRouteInput,
+  CreateRouteStopInput,
   ListRoutesQuery,
   ReassignRouteInput,
+  ReorderRouteStopsInput,
+  ReplaceRouteStopsInput,
   RouteAssignmentParams,
   RouteParams,
+  RouteStopParams,
   UpdateRouteInput,
+  UpdateRouteStopInput,
 } from '../../domain/schemas/route.schema';
 import {
   RouteAssignmentRecord,
   RouteRecord,
+  RouteStopRecord,
+  addRouteStop,
   createRoute,
   getRouteById,
   listRouteAssignments,
+  listRouteStops,
   listRoutes,
+  replaceRouteStops,
+  softDeleteRouteStop,
   unassignRouteDay,
   updateRoute,
+  updateRouteStop,
 } from '../../services/route.service';
 import { assignRoute } from '../../use-cases/assign-route.use-case';
 import { reassignRoute } from '../../use-cases/reassign-route.use-case';
+import { reorderRouteStops } from '../../use-cases/reorder-route-stops.use-case';
 
 export class RoutesController {
   public async list(req: Request, res: Response) {
@@ -152,6 +164,106 @@ export class RoutesController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'RoutesController.unassign');
+    }
+  }
+
+  public async listStops(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as RouteParams;
+      await getRouteById(prisma, id);
+      const stops = await listRouteStops(prisma, id);
+
+      const response: ApiResponse<RouteStopRecord[]> = {
+        success: true,
+        message: 'Route stops retrieved successfully',
+        data: stops,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'RoutesController.listStops');
+    }
+  }
+
+  public async addStop(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as RouteParams;
+      const data = req.body as CreateRouteStopInput;
+      const stop = await addRouteStop(prisma, id, data);
+
+      const response: ApiResponse<RouteStopRecord> = {
+        success: true,
+        message: 'Stop added to route successfully',
+        data: stop,
+      };
+      res.status(201).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'RoutesController.addStop');
+    }
+  }
+
+  public async updateStop(req: Request, res: Response) {
+    try {
+      const { id, stopId } = req.params as unknown as RouteStopParams;
+      const data = req.body as UpdateRouteStopInput;
+      const stop = await updateRouteStop(prisma, id, stopId, data);
+
+      const response: ApiResponse<RouteStopRecord> = {
+        success: true,
+        message: 'Stop updated successfully',
+        data: stop,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'RoutesController.updateStop');
+    }
+  }
+
+  public async removeStop(req: Request, res: Response) {
+    try {
+      const { id, stopId } = req.params as unknown as RouteStopParams;
+      await softDeleteRouteStop(prisma, id, stopId);
+
+      const response: ApiResponse<null> = {
+        success: true,
+        message: 'Stop removed successfully',
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'RoutesController.removeStop');
+    }
+  }
+
+  public async reorderStops(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as RouteParams;
+      const { stop_ids } = req.body as ReorderRouteStopsInput;
+      const stops = await reorderRouteStops(prisma, id, stop_ids);
+
+      const response: ApiResponse<RouteStopRecord[]> = {
+        success: true,
+        message: 'Route stops reordered successfully',
+        data: stops,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'RoutesController.reorderStops');
+    }
+  }
+
+  public async replaceStops(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as RouteParams;
+      const data = req.body as ReplaceRouteStopsInput;
+      const stops = await replaceRouteStops(prisma, id, data);
+
+      const response: ApiResponse<RouteStopRecord[]> = {
+        success: true,
+        message: 'Route stops replaced successfully',
+        data: stops,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'RoutesController.replaceStops');
     }
   }
 }

@@ -673,6 +673,7 @@ model route {
   @@schema("public")
 }
 
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model route_customer {
   id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
@@ -682,6 +683,7 @@ model route_customer {
   created_at  DateTime  @default(now()) @db.Timestamptz(6)
   updated_at  DateTime  @default(now()) @db.Timestamptz(6)
   deleted_at  DateTime? @db.Timestamptz(6)
+  stop_type   String    @default("visit")
   customer    customer  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   route       route     @relation(fields: [route_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   visit       visit[]
