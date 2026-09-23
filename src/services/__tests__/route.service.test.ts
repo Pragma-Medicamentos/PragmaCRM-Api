@@ -11,6 +11,7 @@ import {
   listRouteAssignments,
   listRouteStops,
   listRoutes,
+  replaceRouteStops,
   softDeleteRouteAssignment,
   softDeleteRouteStop,
   unassignRouteDay,
@@ -42,6 +43,8 @@ const buildClient = (
     route_customer?: Record<string, jest.Mock>;
     app_user?: Record<string, jest.Mock>;
     customer?: Record<string, jest.Mock>;
+    $queryRaw?: jest.Mock;
+    $executeRaw?: jest.Mock;
   } = {}
 ) =>
   ({
@@ -72,8 +75,12 @@ const buildClient = (
     },
     customer: {
       findFirst: jest.fn(),
+      findMany: jest.fn(),
       ...overrides.customer,
     },
+    $queryRaw: jest.fn().mockResolvedValue([]),
+    $executeRaw: jest.fn(),
+    ...overrides,
   }) as unknown as Client;
 
 const routeStopRow = (overrides: Record<string, unknown> = {}) => ({
@@ -515,5 +522,149 @@ describe('assertReorderCoversActiveStops', () => {
     await expect(
       assertReorderCoversActiveStops(client, ROUTE_ID, [STOP_ID])
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('replaceRouteStops', () => {
+  it('throws 404 when route does not exist', async () => {
+    const client = buildClient({ route: { findFirst: jest.fn().mockResolvedValue(null) } });
+
+    await expect(
+      replaceRouteStops(client, ROUTE_ID, { stops: [] })
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('throws 400 when duplicate customer_id in stops', async () => {
+    const client = buildClient({
+      route: { findFirst: jest.fn().mockResolvedValue(route()) },
+    });
+
+    await expect(
+      replaceRouteStops(client, ROUTE_ID, {
+        stops: [
+          { customer_id: CUSTOMER_ID, stop_type: 'visit' },
+          { customer_id: CUSTOMER_ID, stop_type: 'dispatch' },
+        ],
+      })
+    ).rejects.toMatchObject({ statusCode: 400, message: expect.stringContaining('Duplicate') });
+  });
+
+  it('throws 404 when a customer in stops does not exist', async () => {
+    const client = buildClient({
+      route: { findFirst: jest.fn().mockResolvedValue(route()) },
+      customer: { findMany: jest.fn().mockResolvedValue([]) },
+    });
+
+    await expect(
+      replaceRouteStops(client, ROUTE_ID, {
+        stops: [{ customer_id: CUSTOMER_ID, stop_type: 'visit' }],
+      })
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('soft-deletes stops not in the new set', async () => {
+    const OTHER_CUSTOMER = '99999999-9999-9999-9999-999999999999';
+    const OTHER_STOP = '88888888-8888-8888-8888-888888888888';
+    const routeCustomerUpdate = jest.fn().mockResolvedValue({});
+    const route_customer = buildClient().route_customer;
+    const client = buildClient({
+      route: { findFirst: jest.fn().mockResolvedValue(route()) },
+      customer: {
+        findMany: jest.fn().mockResolvedValue([{ id: CUSTOMER_ID }]),
+      },
+      route_customer: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([
+            { id: STOP_ID, customer_id: CUSTOMER_ID },
+            { id: OTHER_STOP, customer_id: OTHER_CUSTOMER },
+          ])
+          .mockResolvedValueOnce([routeStopRow()]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(routeStopRow()),
+        update: routeCustomerUpdate,
+      },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    });
+
+    await replaceRouteStops(client, ROUTE_ID, {
+      stops: [{ customer_id: CUSTOMER_ID, stop_type: 'visit' }],
+    });
+
+    expect(routeCustomerUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: OTHER_STOP },
+        data: expect.objectContaining({ deleted_at: expect.any(Date) }),
+      })
+    );
+  });
+
+  it('creates new stops and revives soft-deleted ones', async () => {
+    const routeCustomerCreate = jest.fn().mockResolvedValue(routeStopRow());
+    const routeCustomerUpdate = jest.fn().mockResolvedValue(routeStopRow());
+    const client = buildClient({
+      route: { findFirst: jest.fn().mockResolvedValue(route()) },
+      customer: {
+        findMany: jest.fn().mockResolvedValue([{ id: CUSTOMER_ID }]),
+      },
+      route_customer: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([routeStopRow()]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: routeCustomerCreate,
+        update: routeCustomerUpdate,
+      },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    });
+
+    await replaceRouteStops(client, ROUTE_ID, {
+      stops: [{ customer_id: CUSTOMER_ID, stop_type: 'visit', sort_order: 1 }],
+    });
+
+    expect(routeCustomerCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          route_id: ROUTE_ID,
+          customer_id: CUSTOMER_ID,
+          stop_type: 'visit',
+          sort_order: 1,
+        }),
+      })
+    );
+  });
+
+  it('assigns default sort_order sequentially when omitted', async () => {
+    const routeCustomerCreate = jest.fn().mockResolvedValue(routeStopRow());
+    const client = buildClient({
+      route: { findFirst: jest.fn().mockResolvedValue(route()) },
+      customer: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: CUSTOMER_ID },
+          { id: '11111111-1111-1111-1111-111111111111' },
+        ]),
+      },
+      route_customer: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([routeStopRow(), routeStopRow({ id: '77777777-7777-7777-7777-777777777777' })]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: routeCustomerCreate,
+      },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    });
+
+    await replaceRouteStops(client, ROUTE_ID, {
+      stops: [
+        { customer_id: CUSTOMER_ID },
+        { customer_id: '11111111-1111-1111-1111-111111111111' },
+      ],
+    });
+
+    const calls = routeCustomerCreate.mock.calls;
+    expect(calls[0][0].data.sort_order).toBe(1);
+    expect(calls[1][0].data.sort_order).toBe(2);
   });
 });

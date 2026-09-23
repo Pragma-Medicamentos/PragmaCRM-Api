@@ -1,3 +1,4 @@
+import { Prisma } from '../generated/prisma/client';
 import { Client } from '../lib/prisma';
 import { CustomError } from '../domain/errors/CustomError';
 import { ROLES } from '../domain/types/auth.types';
@@ -230,6 +231,7 @@ export interface RouteStopRecord {
   customer_name: string | null;
   sort_order: number | null;
   stop_type: string;
+  location: { lat: number; lng: number } | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -259,16 +261,49 @@ type RouteStopRow = {
   customer: { name: string };
 };
 
-const toRouteStopRecord = (row: RouteStopRow): RouteStopRecord => ({
+type LocationMap = Map<string, { lat: number; lng: number } | null>;
+
+const toRouteStopRecord = (row: RouteStopRow, locations: LocationMap): RouteStopRecord => ({
   id: row.id,
   route_id: row.route_id,
   customer_id: row.customer_id,
   customer_name: row.customer.name,
   sort_order: row.sort_order,
   stop_type: row.stop_type,
+  location: locations.get(row.customer_id) || null,
   created_at: row.created_at,
   updated_at: row.updated_at,
 });
+
+const enrichRouteStopsWithLocation = async (
+  client: Client,
+  rows: RouteStopRow[]
+): Promise<LocationMap> => {
+  if (rows.length === 0) return new Map();
+
+  const customerIds = rows.map((r) => r.customer_id);
+  const results = await client.$queryRaw<{ customer_id: string; lat: number | null; lng: number | null }[]>(
+    Prisma.sql`
+      SELECT c.id::text AS customer_id,
+             extensions.st_y(c.location::extensions.geometry)::float8 AS lat,
+             extensions.st_x(c.location::extensions.geometry)::float8 AS lng
+      FROM   customer c
+      WHERE  c.id = ANY(${customerIds}::uuid[])
+        AND  c.deleted_at IS NULL
+    `
+  );
+
+  const map = new Map<string, { lat: number; lng: number } | null>();
+  results.forEach((row) => {
+    map.set(row.customer_id, row.lat !== null && row.lng !== null ? { lat: row.lat, lng: row.lng } : null);
+  });
+
+  customerIds.forEach((id) => {
+    if (!map.has(id)) map.set(id, null);
+  });
+
+  return map;
+};
 
 /** Active (non soft-deleted) stops for a route, planning order first (RF-04). */
 export const listRouteStops = async (
@@ -281,7 +316,10 @@ export const listRouteStops = async (
     orderBy: [{ sort_order: { sort: 'asc', nulls: 'last' } }, { created_at: 'asc' }],
   });
 
-  return (rows as unknown as RouteStopRow[]).map(toRouteStopRecord);
+  const typedRows = rows as unknown as RouteStopRow[];
+  const locations = await enrichRouteStopsWithLocation(client, typedRows);
+
+  return typedRows.map((row) => toRouteStopRecord(row, locations));
 };
 
 export const getActiveRouteStop = (
@@ -361,7 +399,8 @@ export const addRouteStop = async (
         select: ROUTE_STOP_SELECT,
       });
 
-  return toRouteStopRecord(row as unknown as RouteStopRow);
+  const locations = await enrichRouteStopsWithLocation(client, [row as unknown as RouteStopRow]);
+  return toRouteStopRecord(row as unknown as RouteStopRow, locations);
 };
 
 export const updateRouteStop = async (
@@ -383,7 +422,8 @@ export const updateRouteStop = async (
     select: ROUTE_STOP_SELECT,
   });
 
-  return toRouteStopRecord(row as unknown as RouteStopRow);
+  const locations = await enrichRouteStopsWithLocation(client, [row as unknown as RouteStopRow]);
+  return toRouteStopRecord(row as unknown as RouteStopRow, locations);
 };
 
 export const softDeleteRouteStop = async (
@@ -435,3 +475,118 @@ export const applyRouteStopOrder = (
       })
     )
   );
+
+export interface ReplaceRouteStopsInput {
+  stops: Array<{
+    customer_id: string;
+    stop_type?: string;
+    sort_order?: number;
+  }>;
+}
+
+/**
+ * Replace all route stops with the provided set (Web PCRM-141 contract).
+ * - Soft-deletes all current stops not in the new set.
+ * - Creates or revives stops for each item in the new set.
+ * - Sets sort_order sequentially if not provided.
+ * - Rejects duplicate customer_id and missing customer with 400/404.
+ */
+export const replaceRouteStops = async (
+  client: Client,
+  routeId: string,
+  input: ReplaceRouteStopsInput
+): Promise<RouteStopRecord[]> => {
+  await getRouteById(client, routeId);
+
+  const stops = input.stops;
+
+  // Reject duplicate customer_id in the request
+  const customerIds = stops.map((s) => s.customer_id);
+  const uniqueIds = new Set(customerIds);
+  if (uniqueIds.size !== customerIds.length) {
+    throw CustomError.badRequest('Duplicate customer_id in stops');
+  }
+
+  // Validate all customers exist
+  if (stops.length > 0) {
+    const existing = await client.customer.findMany({
+      where: {
+        id: { in: customerIds },
+        deleted_at: null,
+      },
+      select: { id: true },
+    });
+    if (existing.length !== stops.length) {
+      throw CustomError.notFound('One or more customers not found');
+    }
+  }
+
+  // Soft-delete active stops not in the new set
+  const currentStops = await client.route_customer.findMany({
+    where: { route_id: routeId, deleted_at: null },
+    select: { id: true, customer_id: true },
+  });
+
+  const newCustomerIds = new Set(customerIds);
+  const toDelete = currentStops.filter((s) => !newCustomerIds.has(s.customer_id));
+  const now = new Date();
+
+  if (toDelete.length > 0) {
+    await Promise.all(
+      toDelete.map((s) =>
+        client.route_customer.update({
+          where: { id: s.id },
+          data: { deleted_at: now, updated_at: now },
+        })
+      )
+    );
+  }
+
+  // Upsert stops from the new set
+  for (let index = 0; index < stops.length; index++) {
+    const item = stops[index];
+    const stopType: StopType = item.stop_type ? (item.stop_type as StopType) : 'visit';
+    const sortOrder = item.sort_order !== undefined ? item.sort_order : index + 1;
+
+    const existing = await client.route_customer.findFirst({
+      where: { route_id: routeId, customer_id: item.customer_id },
+      select: { id: true, deleted_at: true },
+    });
+
+    if (existing && !existing.deleted_at) {
+      // Already active, update
+      await client.route_customer.update({
+        where: { id: existing.id },
+        data: {
+          stop_type: stopType,
+          sort_order: sortOrder,
+          updated_at: now,
+        },
+      });
+    } else if (existing && existing.deleted_at) {
+      // Soft-deleted, revive and update
+      await client.route_customer.update({
+        where: { id: existing.id },
+        data: {
+          stop_type: stopType,
+          sort_order: sortOrder,
+          deleted_at: null,
+          updated_at: now,
+        },
+      });
+    } else {
+      // Create new
+      await client.route_customer.create({
+        data: {
+          route_id: routeId,
+          customer_id: item.customer_id,
+          stop_type: stopType,
+          sort_order: sortOrder,
+        },
+      });
+    }
+  }
+
+  // Return updated list
+  return listRouteStops(client, routeId);
+};

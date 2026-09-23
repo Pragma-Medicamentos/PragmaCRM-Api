@@ -9,6 +9,7 @@ import {
   ListRoutesQuery,
   ReassignRouteInput,
   ReorderRouteStopsInput,
+  ReplaceRouteStopsInput,
   RouteAssignmentParams,
   RouteParams,
   RouteStopParams,
@@ -25,6 +26,7 @@ import {
   listRouteAssignments,
   listRouteStops,
   listRoutes,
+  replaceRouteStops,
   softDeleteRouteStop,
   unassignRouteDay,
   updateRoute,
@@ -245,6 +247,23 @@ export class RoutesController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'RoutesController.reorderStops');
+    }
+  }
+
+  public async replaceStops(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as RouteParams;
+      const data = req.body as ReplaceRouteStopsInput;
+      const stops = await replaceRouteStops(prisma, id, data);
+
+      const response: ApiResponse<RouteStopRecord[]> = {
+        success: true,
+        message: 'Route stops replaced successfully',
+        data: stops,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'RoutesController.replaceStops');
     }
   }
 }

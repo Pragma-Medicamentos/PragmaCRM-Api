@@ -9,6 +9,7 @@ import {
   listRouteAssignments,
   listRouteStops,
   listRoutes,
+  replaceRouteStops,
   softDeleteRouteStop,
   unassignRouteDay,
   updateRoute,
@@ -49,6 +50,7 @@ jest.mock('../../../services/route.service', () => ({
   addRouteStop: jest.fn(),
   updateRouteStop: jest.fn(),
   softDeleteRouteStop: jest.fn(),
+  replaceRouteStops: jest.fn(),
 }));
 
 jest.mock('../../../use-cases/assign-route.use-case', () => ({
@@ -76,6 +78,7 @@ const addRouteStopMock = addRouteStop as jest.Mock;
 const updateRouteStopMock = updateRouteStop as jest.Mock;
 const softDeleteRouteStopMock = softDeleteRouteStop as jest.Mock;
 const reorderRouteStopsMock = reorderRouteStops as jest.Mock;
+const replaceRouteStopsMock = replaceRouteStops as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
@@ -108,6 +111,7 @@ const stop = {
   customer_name: 'Farmacia San José',
   sort_order: 1,
   stop_type: 'visit',
+  location: { lat: 13.6929, lng: -89.2182 },
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
 };
@@ -468,6 +472,91 @@ describe('PATCH /api/v1/routes/:id/stops/:stopId', () => {
       .patch(`/api/v1/routes/${ROUTE_ID}/stops/${STOP_ID}`)
       .set(AUTH)
       .send({ stop_type: 'dispatch' });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('PUT /api/v1/routes/:id/stops (replace)', () => {
+  it('replaces all stops for the route', async () => {
+    replaceRouteStopsMock.mockResolvedValue([stop]);
+
+    const res = await request(app)
+      .put(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({ stops: [{ customer_id: CUSTOMER_ID, stop_type: 'visit', sort_order: 1 }] });
+
+    expect(res.status).toBe(200);
+    expect(replaceRouteStopsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      ROUTE_ID,
+      expect.objectContaining({ stops: expect.any(Array) })
+    );
+    expect(res.body.data).toEqual([stop]);
+  });
+
+  it('allows empty stops array', async () => {
+    replaceRouteStopsMock.mockResolvedValue([]);
+
+    const res = await request(app)
+      .put(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({ stops: [] });
+
+    expect(res.status).toBe(200);
+    expect(replaceRouteStopsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      ROUTE_ID,
+      { stops: [] }
+    );
+    expect(res.body.data).toEqual([]);
+  });
+
+  it('rejects a non-uuid customer_id', async () => {
+    const res = await request(app)
+      .put(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({ stops: [{ customer_id: 'not-a-uuid', stop_type: 'visit' }] });
+
+    expect(res.status).toBe(400);
+    expect(replaceRouteStopsMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid stop_type', async () => {
+    const res = await request(app)
+      .put(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({ stops: [{ customer_id: CUSTOMER_ID, stop_type: 'invalid' }] });
+
+    expect(res.status).toBe(400);
+    expect(replaceRouteStopsMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates the 400 when there are duplicate customer_ids', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    replaceRouteStopsMock.mockRejectedValue(CustomError.badRequest('Duplicate customer_id in stops'));
+
+    const res = await request(app)
+      .put(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({
+        stops: [
+          { customer_id: CUSTOMER_ID, stop_type: 'visit' },
+          { customer_id: CUSTOMER_ID, stop_type: 'dispatch' },
+        ],
+      });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('propagates the 404 when a customer in stops does not exist', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    replaceRouteStopsMock.mockRejectedValue(CustomError.notFound('One or more customers not found'));
+
+    const res = await request(app)
+      .put(`/api/v1/routes/${ROUTE_ID}/stops`)
+      .set(AUTH)
+      .send({ stops: [{ customer_id: CUSTOMER_ID }] });
 
     expect(res.status).toBe(404);
   });

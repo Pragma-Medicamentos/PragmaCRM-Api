@@ -12,6 +12,7 @@ import {
   listRoutesQuerySchema,
   reassignRouteSchema,
   reorderRouteStopsSchema,
+  replaceRouteStopsSchema,
   routeAssignmentParamsSchema,
   routeParamsSchema,
   routeStopParamsSchema,
@@ -65,7 +66,13 @@ export class RoutesRoutes {
       validateBody(createRouteStopSchema),
       controller.addStop
     );
-    // Must precede /:id/stops/:stopId so 'order' is not parsed as a stop id.
+    // Must precede /:id/stops/:stopId so 'order' and root are not parsed as stop ids.
+    router.put(
+      '/:id/stops',
+      validateParams(routeParamsSchema),
+      validateBody(replaceRouteStopsSchema),
+      controller.replaceStops
+    );
     router.put(
       '/:id/stops/order',
       validateParams(routeParamsSchema),

@@ -107,3 +107,15 @@ export const reorderRouteStopsSchema = z.object({
 });
 
 export type ReorderRouteStopsInput = z.infer<typeof reorderRouteStopsSchema>;
+
+export const replaceRouteStopsSchema = z.object({
+  stops: z.array(
+    z.object({
+      customer_id: z.string().uuid('Invalid customer id'),
+      stop_type: stopTypeSchema.optional(),
+      sort_order: z.number().int().optional(),
+    })
+  ),
+});
+
+export type ReplaceRouteStopsInput = z.infer<typeof replaceRouteStopsSchema>;
