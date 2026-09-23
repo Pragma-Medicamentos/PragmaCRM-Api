@@ -64,3 +64,18 @@ export const updateCustomerLocationSchema = z.object({
 export type UpdateCustomerLocationInput = z.infer<
   typeof updateCustomerLocationSchema
 >;
+
+// Manual override for the two contact fields the Efactsoft import cannot
+// populate: the ERP payload carries no per-customer phone or trade name (see
+// salesSync.service.ts upsertCustomer) — this is the only way to set them.
+export const updateCustomerContactSchema = z
+  .object({
+    phone: z.string().trim().min(1).max(30).nullable().optional(),
+    trade_name: z.string().trim().min(1).max(255).nullable().optional(),
+  })
+  .refine((data) => data.phone !== undefined || data.trade_name !== undefined, {
+    message: 'At least one field is required',
+  });
+export type UpdateCustomerContactInput = z.infer<
+  typeof updateCustomerContactSchema
+>;
