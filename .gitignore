@@ -14,3 +14,9 @@ src/generated/
 # Estado local de la CLI de Supabase
 supabase/.temp/
 supabase/.branches/
+
+# npm run dev-up (pid/log de los procesos en background)
+.dev-up.api.pid
+.dev-up.api.log
+.dev-up.web.pid
+.dev-up.web.log

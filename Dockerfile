@@ -45,4 +45,11 @@ USER nodejs
 
 EXPOSE 3000
 
+# /api/health es la unica ruta que no exige x-api-key, asi que el chequeo no
+# necesita secretos. fetch es global desde Node 18: no hace falta curl ni wget.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+# Arranca el binario directo, no `npm start`: ese script recompila con tsc, que
+# es una devDependency ausente en esta etapa.
 CMD ["node", "dist/app.js"]

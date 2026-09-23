@@ -5,6 +5,7 @@ import {
   CustomerCategory,
   ListCustomerSalesQuery,
   ListCustomersQuery,
+  UpdateCustomerLocationInput,
 } from '../domain/schemas/customer.schema';
 import { PaginationQuery } from '../domain/schemas/pagination.schema';
 import {
@@ -69,10 +70,11 @@ const CATEGORY_THRESHOLD_B = 40;
  * ============================================================================
  * 1. MAIN METHODS — called directly by CustomersController, one per route:
  *
- *      GET /api/v1/customers             -> listCustomers
- *      GET /api/v1/customers/:id         -> getCustomerProfile
- *      GET /api/v1/customers/:id/sales   -> assertCustomerExists, listCustomerSales
- *      GET /api/v1/customers/:id/credits -> getCreditStatus
+ *      GET   /api/v1/customers             -> listCustomers
+ *      GET   /api/v1/customers/:id         -> getCustomerProfile
+ *      GET   /api/v1/customers/:id/sales   -> assertCustomerExists, listCustomerSales
+ *      GET   /api/v1/customers/:id/credits -> getCreditStatus
+ *      PATCH /api/v1/customers/:id/location -> updateCustomerLocation
  * ============================================================================
  */
 
@@ -326,6 +328,46 @@ export const assertCustomerExists = async (
   if (!found) throw CustomError.notFound('Customer not found');
 };
 
+/**
+ * RF-02: persist the customer's exact GPS for routing.
+ *
+ * Prisma cannot write Unsupported("geography"), so this goes through
+ * $executeRaw. Re-reads via getCustomerCore so the response uses the same
+ * lat/lng projection as the profile.
+ */
+export const updateCustomerLocation = async (
+  client: Client,
+  id: string,
+  data: UpdateCustomerLocationInput
+): Promise<CustomerCore> => {
+  await assertCustomerExists(client, id);
+
+  await client.$executeRaw`
+    UPDATE customer
+    SET
+      location = extensions.ST_SetSRID(
+        extensions.ST_MakePoint(${data.longitude}, ${data.latitude}),
+        4326
+      )::extensions.geography,
+      updated_at = now()
+    WHERE id = ${id}::uuid AND deleted_at IS NULL
+  `;
+
+  // address / place_id are plain columns — Prisma can write them. Only touch
+  // when the client sent the field (omit = leave unchanged; null = clear).
+  if (data.address !== undefined || data.place_id !== undefined) {
+    await client.customer.update({
+      where: { id },
+      data: {
+        ...(data.address !== undefined ? { address: data.address } : {}),
+        ...(data.place_id !== undefined ? { place_id: data.place_id } : {}),
+      },
+    });
+  }
+
+  return getCustomerCore(client, id);
+};
+
 /*
  * ============================================================================
  * 2. OTHER METHODS — granular readers and mapping helpers that support the
@@ -552,6 +594,7 @@ interface CustomerCoreRow {
   trade_name: string | null;
   establishment_type: string | null;
   address: string | null;
+  place_id: string | null;
   municipality: string | null;
   zone: string | null;
   phone: string | null;
@@ -714,6 +757,7 @@ const customerCoreSql = (id: string): Prisma.Sql => Prisma.sql`
          c.trade_name,
          c.establishment_type,
          c.address,
+         c.place_id,
          c.municipality,
          c.zone,
          c.phone,
