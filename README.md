@@ -444,6 +444,58 @@ y el detalle está en [docs/Contexto_KPIs_Pragma_CRM.md](./docs/Contexto_KPIs_Pr
 El archivo se procesa **en memoria**, así que el contenedor necesita holgura:
 ver la nota de memoria en [docs/DEPLOY_DOKPLOY.md](./docs/DEPLOY_DOKPLOY.md).
 
+## Resumen diario de ventas para WhatsApp
+
+`scripts/daily-sales-whatsapp-summary.ts` es un CLI de un solo uso que escribe a stdout un texto
+listo para pegar en un bot de WhatsApp, con la cantidad vendida de cada producto el día anterior.
+Solo nombre + cantidad — sin montos ni datos de cliente. No sube nada a la API ni envía mensajes:
+es puramente local. El envío (correo, WhatsApp) lo hace el agente que corre el CLI, a partir de
+este texto.
+
+Tiene dos modos:
+
+- **Por defecto (sin `--file`):** descarga el JSON de ayer directamente de Efactsoft con
+  Playwright (mismo flujo de login y filtro de fechas que
+  `pragma-daily-staging/download-and-upload.js`, rama `modified-endpoint`, pero **sin** el paso de
+  subida a Pragma Api) y lo resume.
+- **`--file <ruta>` / `SALES_JSON_PATH`:** lee un JSON exportado a mano del ERP (misma forma que
+  `ventas_json_example.json`, un array de `{ venta, detalle[] }`), sin abrir el navegador.
+
+Cuenta como "ayer" el rango `[ayer 10:00, hoy 00:00)` en `America/El_Salvador`, medido sobre
+`venta.created_at` (no `fecha_emision`, que queda con la hora del cierre en lote ~19:05), y solo ventas con
+`estado = 2` (venta realizada, no cotización) **del vendedor `IRIS`** (`venta.usuario` en el
+payload de Efactsoft, comparado sin distinguir mayúsculas).
+
+```bash
+# Descarga de Efactsoft (requiere CRM_USER / CRM_PASSWORD)
+npm run daily-sales-summary
+
+# JSON local, sin navegador
+npm run daily-sales-summary -- ruta/al/ventas.json
+# o
+SALES_JSON_PATH=ruta/al/ventas.json npm run daily-sales-summary
+```
+
+El corte de las 10:00 se puede ajustar con `DAILY_CUTOFF=HH:mm`; la zona horaria no es
+configurable, siempre es `America/El_Salvador`. El vendedor se puede ajustar con
+`DAILY_SALES_USER=<usuario-efactsoft>` (por defecto `IRIS`).
+
+**Modo descarga — variables de entorno:**
+
+| Variable | Requerida | Descripción |
+|---|---|---|
+| `CRM_USER` | Sí | Usuario de login de Efactsoft |
+| `CRM_PASSWORD` | Sí | Contraseña de login de Efactsoft |
+| `CRM_LOGIN_URL` | No | Override de la URL de login. Por defecto la de `distdemedicamentos.efactsoft.com` |
+| `CRM_SALES_URL` | No | Override de la URL del listado de ventas |
+| `HEADLESS` | No | `false` para ver el navegador mientras corre (debug). Por defecto `true` |
+
+Instalar el navegador de Playwright una sola vez por máquina:
+
+```bash
+npx playwright install chromium
+```
+
 ## Despliegue de migraciones
 
 Las migraciones **nunca se aplican a mano** contra un entorno remoto: las aplica GitHub Actions al
