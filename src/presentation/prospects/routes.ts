@@ -1,11 +1,18 @@
 import { Router } from 'express';
 import { ProspectsController } from './prospects.controller';
-import { validateBody, validateQuery } from '../middleware/validate';
+import {
+  validateBody,
+  validateParams,
+  validateQuery,
+} from '../middleware/validate';
 import { requireRole } from '../middleware/auth';
 import { ROLES } from '../../domain/types/auth.types';
 import {
+  createProspectAdminSchema,
   createProspectSchema,
   listProspectsQuerySchema,
+  prospectParamsSchema,
+  updateProspectLocationSchema,
 } from '../../domain/schemas/prospect.schema';
 
 export class ProspectsRoutes {
@@ -28,6 +35,21 @@ export class ProspectsRoutes {
       requireRole(ROLES.SELLER),
       validateBody(createProspectSchema),
       controller.create
+    );
+
+    router.post(
+      '/admin',
+      requireRole(ROLES.ADMIN),
+      validateBody(createProspectAdminSchema),
+      controller.createAdmin
+    );
+
+    router.patch(
+      '/:id/location',
+      requireRole(ROLES.ADMIN),
+      validateParams(prospectParamsSchema),
+      validateBody(updateProspectLocationSchema),
+      controller.updateLocation
     );
 
     return router;

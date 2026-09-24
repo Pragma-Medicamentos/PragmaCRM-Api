@@ -30,9 +30,45 @@ export const createProspectSchema = z.object({
 });
 export type CreateProspectInput = z.infer<typeof createProspectSchema>;
 
-
-/** PCRM-62 / PCRM-64: admin list of prospects. */
+/** PCRM-64: admin list of prospects. */
 export const listProspectsQuerySchema = paginationQuerySchema.extend({
   user_id: z.string().uuid('Invalid user id').optional(),
 });
 export type ListProspectsQuery = z.infer<typeof listProspectsQuerySchema>;
+
+export const prospectParamsSchema = z.object({
+  id: z.string().uuid('Invalid prospect id'),
+});
+export type ProspectParams = z.infer<typeof prospectParamsSchema>;
+
+/**
+ * PCRM-64: admin registers a prospect on behalf of a seller (a phone lead, a
+ * walk-in at the office, etc.) — unlike the mobile flow, the admin isn't
+ * standing at the location, so GPS is optional here; `PATCH
+ * /:id/location` (updateProspectLocationSchema) fills it in later.
+ */
+export const createProspectAdminSchema = z
+  .object({
+    user_id: z.string().uuid('Invalid seller id'),
+    name: z.string().trim().min(1, 'name is required').max(200),
+    phone: z.string().trim().min(1, 'phone is required').max(40),
+    latitude: z.number().min(-90).max(90).optional(),
+    longitude: z.number().min(-180).max(180).optional(),
+  })
+  .refine(
+    (data) => (data.latitude === undefined) === (data.longitude === undefined),
+    {
+      message: 'latitude and longitude must be provided together',
+      path: ['latitude'],
+    }
+  );
+export type CreateProspectAdminInput = z.infer<typeof createProspectAdminSchema>;
+
+/** PCRM-64: set a prospect's GPS pin after the fact (see createProspectAdminSchema). */
+export const updateProspectLocationSchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+});
+export type UpdateProspectLocationInput = z.infer<
+  typeof updateProspectLocationSchema
+>;

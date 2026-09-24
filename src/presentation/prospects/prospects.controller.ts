@@ -3,8 +3,11 @@ import { ApiResponse } from '../../domain/interfaces';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
 import {
+  CreateProspectAdminInput,
   CreateProspectInput,
   ListProspectsQuery,
+  ProspectParams,
+  UpdateProspectLocationInput,
 } from '../../domain/schemas/prospect.schema';
 import {
   CreatedProspect,
@@ -13,7 +16,9 @@ import {
 import { Paginated } from '../../domain/types/pagination.types';
 import {
   createProspect,
+  createProspectAsAdmin,
   listProspects,
+  updateProspectLocation,
 } from '../../services/prospect.service';
 
 export class ProspectsController {
@@ -58,6 +63,47 @@ export class ProspectsController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'ProspectsController.list');
+    }
+  }
+
+  /**
+   * PCRM-64: admin registers a prospect on behalf of a seller (phone lead,
+   * walk-in, etc.). Always 201 on success.
+   */
+  public async createAdmin(req: Request, res: Response) {
+    try {
+      const data = req.body as CreateProspectAdminInput;
+
+      const prospect = await prisma.$transaction((tx) =>
+        createProspectAsAdmin(tx, data)
+      );
+
+      const response: ApiResponse<ProspectListItem> = {
+        success: true,
+        message: 'Prospect registered successfully',
+        data: prospect,
+      };
+      res.status(201).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProspectsController.createAdmin');
+    }
+  }
+
+  /** PCRM-64: set or correct a prospect's GPS pin after creation. */
+  public async updateLocation(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as ProspectParams;
+      const data = req.body as UpdateProspectLocationInput;
+      const prospect = await updateProspectLocation(prisma, id, data);
+
+      const response: ApiResponse<ProspectListItem> = {
+        success: true,
+        message: 'Prospect location updated successfully',
+        data: prospect,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProspectsController.updateLocation');
     }
   }
 }

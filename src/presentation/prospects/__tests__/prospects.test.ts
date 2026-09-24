@@ -3,7 +3,12 @@ import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
 import { envs } from '../../../config/envs';
 import { CustomError } from '../../../domain/errors/CustomError';
-import { createProspect, listProspects } from '../../../services/prospect.service';
+import {
+  createProspect,
+  createProspectAsAdmin,
+  listProspects,
+  updateProspectLocation,
+} from '../../../services/prospect.service';
 import { findUserByAuthUserId } from '../../../services/auth.service';
 
 jest.mock('../../../lib/supabaseJwt', () => ({
@@ -23,11 +28,15 @@ jest.mock('../../../lib/prisma', () => ({
 
 jest.mock('../../../services/prospect.service', () => ({
   createProspect: jest.fn(),
+  createProspectAsAdmin: jest.fn(),
   listProspects: jest.fn(),
+  updateProspectLocation: jest.fn(),
 }));
 
 const createProspectMock = createProspect as jest.Mock;
+const createProspectAsAdminMock = createProspectAsAdmin as jest.Mock;
 const listProspectsMock = listProspects as jest.Mock;
+const updateProspectLocationMock = updateProspectLocation as jest.Mock;
 const findUserMock = findUserByAuthUserId as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
@@ -40,15 +49,29 @@ const AUTH = {
 };
 
 const SELLER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const ADMIN_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const PROSPECT_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
-const user = (role: string) => ({
-  id: SELLER_ID,
+const user = (role: string, id: string = SELLER_ID) => ({
+  id,
   auth_user_id: 'auth-seller',
   role,
   name: 'Seller',
   email: 'seller@pragma.test',
   active: true,
   password_set_at: new Date('2026-09-11T12:00:00.000Z'),
+});
+
+const listedProspect = (overrides: Record<string, unknown> = {}) => ({
+  id: PROSPECT_ID,
+  name: 'Farmacia El Sol',
+  phone: '7777-1234',
+  user_id: SELLER_ID,
+  seller_name: 'Seller',
+  location: null,
+  created_at: '2026-09-21T20:10:00.000Z',
+  status: null,
+  ...overrides,
 });
 
 const body = (overrides: Record<string, unknown> = {}) => ({
@@ -91,6 +114,10 @@ beforeEach(() => {
     total: 1,
     total_pages: 1,
   });
+  createProspectAsAdminMock.mockResolvedValue(listedProspect());
+  updateProspectLocationMock.mockResolvedValue(
+    listedProspect({ location: { lat: 13.7, lng: -89.2 } })
+  );
 });
 
 describe('POST /api/v1/prospects', () => {
@@ -238,5 +265,159 @@ describe('GET /api/v1/prospects', () => {
     expect(res.status).toBe(400);
     expect(res.body.errors[0].field).toBe('user_id');
     expect(listProspectsMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/v1/prospects/admin', () => {
+  const adminBody = (overrides: Record<string, unknown> = {}) => ({
+    user_id: SELLER_ID,
+    name: 'Farmacia El Sol',
+    phone: '7777-1234',
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    findUserMock.mockResolvedValue(user('Administrador', ADMIN_ID));
+  });
+
+  it('registers the prospect without GPS and answers 201', async () => {
+    const res = await request(app)
+      .post('/api/v1/prospects/admin')
+      .set(AUTH)
+      .send(adminBody());
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.id).toBe(PROSPECT_ID);
+    expect(res.body.data.seller_name).toBe('Seller');
+    expect(createProspectAsAdminMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ user_id: SELLER_ID, name: 'Farmacia El Sol' })
+    );
+  });
+
+  it('accepts optional GPS', async () => {
+    const res = await request(app)
+      .post('/api/v1/prospects/admin')
+      .set(AUTH)
+      .send(adminBody({ latitude: 13.7, longitude: -89.2 }));
+
+    expect(res.status).toBe(201);
+    expect(createProspectAsAdminMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ latitude: 13.7, longitude: -89.2 })
+    );
+  });
+
+  it('forbids the Vendedor', async () => {
+    findUserMock.mockResolvedValue(user('Vendedor'));
+
+    const res = await request(app)
+      .post('/api/v1/prospects/admin')
+      .set(AUTH)
+      .send(adminBody());
+
+    expect(res.status).toBe(403);
+    expect(createProspectAsAdminMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 401 without a session', async () => {
+    const res = await request(app)
+      .post('/api/v1/prospects/admin')
+      .set({ 'x-api-key': envs.API_KEY })
+      .send(adminBody());
+
+    expect(res.status).toBe(401);
+  });
+
+  it.each([
+    ['missing user_id', { user_id: 'nope' }, 'user_id'],
+    ['missing name', { name: '' }, 'name'],
+    ['missing phone', { phone: '   ' }, 'phone'],
+    [
+      'latitude without longitude',
+      { latitude: 13.7 },
+      'latitude',
+    ],
+  ])('rejects %s', async (_label, override, field) => {
+    const res = await request(app)
+      .post('/api/v1/prospects/admin')
+      .set(AUTH)
+      .send(adminBody(override));
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe(field);
+    expect(createProspectAsAdminMock).not.toHaveBeenCalled();
+  });
+
+  it('maps service errors to their status (e.g. user_id is not a Vendedor)', async () => {
+    createProspectAsAdminMock.mockRejectedValue(
+      CustomError.badRequest('User is not a Vendedor')
+    );
+
+    const res = await request(app)
+      .post('/api/v1/prospects/admin')
+      .set(AUTH)
+      .send(adminBody());
+
+    expect(res.status).toBe(400);
+    expect(res.body.message).toBe('User is not a Vendedor');
+  });
+});
+
+describe('PATCH /api/v1/prospects/:id/location', () => {
+  const locationBody = { latitude: 13.7, longitude: -89.2 };
+
+  beforeEach(() => {
+    findUserMock.mockResolvedValue(user('Administrador', ADMIN_ID));
+  });
+
+  it('updates the location and answers 200', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/prospects/${PROSPECT_ID}/location`)
+      .set(AUTH)
+      .send(locationBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.location).toEqual({ lat: 13.7, lng: -89.2 });
+    expect(updateProspectLocationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      PROSPECT_ID,
+      locationBody
+    );
+  });
+
+  it('forbids the Vendedor', async () => {
+    findUserMock.mockResolvedValue(user('Vendedor'));
+
+    const res = await request(app)
+      .patch(`/api/v1/prospects/${PROSPECT_ID}/location`)
+      .set(AUTH)
+      .send(locationBody);
+
+    expect(res.status).toBe(403);
+    expect(updateProspectLocationMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid id', async () => {
+    const res = await request(app)
+      .patch('/api/v1/prospects/not-a-uuid/location')
+      .set(AUTH)
+      .send(locationBody);
+
+    expect(res.status).toBe(400);
+    expect(updateProspectLocationMock).not.toHaveBeenCalled();
+  });
+
+  it('maps a missing prospect to 404', async () => {
+    updateProspectLocationMock.mockRejectedValue(
+      CustomError.notFound('Prospect not found')
+    );
+
+    const res = await request(app)
+      .patch(`/api/v1/prospects/${PROSPECT_ID}/location`)
+      .set(AUTH)
+      .send(locationBody);
+
+    expect(res.status).toBe(404);
   });
 });
