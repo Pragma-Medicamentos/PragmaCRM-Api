@@ -6,6 +6,7 @@ import {
   getCustomerRoutes,
   getRecentVisitNotes,
   listCustomerSales,
+  updateCustomerContact,
   updateCustomerLocation,
 } from '../customer.service';
 
@@ -408,5 +409,106 @@ describe('updateCustomerLocation', () => {
 
     await updateCustomerLocation(client, CUSTOMER_ID, locationInput);
     expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe('updateCustomerContact', () => {
+  const coreRow = (overrides: Record<string, unknown> = {}) => ({
+    id: CUSTOMER_ID,
+    erp_customer_id: 1001,
+    name: 'Farmacia San José',
+    trade_name: null,
+    establishment_type: null,
+    address: null,
+    place_id: null,
+    municipality: null,
+    zone: null,
+    phone: null,
+    mobile: null,
+    attends: null,
+    personality: null,
+    potential: null,
+    credit: false,
+    credit_limit: null,
+    origin: null,
+    active: true,
+    lat: null,
+    lng: null,
+    ...overrides,
+  });
+
+  it('lanza 404 si el cliente no existe', async () => {
+    const client = buildClient({
+      customer: { findFirst: jest.fn().mockResolvedValue(null) },
+    });
+
+    await expect(
+      updateCustomerContact(client, CUSTOMER_ID, { phone: '7822-0667' })
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  it('actualiza phone y trade_name cuando ambos vienen en el body', async () => {
+    const update = jest.fn().mockResolvedValue({});
+    const client = buildClient({
+      customer: {
+        findFirst: jest.fn().mockResolvedValue({ id: CUSTOMER_ID }),
+        update,
+      },
+      $queryRaw: jest.fn().mockResolvedValue([
+        coreRow({ phone: '7822-0667', trade_name: 'Farmacia Central' }),
+      ]),
+    });
+
+    const core = await updateCustomerContact(client, CUSTOMER_ID, {
+      phone: '7822-0667',
+      trade_name: 'Farmacia Central',
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CUSTOMER_ID },
+      data: {
+        phone: '7822-0667',
+        trade_name: 'Farmacia Central',
+        updated_at: expect.any(Date),
+      },
+    });
+    expect(core.phone).toBe('7822-0667');
+    expect(core.trade_name).toBe('Farmacia Central');
+  });
+
+  it('solo toca el campo enviado, deja el resto sin tocar', async () => {
+    const update = jest.fn().mockResolvedValue({});
+    const client = buildClient({
+      customer: {
+        findFirst: jest.fn().mockResolvedValue({ id: CUSTOMER_ID }),
+        update,
+      },
+      $queryRaw: jest.fn().mockResolvedValue([coreRow({ phone: '7822-0667' })]),
+    });
+
+    await updateCustomerContact(client, CUSTOMER_ID, { phone: '7822-0667' });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CUSTOMER_ID },
+      data: { phone: '7822-0667', updated_at: expect.any(Date) },
+    });
+  });
+
+  it('limpia el campo cuando llega null', async () => {
+    const update = jest.fn().mockResolvedValue({});
+    const client = buildClient({
+      customer: {
+        findFirst: jest.fn().mockResolvedValue({ id: CUSTOMER_ID }),
+        update,
+      },
+      $queryRaw: jest.fn().mockResolvedValue([coreRow()]),
+    });
+
+    await updateCustomerContact(client, CUSTOMER_ID, { phone: null });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CUSTOMER_ID },
+      data: { phone: null, updated_at: expect.any(Date) },
+    });
   });
 });

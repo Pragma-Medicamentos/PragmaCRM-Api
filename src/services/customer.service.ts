@@ -5,6 +5,7 @@ import {
   CustomerCategory,
   ListCustomerSalesQuery,
   ListCustomersQuery,
+  UpdateCustomerContactInput,
   UpdateCustomerLocationInput,
 } from '../domain/schemas/customer.schema';
 import { PaginationQuery } from '../domain/schemas/pagination.schema';
@@ -364,6 +365,31 @@ export const updateCustomerLocation = async (
       },
     });
   }
+
+  return getCustomerCore(client, id);
+};
+
+/**
+ * Manual override for phone / trade_name: the Efactsoft import has no
+ * per-customer source for either (see salesSync.service.ts upsertCustomer),
+ * so this is the only path that can set them. Omit a field to leave it
+ * unchanged, send null to clear it.
+ */
+export const updateCustomerContact = async (
+  client: Client,
+  id: string,
+  data: UpdateCustomerContactInput
+): Promise<CustomerCore> => {
+  await assertCustomerExists(client, id);
+
+  await client.customer.update({
+    where: { id },
+    data: {
+      ...(data.phone !== undefined ? { phone: data.phone } : {}),
+      ...(data.trade_name !== undefined ? { trade_name: data.trade_name } : {}),
+      updated_at: new Date(),
+    },
+  });
 
   return getCustomerCore(client, id);
 };
