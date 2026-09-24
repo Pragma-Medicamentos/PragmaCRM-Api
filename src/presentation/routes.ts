@@ -7,6 +7,7 @@ import { SellersRoutes } from './sellers/routes';
 import { CustomersRoutes } from './customers/routes';
 import { RoutesRoutes } from './routes/routes';
 import { VisitsRoutes } from './visits/routes';
+import { MetricsRoutes } from './metrics/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
@@ -69,6 +70,15 @@ export class AppRoutes {
       requireAuth,
       requireRole(ROLES.SELLER),
       VisitsRoutes.routes
+    );
+
+    // RF-09: base metrics panel. Admin only: it aggregates the whole team's
+    // sales and field activity.
+    router.use(
+      '/api/v1/metrics',
+      requireAuth,
+      requireRole(ROLES.ADMIN),
+      MetricsRoutes.routes
     );
 
     // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);

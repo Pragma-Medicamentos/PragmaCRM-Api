@@ -35,10 +35,16 @@
 --     verify no endpoint ever surfaces them.
 --   * A handful of soft-deleted rows in route_customer, visit and sale, to
 --     verify every query's `deleted_at IS NULL` predicate.
+--   * Metrics panel (PCRM-13): monthly goals per seller for the last 12
+--     months plus the current one, ~25 prospects over the last 90 days, and
+--     visits linked to the seller's route assignment, so goal_compliance,
+--     new_prospects and route_effectiveness return real figures.
 
 BEGIN;
 
 TRUNCATE TABLE
+  goal,
+  prospect,
   sale,
   visit,
   route_customer,
@@ -405,6 +411,56 @@ BEGIN
       );
     END LOOP;
   END LOOP;
+END $$;
+
+-- Metrics panel (PCRM-13) ---------------------------------------------------
+DO $$
+BEGIN
+  -- Link each visit to a route assignment of its seller that contains the
+  -- customer. The seed ignores the weekday on purpose: its dates are random,
+  -- and only the link matters to route sales and executed route-days.
+  UPDATE visit v
+  SET    route_user_id = ru.id
+  FROM   route_user ru
+  JOIN   route_customer rc
+         ON rc.route_id = ru.route_id
+        AND rc.deleted_at IS NULL
+  WHERE  ru.user_id = v.user_id
+    AND  ru.deleted_at IS NULL
+    AND  rc.customer_id = v.customer_id;
+
+  -- Goals around each seller's real monthly sales (80%-120%), so compliance
+  -- spreads above and below 100%. Months with no sales get a flat goal.
+  INSERT INTO goal (user_id, year, month, goal_amount)
+  SELECT u.id,
+         EXTRACT(YEAR  FROM m.month_start)::smallint,
+         EXTRACT(MONTH FROM m.month_start)::smallint,
+         round(COALESCE(NULLIF(sales.amount, 0), 1500) * (0.8 + random() * 0.4), -1)
+  FROM   app_user u
+  CROSS  JOIN generate_series(
+           date_trunc('month', now() AT TIME ZONE 'America/El_Salvador') - interval '12 months',
+           date_trunc('month', now() AT TIME ZONE 'America/El_Salvador'),
+           interval '1 month'
+         ) AS m(month_start)
+  LEFT   JOIN LATERAL (
+           SELECT SUM(s.total) AS amount
+           FROM   sale s
+           WHERE  s.user_id = u.id
+             AND  s.deleted_at IS NULL
+             AND  s.erp_status = 2
+             AND  s.erp_created_at >= m.month_start AT TIME ZONE 'America/El_Salvador'
+             AND  s.erp_created_at <  (m.month_start + interval '1 month') AT TIME ZONE 'America/El_Salvador'
+         ) sales ON true
+  WHERE  u.role = 'Vendedor';
+
+  INSERT INTO prospect (user_id, name, trade_name, phone, status, created_at)
+  SELECT (ARRAY(SELECT id FROM app_user WHERE role = 'Vendedor' ORDER BY id))[1 + (n % 5)],
+         'Prospecto ' || n,
+         'Farmacia Nueva ' || n,
+         '7' || lpad((1000000 + n * 7919 % 9000000)::text, 7, '0'),
+         'new',
+         now() - (random() * 90 || ' days')::interval
+  FROM   generate_series(1, 25) AS n;
 END $$;
 
 COMMIT;
