@@ -39,6 +39,20 @@
 --     months plus the current one, ~25 prospects over the last 90 days, and
 --     visits linked to the seller's route assignment, so goal_compliance,
 --     new_prospects and route_effectiveness return real figures.
+--   * A daily route for today (PCRM-46/47, computed from `now()` in
+--     America/El_Salvador so the seed still means "today" on any future
+--     reset), covering every state GET /api/v1/me/route and the mobile map
+--     render: seller #1 (Rosa Alvarado) gets 6 scheduled_visit rows on
+--     route 1 (Zona Escalon) - one of each stop_type ('visit', 'dispatch',
+--     'collection'), one on a customer with no GPS (no pin/no distance),
+--     one on a prospect (target_kind = 'prospect', is_extra = true), one on
+--     a customer who is not a member of route 1 (is_extra = true, with a
+--     `reason`), and one already executed this morning and linked back via
+--     visit.scheduled_visit_id (renders as the completed/greyed card). A
+--     7th scheduled_visit for the same day is soft-deleted, to prove the
+--     `deleted_at IS NULL` predicate actually excludes it. Seller #2
+--     (Carlos Melendez) deliberately gets zero scheduled_visit rows today,
+--     to exercise the empty-route state.
 
 BEGIN;
 
@@ -47,22 +61,24 @@ TRUNCATE TABLE
   prospect,
   sale,
   visit,
+  scheduled_visit,
   route_customer,
   route_user,
   route,
+  prospect,
   customer,
   app_user
 RESTART IDENTITY CASCADE;
 
 DO $$
 DECLARE
-  v_admin_id uuid := '11111111-1111-1111-1111-111111111100';
+  v_admin_id uuid := '11111111-1111-1111-8111-111111111100';
   v_sellers  uuid[] := ARRAY[
-    '11111111-1111-1111-1111-111111111101',
-    '11111111-1111-1111-1111-111111111102',
-    '11111111-1111-1111-1111-111111111103',
-    '11111111-1111-1111-1111-111111111104',
-    '11111111-1111-1111-1111-111111111105'
+    '11111111-1111-1111-8111-111111111101',
+    '11111111-1111-1111-8111-111111111102',
+    '11111111-1111-1111-8111-111111111103',
+    '11111111-1111-1111-8111-111111111104',
+    '11111111-1111-1111-8111-111111111105'
   ]::uuid[];
   v_seller_names text[] := ARRAY[
     'Rosa Alvarado', 'Carlos Melendez', 'Ana Cordero', 'Luis Portillo', 'Diana Reyes'
@@ -83,16 +99,16 @@ DECLARE
   k int;
 
   v_routes uuid[] := ARRAY[
-    '22222222-2222-2222-2222-222222222201',
-    '22222222-2222-2222-2222-222222222202',
-    '22222222-2222-2222-2222-222222222203',
-    '22222222-2222-2222-2222-222222222204',
-    '22222222-2222-2222-2222-222222222205',
-    '22222222-2222-2222-2222-222222222206',
-    '22222222-2222-2222-2222-222222222207',
-    '22222222-2222-2222-2222-222222222208',
-    '22222222-2222-2222-2222-222222222209',
-    '22222222-2222-2222-2222-222222222210'
+    '22222222-2222-2222-8222-222222222201',
+    '22222222-2222-2222-8222-222222222202',
+    '22222222-2222-2222-8222-222222222203',
+    '22222222-2222-2222-8222-222222222204',
+    '22222222-2222-2222-8222-222222222205',
+    '22222222-2222-2222-8222-222222222206',
+    '22222222-2222-2222-8222-222222222207',
+    '22222222-2222-2222-8222-222222222208',
+    '22222222-2222-2222-8222-222222222209',
+    '22222222-2222-2222-8222-222222222210'
   ]::uuid[];
   v_route_names text[] := ARRAY[
     'Zona Escalon', 'Zona Centro', 'Zona Merliot', 'Zona Soyapango', 'Zona San Marcos',
@@ -149,6 +165,21 @@ DECLARE
   v_last_payment timestamptz;
   v_linked_visit uuid;
   v_sale_deleted timestamptz;
+
+  -- Daily route (PCRM-46/47) ----------------------------------------------
+  v_customer_ids uuid[];        -- customer.id by loop index i, so the daily
+                                 -- route section below can reference specific
+                                 -- customers (already-planned members, an
+                                 -- out-of-route "extra", a no-GPS one) by
+                                 -- their known position instead of re-deriving.
+  v_route_user_id uuid;         -- scratch for the RETURNING below
+  v_route_user_ids uuid[];      -- route_user.id by route index, needed to
+                                 -- schedule stops against a specific route
+  v_today date;                 -- "today" in America/El_Salvador, not the
+                                 -- session's own timezone
+  v_prospect_id uuid;
+  v_sv_completed_id uuid;
+  v_completed_started_at timestamptz;
 BEGIN
   -- Supabase Auth identities ---------------------------------------------
   -- Real auth.users / auth.identities rows, not just app_user placeholders:
@@ -206,12 +237,15 @@ BEGIN
     VALUES (v_routes[i], v_route_names[i], v_route_municipalities[i], v_route_zones[i], true);
 
     INSERT INTO route_user (route_id, user_id, day, status)
-    VALUES (v_routes[i], v_sellers[((i - 1) % 5) + 1], ((i - 1) % 7) + 1, 'active');
+    VALUES (v_routes[i], v_sellers[((i - 1) % 5) + 1], ((i - 1) % 7) + 1, 'active')
+    RETURNING id INTO v_route_user_id;
+    v_route_user_ids[i] := v_route_user_id;
   END LOOP;
 
   -- Customers -------------------------------------------------------------
   FOR i IN 1..60 LOOP
     v_customer_id := gen_random_uuid();
+    v_customer_ids[i] := v_customer_id;  -- kept for the daily-route section below
     v_has_gps := (i % 10) <> 0;    -- 6 of 60 without GPS
     v_is_active := (i % 12) <> 0;  -- 5 of 60 inactive
     v_credit := (i % 3) <> 0;      -- 2/3 have a credit line
@@ -411,6 +445,92 @@ BEGIN
       );
     END LOOP;
   END LOOP;
+
+  -- Prospects ---------------------------------------------------------------
+  -- One prospect registered by seller #1 (Rosa Alvarado). Prospects have no
+  -- row in route_customer at all, so any scheduled_visit against one is
+  -- structurally an "extra" stop - useful below to seed that branch without
+  -- relying on a heuristic.
+  v_prospect_id := gen_random_uuid();
+
+  INSERT INTO prospect (id, user_id, name, trade_name, address, phone, location, status)
+  VALUES (
+    v_prospect_id, v_sellers[1], 'Farmacia Nueva Vida', 'Nueva Vida',
+    'Calle Nueva, Escalon', '7799-1234',
+    extensions.ST_SetSRID(extensions.ST_MakePoint(-89.2412, 13.7012), 4326)::extensions.geography,
+    'pendiente'
+  );
+
+  -- Daily route (PCRM-46/47) -------------------------------------------------
+  -- Route 1 (Zona Escalon) is assigned to seller #1 (Rosa Alvarado) via
+  -- v_route_user_ids[1]. Every scheduled_visit below is dated "today" in
+  -- America/El_Salvador, not the session's own timezone, so the seed keeps
+  -- meaning "today" on every future reset.
+  v_today := (now() AT TIME ZONE 'America/El_Salvador')::date;
+
+  -- Stop A: plain visit. Customer #1 is already on route 1
+  -- (route_customer.sort_order = 1, from the customer loop above) ->
+  -- is_extra = false.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type)
+  VALUES (v_route_user_ids[1], v_today, v_customer_ids[1], 'visit');
+
+  -- Stop B: dispatch. Customer #11 is also a route-1 member.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type)
+  VALUES (v_route_user_ids[1], v_today, v_customer_ids[11], 'dispatch');
+
+  -- Stop C: collection, already executed this morning. Customer #21 is a
+  -- route-1 member; the visit row below links back via scheduled_visit_id
+  -- (not a heuristic on customer/date), which is what makes this stop
+  -- render as the completed/greyed card with a time.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type)
+  VALUES (v_route_user_ids[1], v_today, v_customer_ids[21], 'collection')
+  RETURNING id INTO v_sv_completed_id;
+
+  v_completed_started_at :=
+    (v_today::text || ' 09:10:00')::timestamp AT TIME ZONE 'America/El_Salvador';
+
+  INSERT INTO visit (
+    id, customer_id, user_id, route_user_id, started_at, finished_at,
+    visit_type, successful, scheduled_visit_id
+  ) VALUES (
+    gen_random_uuid(), v_customer_ids[21], v_sellers[1], v_route_user_ids[1],
+    v_completed_started_at, v_completed_started_at + interval '12 minutes',
+    'collection', true, v_sv_completed_id
+  );
+
+  -- Stop D: customer #10 was seeded without GPS (v_has_gps = (i % 10) <> 0
+  -- is false for i = 10) -> the card must degrade to no pin / no distance.
+  -- Still a genuine route-1 member (the "b" route_customer slot), so
+  -- is_extra = false here too.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type)
+  VALUES (v_route_user_ids[1], v_today, v_customer_ids[10], 'visit');
+
+  -- Stop E: the prospect. target_kind = 'prospect'; is_extra = true because
+  -- prospects never have a route_customer row to match against.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, prospect_id, stop_type)
+  VALUES (v_route_user_ids[1], v_today, v_prospect_id, 'visit');
+
+  -- Stop F: customer #2 belongs to routes 2 and 3 only (see the route
+  -- membership block above), never route 1 -> no live route_customer row
+  -- for (route 1, customer #2) -> is_extra = true. `reason` documents the
+  -- ad-hoc addition.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, reason)
+  VALUES (
+    v_route_user_ids[1], v_today, v_customer_ids[2], 'visit',
+    'Cliente solicito visita extra por reclamo de producto'
+  );
+
+  -- Soft-deleted stop: proves the deleted_at IS NULL predicate actually
+  -- excludes a row, not just that none happen to be seeded today.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, deleted_at)
+  VALUES (
+    v_route_user_ids[1], v_today, v_customer_ids[31], 'visit',
+    now() - interval '1 day'
+  );
+
+  -- Seller #2 (Carlos Melendez, v_sellers[2]) intentionally gets zero
+  -- scheduled_visit rows today, so GET /api/v1/me/route for him renders the
+  -- empty-route state (routes: [], stops: []).
 END $$;
 
 -- Metrics panel (PCRM-13) ---------------------------------------------------

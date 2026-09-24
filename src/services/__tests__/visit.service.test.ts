@@ -32,6 +32,7 @@ const input = (overrides: Partial<ConfirmVisitInput> = {}): ConfirmVisitInput =>
 
 const visitRow = (overrides: Record<string, unknown> = {}) => ({
   id: 'visit-1',
+  scheduled_visit_id: STOP_ID,
   customer_id: CUSTOMER_ID,
   visit_type: 'visit',
   started_at: CAPTURED_AT,
@@ -44,6 +45,9 @@ const visitRow = (overrides: Record<string, unknown> = {}) => ({
   notes: null,
   ...overrides,
 });
+
+/** Prisma.Sql text with whitespace collapsed, so assertions match structure. */
+const sqlOf = (query: { sql: string }): string => query.sql.replace(/\s+/g, ' ');
 
 /**
  * $queryRaw is called in a fixed order: existing-visit lookup, distance,
@@ -104,6 +108,55 @@ describe('confirmVisit', () => {
 
     const insert = queryRaw.mock.calls[2][0];
     expect(insert.values).toContainEqual(CAPTURED_AT);
+  });
+
+  it('persists scheduled_visit_id on the insert so the daily route can join it', async () => {
+    const { client, queryRaw } = buildClient({
+      queries: [[], [{ distance: 12.5 }], [visitRow()]],
+    });
+
+    await confirmVisit(client, SELLER_ID, input());
+
+    const insert = queryRaw.mock.calls[2][0];
+    // The column has to be in the INSERT list. Selecting it back is not enough:
+    // getDailyRoute joins visit on scheduled_visit_id, and a NULL link leaves
+    // completed_at unset (PCRM-147).
+    expect(sqlOf(insert)).toMatch(/INSERT INTO visit[\s\S]*scheduled_visit_id/);
+    expect(insert.values).toContain(STOP_ID);
+  });
+
+  it('returns scheduled_visit_id from the inserted row', async () => {
+    const persisted = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const { client } = buildClient({
+      queries: [
+        [],
+        [{ distance: 1 }],
+        [visitRow({ scheduled_visit_id: persisted })],
+      ],
+    });
+
+    const result = await confirmVisit(client, SELLER_ID, input());
+
+    expect(result.scheduled_visit_id).toBe(persisted);
+  });
+
+  it('looks up an existing confirmation by scheduled_visit_id', async () => {
+    const { client, queryRaw } = buildClient({
+      queries: [[], [{ distance: 5 }], [visitRow()]],
+    });
+
+    await confirmVisit(client, SELLER_ID, input());
+
+    const lookup = queryRaw.mock.calls[0][0];
+    const sql = sqlOf(lookup);
+
+    expect(sql).toMatch(/v\.scheduled_visit_id\s*=/);
+    expect(lookup.values).toContain(STOP_ID);
+    // A (customer, route_user, visit_type, day) match would treat two stops
+    // of the same type at the same customer as one confirmation.
+    expect(sql).not.toMatch(/v\.customer_id\s*=/);
+    expect(sql).not.toMatch(/v\.visit_type\s*=/);
+    expect(sql).not.toMatch(/v\.started_at\s*>=/);
   });
 
   it('records a check-in outside the radius instead of rejecting it', async () => {

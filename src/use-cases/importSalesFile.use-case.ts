@@ -1,5 +1,5 @@
 import { StagingResult, SyncResult } from '../domain/types/sales-import.types';
-import { prisma } from '../lib/prisma';
+import { Client, prisma } from '../lib/prisma';
 import { syncStagedSales } from '../services/salesSync.service';
 import { stageSalesFile } from '../services/salesStaging.service';
 
@@ -25,7 +25,7 @@ export const importSalesFile = async (
   uploadedBy: string
 ): Promise<ImportSalesResult> =>
   prisma.$transaction(
-    async (tx) => {
+    async (tx: Client) => {
       // STEP 1 — Intake: validate the file and queue it. PCRM-32 / PCRM-33.
       const result = await stageSalesFile(tx, fileBuffer, uploadedBy);
 
