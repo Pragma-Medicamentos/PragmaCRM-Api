@@ -2,8 +2,8 @@ import { DateTime } from 'luxon';
 
 import { ERP_TIMEZONE, parseErpTimestamp } from '../../src/lib/parseErpDate';
 
-/** Default lower bound of "yesterday", per CLAUDE.md's daily summary rule 3. */
-export const DEFAULT_CUTOFF = '10:30';
+/** Default lower bound of "yesterday" (local El Salvador time). */
+export const DEFAULT_CUTOFF = '10:00';
 
 /** Default Efactsoft username (`venta.usuario`) this summary is scoped to. */
 export const DEFAULT_USER = 'IRIS';
@@ -17,7 +17,9 @@ export interface ErpSaleDetailLine {
 export interface ErpSale {
   venta: {
     estado: number;
-    fecha_emision: string;
+    /** When the sale was created in Efactsoft. Naive timestamp, already El Salvador time. */
+    created_at: string;
+    fecha_emision?: string;
     usuario: string;
   };
   detalle: ErpSaleDetailLine[];
@@ -46,10 +48,14 @@ const parseCutoff = (cutoff: string): { hour: number; minute: number } => {
 /**
  * Aggregates quantity sold per product for "yesterday" in El Salvador,
  * counting only completed sales (estado 2) from the given salesperson
- * (`venta.usuario`, defaults to {@link DEFAULT_USER}) emitted at or after
+ * (`venta.usuario`, defaults to {@link DEFAULT_USER}) created at or after
  * the cutoff time on the previous calendar day and before today.
  *
- * Uses `parseErpTimestamp` for `fecha_emision` so the window boundaries are
+ * Filters on `created_at`, not `fecha_emision`: IRIS finalizes the day's
+ * sales in one batch around 19:05, which stamps `fecha_emision` and
+ * `updated_at` with that time and would let morning sales slip past the cutoff.
+ *
+ * Uses `parseErpTimestamp` for `created_at` so the window boundaries are
  * evaluated in America/El_Salvador rather than the host machine's timezone
  * (CLAUDE.md 5.7) — a naive `new Date` on a dd/MM string would also silently
  * misread the date as MM/dd (CLAUDE.md, parseErpDate.ts).
@@ -75,9 +81,9 @@ export const summarizeYesterdaySales = (
     if (sale?.venta?.estado !== 2) continue;
     if ((sale.venta.usuario ?? '').trim().toLowerCase() !== targetUser) continue;
 
-    const emittedAt = parseErpTimestamp(sale.venta.fecha_emision);
-    if (!emittedAt) continue;
-    if (emittedAt < windowStartDate || emittedAt >= windowEndDate) continue;
+    const createdAt = parseErpTimestamp(sale.venta.created_at);
+    if (!createdAt) continue;
+    if (createdAt < windowStartDate || createdAt >= windowEndDate) continue;
 
     for (const line of sale.detalle ?? []) {
       if (typeof line?.id_producto !== 'number') continue;

@@ -413,7 +413,8 @@ Tiene dos modos:
 - **`--file <ruta>` / `SALES_JSON_PATH`:** lee un JSON exportado a mano del ERP (misma forma que
   `ventas_json_example.json`, un array de `{ venta, detalle[] }`), sin abrir el navegador.
 
-Cuenta como "ayer" el rango `[ayer 10:30, hoy 00:00)` en `America/El_Salvador`, y solo ventas con
+Cuenta como "ayer" el rango `[ayer 10:00, hoy 00:00)` en `America/El_Salvador`, medido sobre
+`venta.created_at` (no `fecha_emision`, que queda con la hora del cierre en lote ~19:05), y solo ventas con
 `estado = 2` (venta realizada, no cotización) **del vendedor `IRIS`** (`venta.usuario` en el
 payload de Efactsoft, comparado sin distinguir mayúsculas).
 
@@ -427,7 +428,7 @@ npm run daily-sales-summary -- ruta/al/ventas.json
 SALES_JSON_PATH=ruta/al/ventas.json npm run daily-sales-summary
 ```
 
-El corte de las 10:30 se puede ajustar con `DAILY_CUTOFF=HH:mm`; la zona horaria no es
+El corte de las 10:00 se puede ajustar con `DAILY_CUTOFF=HH:mm`; la zona horaria no es
 configurable, siempre es `America/El_Salvador`. El vendedor se puede ajustar con
 `DAILY_SALES_USER=<usuario-efactsoft>` (por defecto `IRIS`).
 

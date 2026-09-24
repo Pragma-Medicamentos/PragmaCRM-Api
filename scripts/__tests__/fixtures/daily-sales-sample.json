@@ -1,37 +1,37 @@
 [
   {
-    "venta": { "estado": 2, "fecha_emision": "2026-09-05 11:00:00", "usuario": "IRIS" },
+    "venta": { "estado": 2, "created_at": "2026-09-05 11:00:00", "fecha_emision": "2026-09-05 19:05:00", "usuario": "IRIS" },
     "detalle": [
       { "id_producto": 1, "nombre": "Amoxicilina 500mg", "cantidad": "10.0000" }
     ]
   },
   {
-    "venta": { "estado": 2, "fecha_emision": "2026-09-05 18:30:00", "usuario": "IRIS" },
+    "venta": { "estado": 2, "created_at": "2026-09-05 18:30:00", "fecha_emision": "2026-09-05 19:05:00", "usuario": "IRIS" },
     "detalle": [
       { "id_producto": 1, "nombre": "Amoxicilina 500mg (nombre actualizado)", "cantidad": "14.0000" },
       { "id_producto": 2, "nombre": "Ibuprofeno 400mg", "cantidad": "12.5000" }
     ]
   },
   {
-    "venta": { "estado": 2, "fecha_emision": "2026-09-05 09:00:00", "usuario": "IRIS" },
+    "venta": { "estado": 2, "created_at": "2026-09-05 09:00:00", "fecha_emision": "2026-09-05 19:05:00", "usuario": "IRIS" },
     "detalle": [
       { "id_producto": 3, "nombre": "Antes del corte, no debería contar", "cantidad": "5" }
     ]
   },
   {
-    "venta": { "estado": 2, "fecha_emision": "2026-09-04 15:00:00", "usuario": "IRIS" },
+    "venta": { "estado": 2, "created_at": "2026-09-04 15:00:00", "fecha_emision": "2026-09-04 19:05:00", "usuario": "IRIS" },
     "detalle": [
       { "id_producto": 4, "nombre": "Otro día, no debería contar", "cantidad": "3" }
     ]
   },
   {
-    "venta": { "estado": 1, "fecha_emision": "2026-09-05 12:00:00", "usuario": "IRIS" },
+    "venta": { "estado": 1, "created_at": "2026-09-05 12:00:00", "fecha_emision": "2026-09-05 19:05:00", "usuario": "IRIS" },
     "detalle": [
       { "id_producto": 5, "nombre": "Cotización, no debería contar", "cantidad": "1" }
     ]
   },
   {
-    "venta": { "estado": 2, "fecha_emision": "2026-09-05 12:00:00", "usuario": "DAVID" },
+    "venta": { "estado": 2, "created_at": "2026-09-05 12:00:00", "fecha_emision": "2026-09-05 19:05:00", "usuario": "DAVID" },
     "detalle": [
       { "id_producto": 6, "nombre": "Otro vendedor, no debería contar", "cantidad": "7" }
     ]

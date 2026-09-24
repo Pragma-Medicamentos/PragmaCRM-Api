@@ -16,7 +16,7 @@ const fixtureSales: ErpSale[] = JSON.parse(
 );
 
 // "Today" for the fixture: yesterday is 2026-09-05, so the window is
-// [2026-09-05 10:30, 2026-09-06 00:00) in America/El_Salvador.
+// [2026-09-05 10:00, 2026-09-06 00:00) in America/El_Salvador.
 const now = DateTime.fromISO('2026-09-06T08:00:00', { zone: ERP_TIMEZONE });
 
 describe('summarizeYesterdaySales', () => {
@@ -29,7 +29,7 @@ describe('summarizeYesterdaySales', () => {
     ]);
   });
 
-  it('excludes a sale emitted before the cutoff on the previous day', () => {
+  it('excludes a sale created before the cutoff, even if fecha_emision is later (batch finalize)', () => {
     const result = summarizeYesterdaySales(fixtureSales, { now });
 
     expect(result.find((line) => line.id_producto === 3)).toBeUndefined();
@@ -93,15 +93,15 @@ describe('formatWhatsAppMessage', () => {
         { id_producto: 1, nombre: 'Amoxicilina 500mg', cantidad: 24 },
         { id_producto: 2, nombre: 'Ibuprofeno 400mg', cantidad: 12.5 },
       ],
-      '10:30',
+      '10:00',
     );
 
     expect(message).toBe(
-      '*Ventas de ayer (después de 10:30)*\n\nAmoxicilina 500mg — 24\nIbuprofeno 400mg — 12.5',
+      '*Ventas de ayer (después de 10:00)*\n\nAmoxicilina 500mg — 24\nIbuprofeno 400mg — 12.5',
     );
   });
 
   it('reports an empty window explicitly', () => {
-    expect(formatWhatsAppMessage([], '10:30')).toBe('Sin ventas después de las 10:30 ayer.');
+    expect(formatWhatsAppMessage([], '10:00')).toBe('Sin ventas después de las 10:00 ayer.');
   });
 });
