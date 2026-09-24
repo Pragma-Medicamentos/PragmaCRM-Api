@@ -79,17 +79,51 @@ export interface CompanyKpis {
 }
 
 /**
- * Build-time guard: KPI_NAMES (the values `?kpis=` accepts) must list exactly
- * the keys of CompanyKpis. Adding a KPI to one and not the other fails here.
+ * Build-time guard: KPI_NAMES (the names the endpoints accept) must list
+ * exactly the keys of CompanyKpis. Adding a KPI to one and not the other
+ * fails here.
  */
 type SameKeys<A, B> = [Exclude<A, B>, Exclude<B, A>] extends [never, never] ? true : never;
 const kpiNamesMatchCompanyKpis: SameKeys<KpiName, keyof CompanyKpis> = true;
 void kpiNamesMatchCompanyKpis;
 
-export interface MetricsKpisResponse extends MetricsContext {
+/** How the dashboard formats a KPI value. */
+export type KpiUnit = 'count' | 'money' | 'percent' | 'minutes' | 'days';
+
+/** One entry of GET /metrics/kpis: what a KPI is, without computing it. */
+export interface KpiCatalogEntry {
+  name: KpiName;
+  unit: KpiUnit;
+  /** False for snapshots as of today: previous_value is always null. */
+  has_previous_period: boolean;
+  /** Keys of `thresholds` that change this KPI; the UI shows them as a tag. */
+  thresholds: (keyof MetricsThresholds)[];
+}
+
+export interface MetricsKpiCatalogResponse {
+  kpis: KpiCatalogEntry[];
+}
+
+/** A KPI of a batch that could not be computed; the rest still arrive. */
+export interface KpiError {
+  error: string;
+}
+
+/** GET /metrics/kpis/values: only the requested KPIs, keyed by name. */
+export interface MetricsKpiValuesResponse extends MetricsContext {
   previous_period: MetricsPeriod;
-  /** Only the KPIs requested with `?kpis=`; all of them when it is omitted. */
-  kpis: Partial<CompanyKpis>;
+  kpis: { [K in KpiName]?: CompanyKpis[K] | KpiError };
+}
+
+/** GET /metrics/kpis/:name: a single KPI. */
+export interface MetricsKpiResponse<K extends KpiName = KpiName>
+  extends MetricsContext,
+    Omit<KpiCatalogEntry, 'thresholds'> {
+  name: K;
+  /** Null for snapshot KPIs, which have no previous period. */
+  previous_period: MetricsPeriod | null;
+  value: CompanyKpis[K]['value'];
+  previous_value: CompanyKpis[K]['previous_value'];
 }
 
 export interface SellerPerformance {

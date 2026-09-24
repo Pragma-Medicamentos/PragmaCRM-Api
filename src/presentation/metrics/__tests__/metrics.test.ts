@@ -4,11 +4,13 @@ import { Server } from '../../server';
 import { envs } from '../../../config/envs';
 import { findUserByAuthUserId } from '../../../services/auth.service';
 import {
-  getCompanyKpis,
+  getKpi,
+  getKpiValues,
   getCoverage,
   getPurchaseFrequency,
   getSellerDetail,
   getTrends,
+  listKpiCatalog,
   listSellerPerformance,
 } from '../../../services/metrics.service';
 
@@ -25,7 +27,9 @@ jest.mock('../../../services/auth.service', () => ({
 }));
 
 jest.mock('../../../services/metrics.service', () => ({
-  getCompanyKpis: jest.fn(),
+  listKpiCatalog: jest.fn(),
+  getKpiValues: jest.fn(),
+  getKpi: jest.fn(),
   listSellerPerformance: jest.fn(),
   getSellerDetail: jest.fn(),
   getTrends: jest.fn(),
@@ -34,7 +38,8 @@ jest.mock('../../../services/metrics.service', () => ({
 }));
 
 const findUserMock = findUserByAuthUserId as jest.Mock;
-const getCompanyKpisMock = getCompanyKpis as jest.Mock;
+const getKpiValuesMock = getKpiValues as jest.Mock;
+const getKpiMock = getKpi as jest.Mock;
 const getSellerDetailMock = getSellerDetail as jest.Mock;
 const getTrendsMock = getTrends as jest.Mock;
 
@@ -67,7 +72,9 @@ const context = {
 beforeEach(() => {
   jest.clearAllMocks();
   findUserMock.mockResolvedValue(userWithRole('Administrador'));
-  getCompanyKpisMock.mockResolvedValue({ ...context, kpis: {} });
+  (listKpiCatalog as jest.Mock).mockReturnValue({ kpis: [] });
+  getKpiValuesMock.mockResolvedValue({ ...context, kpis: {} });
+  getKpiMock.mockResolvedValue({ ...context, name: 'total_sales', value: '0.00' });
   (listSellerPerformance as jest.Mock).mockResolvedValue({ ...context, sellers: [] });
   getSellerDetailMock.mockResolvedValue({ ...context, seller: {} });
   getTrendsMock.mockResolvedValue({ ...context, granularity: 'week', points: [] });
@@ -78,7 +85,7 @@ beforeEach(() => {
 describe('metrics access control', () => {
   it('rejects a request without a token', async () => {
     const res = await request(app)
-      .get('/api/v1/metrics/kpis')
+      .get('/api/v1/metrics/kpis/values')
       .set({ 'x-api-key': envs.API_KEY });
 
     expect(res.status).toBe(401);
@@ -87,32 +94,42 @@ describe('metrics access control', () => {
   it('rejects a Vendedor', async () => {
     findUserMock.mockResolvedValue(userWithRole('Vendedor'));
 
-    const res = await request(app).get('/api/v1/metrics/kpis').set(AUTH);
+    const res = await request(app).get('/api/v1/metrics/kpis/values').set(AUTH);
 
     expect(res.status).toBe(403);
-    expect(getCompanyKpisMock).not.toHaveBeenCalled();
+    expect(getKpiValuesMock).not.toHaveBeenCalled();
   });
 });
 
-describe('GET /api/v1/metrics/kpis', () => {
+describe('GET /api/v1/metrics/kpis (catalog)', () => {
+  it('returns the catalog without computing any KPI', async () => {
+    const res = await request(app).get('/api/v1/metrics/kpis').set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(listKpiCatalog).toHaveBeenCalled();
+    expect(getKpiValuesMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/v1/metrics/kpis/values', () => {
   it('returns the envelope with the thresholds in force', async () => {
     const res = await request(app)
-      .get('/api/v1/metrics/kpis?from=2026-09-01&to=2026-09-30')
+      .get('/api/v1/metrics/kpis/values?from=2026-09-01&to=2026-09-30')
       .set(AUTH);
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.thresholds.inactivity_days).toBe(30);
-    expect(getCompanyKpisMock).toHaveBeenCalledWith(expect.anything(), {
+    expect(getKpiValuesMock).toHaveBeenCalledWith(expect.anything(), {
       from: '2026-09-01',
       to: '2026-09-30',
     });
   });
 
   it('coerces the inactivity override to a number', async () => {
-    await request(app).get('/api/v1/metrics/kpis?inactivity_days=60').set(AUTH);
+    await request(app).get('/api/v1/metrics/kpis/values?inactivity_days=60').set(AUTH);
 
-    expect(getCompanyKpisMock).toHaveBeenCalledWith(
+    expect(getKpiValuesMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ inactivity_days: 60 })
     );
@@ -120,46 +137,46 @@ describe('GET /api/v1/metrics/kpis', () => {
 
   it('parses a comma-separated KPI selection, trimming and deduplicating', async () => {
     const res = await request(app)
-      .get('/api/v1/metrics/kpis?kpis=total_sales, average_ticket,total_sales')
+      .get('/api/v1/metrics/kpis/values?names=total_sales, average_ticket,total_sales')
       .set(AUTH);
 
     expect(res.status).toBe(200);
-    expect(getCompanyKpisMock).toHaveBeenCalledWith(
+    expect(getKpiValuesMock).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ kpis: ['total_sales', 'average_ticket'] })
+      expect.objectContaining({ names: ['total_sales', 'average_ticket'] })
     );
   });
 
-  it('accepts the KPI param repeated', async () => {
+  it('accepts the names param repeated', async () => {
     await request(app)
-      .get('/api/v1/metrics/kpis?kpis=total_sales&kpis=orders_count')
+      .get('/api/v1/metrics/kpis/values?names=total_sales&names=orders_count')
       .set(AUTH);
 
-    expect(getCompanyKpisMock).toHaveBeenCalledWith(
+    expect(getKpiValuesMock).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ kpis: ['total_sales', 'orders_count'] })
+      expect.objectContaining({ names: ['total_sales', 'orders_count'] })
     );
   });
 
   it('rejects an unknown KPI name', async () => {
     const res = await request(app)
-      .get('/api/v1/metrics/kpis?kpis=total_sales,monto_cobrado')
+      .get('/api/v1/metrics/kpis/values?names=total_sales,monto_cobrado')
       .set(AUTH);
 
     expect(res.status).toBe(400);
-    expect(res.body.errors[0].field).toMatch(/^kpis/);
-    expect(getCompanyKpisMock).not.toHaveBeenCalled();
+    expect(res.body.errors[0].field).toMatch(/^names/);
+    expect(getKpiValuesMock).not.toHaveBeenCalled();
   });
 
   it('rejects an empty KPI selection', async () => {
-    const res = await request(app).get('/api/v1/metrics/kpis?kpis=').set(AUTH);
+    const res = await request(app).get('/api/v1/metrics/kpis/values?names=').set(AUTH);
 
     expect(res.status).toBe(400);
   });
 
   it('rejects `from` after `to`', async () => {
     const res = await request(app)
-      .get('/api/v1/metrics/kpis?from=2026-10-01&to=2026-09-01')
+      .get('/api/v1/metrics/kpis/values?from=2026-10-01&to=2026-09-01')
       .set(AUTH);
 
     expect(res.status).toBe(400);
@@ -168,7 +185,7 @@ describe('GET /api/v1/metrics/kpis', () => {
 
   it('rejects a range longer than a year', async () => {
     const res = await request(app)
-      .get('/api/v1/metrics/kpis?from=2025-01-01&to=2026-09-01')
+      .get('/api/v1/metrics/kpis/values?from=2025-01-01&to=2026-09-01')
       .set(AUTH);
 
     expect(res.status).toBe(400);
@@ -176,15 +193,45 @@ describe('GET /api/v1/metrics/kpis', () => {
   });
 
   it('rejects a malformed date', async () => {
-    const res = await request(app).get('/api/v1/metrics/kpis?from=01/09/2026').set(AUTH);
+    const res = await request(app).get('/api/v1/metrics/kpis/values?from=01/09/2026').set(AUTH);
 
     expect(res.status).toBe(400);
   });
 
   it('rejects an out-of-range threshold', async () => {
-    const res = await request(app).get('/api/v1/metrics/kpis?inactivity_days=0').set(AUTH);
+    const res = await request(app).get('/api/v1/metrics/kpis/values?inactivity_days=0').set(AUTH);
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe('GET /api/v1/metrics/kpis/:name', () => {
+  it('passes the name and the range to the service', async () => {
+    const res = await request(app)
+      .get('/api/v1/metrics/kpis/total_sales?from=2026-09-01&to=2026-09-30')
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(getKpiMock).toHaveBeenCalledWith(expect.anything(), 'total_sales', {
+      from: '2026-09-01',
+      to: '2026-09-30',
+    });
+  });
+
+  it('is not shadowed by the batch route', async () => {
+    await request(app).get('/api/v1/metrics/kpis/values').set(AUTH);
+
+    expect(getKpiMock).not.toHaveBeenCalled();
+    expect(getKpiValuesMock).toHaveBeenCalled();
+  });
+
+  it('validates the range like the other endpoints', async () => {
+    const res = await request(app)
+      .get('/api/v1/metrics/kpis/total_sales?from=2026-10-01&to=2026-09-01')
+      .set(AUTH);
+
+    expect(res.status).toBe(400);
+    expect(getKpiMock).not.toHaveBeenCalled();
   });
 });
 

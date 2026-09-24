@@ -1,22 +1,24 @@
 import { Client } from '../lib/prisma';
 import { envs } from '../config/envs';
+import { logger } from '../lib/adapters/logger';
 import { CustomError } from '../domain/errors/CustomError';
 import { CREDIT_TERM_DAYS } from '../domain/constants/businessRules';
+import { KPI_CATALOG } from '../domain/constants/kpiCatalog';
 import { PURCHASE_FREQUENCY_BUCKETS } from '../domain/constants/metrics';
 import {
   KPI_NAMES,
   KpiName,
-  MetricsKpisQuery,
+  MetricsKpiValuesQuery,
   MetricsRangeQuery,
   MetricsTrendsQuery,
 } from '../domain/schemas/metrics.schema';
 import {
-  CompanyKpis,
   CoverageCustomer,
-  KpiValue,
   MetricsContext,
   MetricsCoverageResponse,
-  MetricsKpisResponse,
+  MetricsKpiCatalogResponse,
+  MetricsKpiResponse,
+  MetricsKpiValuesResponse,
   MetricsPurchaseFrequencyResponse,
   MetricsSellerDetailResponse,
   MetricsSellersResponse,
@@ -30,17 +32,15 @@ import {
   resolveRange,
 } from '../lib/localDateRange';
 import {
-  PeriodKpiRow,
   SellerRow,
-  SnapshotKpiRow,
   findCoverage,
-  findPeriodKpis,
+  findKpi,
   findPurchaseFrequencyBuckets,
   findSellerInactiveCustomers,
   findSellerPerformance,
-  findSnapshotKpis,
   findTrends,
 } from '../repositories/metrics.repository';
+import { KpiWindow } from '../repositories/metrics/fragments.sql';
 import { GPS_RADIUS_METERS } from './visit.service';
 
 /*
@@ -57,7 +57,9 @@ import { GPS_RADIUS_METERS } from './visit.service';
  * ============================================================================
  * 1. MAIN METHODS — called directly by MetricsController, one per route:
  *
- *      GET /api/v1/metrics/kpis                -> getCompanyKpis
+ *      GET /api/v1/metrics/kpis                -> listKpiCatalog
+ *      GET /api/v1/metrics/kpis/values         -> getKpiValues
+ *      GET /api/v1/metrics/kpis/:name          -> getKpi
  *      GET /api/v1/metrics/sellers             -> listSellerPerformance
  *      GET /api/v1/metrics/sellers/:id         -> getSellerDetail
  *      GET /api/v1/metrics/trends              -> getTrends
@@ -66,39 +68,82 @@ import { GPS_RADIUS_METERS } from './visit.service';
  * ============================================================================
  */
 
+/** What KPIs exist, their unit and threshold tags. Computes nothing. */
+export const listKpiCatalog = (): MetricsKpiCatalogResponse => ({
+  kpis: KPI_NAMES.map((name) => ({ name, ...KPI_CATALOG[name] })),
+});
+
 /**
- * Summary cards (1a) and panel header (1d, 1v), with previous-period deltas.
+ * Cards of a screen in one request (1a, 1d, 1v). Runs only the requested
+ * KPIs, each with its own query, in parallel; omitted `names` means all 17.
  *
- * `query.kpis` narrows the response to the cards a screen shows (the Home
- * needs 4 of 17). The period KPIs come from one query per period, so the
- * selection mostly trims the payload; it does skip whole queries when every
- * requested KPI is a snapshot, or none is.
+ * A failing KPI does not sink the batch: it comes back as `{ error }` and is
+ * logged, the rest arrive normally. Only when every KPI fails is it a 500,
+ * since then the problem is not one query.
  */
-export const getCompanyKpis = async (
+export const getKpiValues = async (
   client: Client,
-  query: MetricsKpisQuery,
+  query: MetricsKpiValuesQuery,
   now: Date = new Date()
-): Promise<MetricsKpisResponse> => {
-  const { range, context } = buildContext(query, now);
-  const inactivityDays = context.thresholds.inactivity_days;
-  const previous = previousRange(range);
+): Promise<MetricsKpiValuesResponse> => {
+  const { window, context } = buildKpiContext(query, now);
+  const names = query.names ?? [...KPI_NAMES];
 
-  const selected = query.kpis ?? [...KPI_NAMES];
-  const needsPeriod = selected.some((name) => !SNAPSHOT_KPIS.has(name));
-  const needsSnapshot = selected.some((name) => SNAPSHOT_KPIS.has(name));
+  const results = await Promise.allSettled(
+    names.map((name) => findKpi(client, name, window))
+  );
 
-  const [current, previousRow, snapshot] = await Promise.all([
-    needsPeriod ? findPeriodKpis(client, range, inactivityDays, now) : undefined,
-    needsPeriod ? findPeriodKpis(client, previous, inactivityDays, now) : undefined,
-    needsSnapshot ? findSnapshotKpis(client) : undefined,
-  ]);
+  if (results.every((result) => result.status === 'rejected')) {
+    throw (results[0] as PromiseRejectedResult).reason;
+  }
 
-  const all = mapCompanyKpis(current, previousRow, snapshot);
+  // Assigned by name in the order requested, so the payload keeps that order.
+  const kpis: Record<string, unknown> = {};
+  results.forEach((result, index) => {
+    const name = names[index];
+    if (result.status === 'fulfilled') {
+      kpis[name] = result.value;
+      return;
+    }
+    logger.error('KPI computation failed', {
+      kpi: name,
+      error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+    });
+    kpis[name] = { error: 'KPI could not be computed' };
+  });
 
   return {
     ...context,
-    previous_period: { from: previous.from, to: previous.to },
-    kpis: pickKpis(all, selected),
+    previous_period: periodOf(window.previous),
+    kpis: kpis as MetricsKpiValuesResponse['kpis'],
+  };
+};
+
+/** A single KPI, to refresh one card. An unknown name is a 404. */
+export const getKpi = async (
+  client: Client,
+  name: string,
+  query: MetricsRangeQuery,
+  now: Date = new Date()
+): Promise<MetricsKpiResponse> => {
+  if (!isKpiName(name)) {
+    throw CustomError.notFound(
+      `Unknown KPI "${name}". Valid values: ${KPI_NAMES.join(', ')}`
+    );
+  }
+
+  const { window, context } = buildKpiContext(query, now);
+  const { value, previous_value } = await findKpi(client, name, window);
+  const { unit, has_previous_period } = KPI_CATALOG[name];
+
+  return {
+    ...context,
+    name,
+    unit,
+    has_previous_period,
+    previous_period: has_previous_period ? periodOf(window.previous) : null,
+    value,
+    previous_value,
   };
 };
 
@@ -240,67 +285,28 @@ const buildContext = (
   };
 };
 
-/** KPIs that describe today rather than the period, from findSnapshotKpis. */
-const SNAPSHOT_KPIS: ReadonlySet<KpiName> = new Set<KpiName>([
-  'overdue_portfolio',
-  'pending_collections',
-]);
+/** Adds the previous period and the inputs every per-KPI query needs. */
+const buildKpiContext = (
+  query: MetricsRangeQuery,
+  now: Date
+): { window: KpiWindow; context: MetricsContext } => {
+  const { range, context } = buildContext(query, now);
 
-/** Keeps the requested KPIs, in the order the client asked for them. */
-const pickKpis = (
-  all: Partial<CompanyKpis>,
-  selected: KpiName[]
-): Partial<CompanyKpis> =>
-  Object.fromEntries(
-    selected.map((name) => [name, all[name]])
-  ) as Partial<CompanyKpis>;
+  return {
+    context,
+    window: {
+      range,
+      previous: previousRange(range),
+      inactivityDays: context.thresholds.inactivity_days,
+      now,
+    },
+  };
+};
 
-const kpi = <T>(value: T, previous: T | null): KpiValue<T> => ({
-  value,
-  previous_value: previous,
-});
+const periodOf = (range: LocalDateRange) => ({ from: range.from, to: range.to });
 
-/**
- * Maps whichever rows were fetched. A group whose query was skipped (see
- * getCompanyKpis) is left out, never filled with fake zeros.
- */
-const mapCompanyKpis = (
-  current: PeriodKpiRow | undefined,
-  previous: PeriodKpiRow | undefined,
-  snapshot: SnapshotKpiRow | undefined
-): Partial<CompanyKpis> => ({
-  ...(current && previous ? mapPeriodKpis(current, previous) : {}),
-  ...(snapshot ? mapSnapshotKpis(snapshot) : {}),
-});
-
-const mapPeriodKpis = (
-  current: PeriodKpiRow,
-  previous: PeriodKpiRow
-): Omit<CompanyKpis, 'overdue_portfolio' | 'pending_collections'> => ({
-  stops_executed: kpi(current.stops_executed, previous.stops_executed),
-  stops_by_type: kpi(stopsByType(current), stopsByType(previous)),
-  visited_customers: kpi(current.visited_customers, previous.visited_customers),
-  effective_visits_rate: kpi(current.effective_visits_rate, previous.effective_visits_rate),
-  average_visit_minutes: kpi(current.average_visit_minutes, previous.average_visit_minutes),
-  total_sales: kpi(current.total_sales, previous.total_sales),
-  orders_count: kpi(current.orders_count, previous.orders_count),
-  average_ticket: kpi(current.average_ticket, previous.average_ticket),
-  average_monthly_sales: kpi(current.average_monthly_sales, previous.average_monthly_sales),
-  route_effectiveness: kpi(current.route_effectiveness, previous.route_effectiveness),
-  goal_compliance: kpi(current.goal_compliance, previous.goal_compliance),
-  customers_without_visit: kpi(current.customers_without_visit, previous.customers_without_visit),
-  recovered_customers: kpi(current.recovered_customers, previous.recovered_customers),
-  new_prospects: kpi(current.new_prospects, previous.new_prospects),
-  purchase_frequency_days: kpi(current.purchase_frequency_days, previous.purchase_frequency_days),
-});
-
-// Snapshots describe today: there is no previous period to compare with.
-const mapSnapshotKpis = (
-  snapshot: SnapshotKpiRow
-): Pick<CompanyKpis, 'overdue_portfolio' | 'pending_collections'> => ({
-  overdue_portfolio: kpi(snapshot.overdue_portfolio, null),
-  pending_collections: kpi(snapshot.pending_collections, null),
-});
+const isKpiName = (name: string): name is KpiName =>
+  (KPI_NAMES as readonly string[]).includes(name);
 
 const stopsByType = (row: {
   stops_visit: number;

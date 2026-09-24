@@ -3,43 +3,80 @@ import { ApiResponse } from '../../domain/interfaces';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
 import {
-  MetricsKpisQuery,
+  MetricsKpiParams,
+  MetricsKpiValuesQuery,
   MetricsRangeQuery,
   MetricsSellerParams,
   MetricsTrendsQuery,
 } from '../../domain/schemas/metrics.schema';
 import {
   MetricsCoverageResponse,
-  MetricsKpisResponse,
+  MetricsKpiCatalogResponse,
+  MetricsKpiResponse,
+  MetricsKpiValuesResponse,
   MetricsPurchaseFrequencyResponse,
   MetricsSellerDetailResponse,
   MetricsSellersResponse,
   MetricsTrendsResponse,
 } from '../../domain/types/metrics.types';
 import {
-  getCompanyKpis,
+  getKpi,
+  getKpiValues,
   getCoverage,
   getPurchaseFrequency,
   getSellerDetail,
   getTrends,
+  listKpiCatalog,
   listSellerPerformance,
 } from '../../services/metrics.service';
 
 export class MetricsController {
-  /** Company KPI cards with previous-period values (1a, 1d, 1v). */
-  public async kpis(req: Request, res: Response) {
+  /** KPI catalog: names, units and threshold tags. Computes nothing. */
+  public async kpiCatalog(_req: Request, res: Response) {
     try {
-      const query = req.query as unknown as MetricsKpisQuery;
-      const data = await getCompanyKpis(prisma, query);
+      const response: ApiResponse<MetricsKpiCatalogResponse> = {
+        success: true,
+        message: 'KPI catalog retrieved successfully',
+        data: listKpiCatalog(),
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'MetricsController.kpiCatalog');
+    }
+  }
 
-      const response: ApiResponse<MetricsKpisResponse> = {
+  /** Batch of KPIs for a screen (1a, 1d, 1v); only the requested ones run. */
+  public async kpiValues(req: Request, res: Response) {
+    try {
+      const query = req.query as unknown as MetricsKpiValuesQuery;
+      const data = await getKpiValues(prisma, query);
+
+      const response: ApiResponse<MetricsKpiValuesResponse> = {
         success: true,
         message: 'KPIs retrieved successfully',
         data,
       };
       res.status(200).json(response);
     } catch (error) {
-      sendErrorResponse(res, error, 'MetricsController.kpis');
+      sendErrorResponse(res, error, 'MetricsController.kpiValues');
+    }
+  }
+
+  /** A single KPI, to refresh one card. */
+  public async kpi(req: Request, res: Response) {
+    try {
+      const { name } = req.params as unknown as MetricsKpiParams;
+      const query = req.query as unknown as MetricsRangeQuery;
+      const data = await getKpi(prisma, name, query);
+
+      const response: ApiResponse<MetricsKpiResponse> = {
+        success: true,
+        message: 'KPI retrieved successfully',
+        data,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'MetricsController.kpi');
     }
   }
 

@@ -74,9 +74,10 @@ export const KPI_NAMES = [
 export type KpiName = (typeof KPI_NAMES)[number];
 
 /**
- * Optional KPI selection: `?kpis=total_sales,average_ticket`, or the param
- * repeated (`?kpis=a&kpis=b`, which Express hands over as an array). Omitted
- * means every KPI. Duplicates collapse; an unknown name is a 400.
+ * KPI selection of the batch endpoint: `?names=total_sales,average_ticket`,
+ * or the param repeated (`?names=a&names=b`, which Express hands over as an
+ * array). Omitted means every KPI. Duplicates collapse; an unknown name is a
+ * 400. Only the selected KPIs are computed.
  */
 const kpiSelection = z
   .union([z.string(), z.array(z.string())])
@@ -98,12 +99,21 @@ const kpiSelection = z
       .min(1, 'Select at least one KPI')
   );
 
-const kpisFields = rangeFields.extend({
-  kpis: kpiSelection.optional(),
+const kpiValuesFields = rangeFields.extend({
+  names: kpiSelection.optional(),
 });
 
-export const metricsKpisQuerySchema = withRangeChecks(kpisFields);
-export type MetricsKpisQuery = z.infer<typeof kpisFields>;
+export const metricsKpiValuesQuerySchema = withRangeChecks(kpiValuesFields);
+export type MetricsKpiValuesQuery = z.infer<typeof kpiValuesFields>;
+
+/**
+ * `:name` of GET /metrics/kpis/:name. Checked against KPI_NAMES in the
+ * service, so an unknown KPI answers 404 like any unknown resource.
+ */
+export const metricsKpiParamsSchema = z.object({
+  name: z.string().trim().min(1),
+});
+export type MetricsKpiParams = z.infer<typeof metricsKpiParamsSchema>;
 
 export const TREND_GRANULARITIES = ['week', 'month'] as const;
 export type TrendGranularity = (typeof TREND_GRANULARITIES)[number];

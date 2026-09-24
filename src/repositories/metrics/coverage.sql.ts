@@ -1,6 +1,9 @@
 import { Prisma } from '../../generated/prisma/client';
 import { LocalDateRange } from '../../lib/localDateRange';
-import { visitsInRange } from './fragments.sql';
+import {
+  VISIT_AT,
+  inRange,
+} from './fragments.sql';
 
 /** Active customers, flagged visited when they had a visit in the range. */
 export const coverageSql = (range: LocalDateRange): Prisma.Sql => Prisma.sql`
@@ -12,7 +15,8 @@ export const coverageSql = (range: LocalDateRange): Prisma.Sql => Prisma.sql`
          EXISTS (
            SELECT 1 FROM visit v
            WHERE  v.customer_id = c.id
-             AND  ${visitsInRange(range)}
+             AND  v.deleted_at IS NULL
+               AND  ${inRange(VISIT_AT, range)}
          ) AS visited,
          (SELECT MAX(v.started_at) FROM visit v
           WHERE  v.customer_id = c.id

@@ -196,14 +196,15 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-describe('GET /api/v1/metrics/kpis (real Postgres)', () => {
-  it('computes the period KPIs from the raw tables', async () => {
-    const res = await get(`/kpis?${RANGE}`);
+describe('GET /api/v1/metrics/kpis/values (real Postgres)', () => {
+  it('computes every KPI from the raw tables, one query each', async () => {
+    const res = await get(`/kpis/values?${RANGE}`);
 
     expect(res.status).toBe(200);
     const { kpis } = res.body.data;
     // 31 days back from 29 February (leap year).
     expect(res.body.data.previous_period).toEqual({ from: '2020-01-30', to: '2020-02-29' });
+    expect(Object.keys(kpis)).toHaveLength(17);
 
     expect(kpis.stops_executed.value).toBe(3);
     expect(kpis.stops_by_type.value).toEqual({ visit: 2, dispatch: 1, collection: 0 });
@@ -228,21 +229,72 @@ describe('GET /api/v1/metrics/kpis (real Postgres)', () => {
     expect(kpis.new_prospects.value).toBe(1);
   });
 
+  it('reports an empty previous period as zeros and nulls, never fake numbers', async () => {
+    const res = await get(`/kpis/values?${RANGE}`);
+    const { kpis } = res.body.data;
+
+    expect(kpis.stops_executed.previous_value).toBe(0);
+    expect(kpis.total_sales.previous_value).toBe('0.00');
+    expect(kpis.orders_count.previous_value).toBe(0);
+    expect(kpis.average_ticket.previous_value).toBeNull();
+    expect(kpis.effective_visits_rate.previous_value).toBeNull();
+    expect(kpis.route_effectiveness.previous_value).toBeNull();
+    expect(kpis.goal_compliance.previous_value).toBeNull();
+    expect(kpis.purchase_frequency_days.previous_value).toBeNull();
+    expect(kpis.new_prospects.previous_value).toBe(0);
+  });
+
+  it('splits the previous period out of the same scan', async () => {
+    // April 2020 has no rows; its previous period (2-31 March) holds them all.
+    const res = await get('/kpis/values?from=2020-04-01&to=2020-04-30'
+      + '&names=stops_executed,total_sales,orders_count,new_prospects,recovered_customers');
+    const { kpis } = res.body.data;
+
+    expect(res.body.data.previous_period).toEqual({ from: '2020-03-02', to: '2020-03-31' });
+    expect(kpis.stops_executed).toEqual({ value: 0, previous_value: 3 });
+    expect(kpis.total_sales).toEqual({ value: '0.00', previous_value: '170.00' });
+    expect(kpis.orders_count).toEqual({ value: 0, previous_value: 3 });
+    expect(kpis.new_prospects).toEqual({ value: 0, previous_value: 1 });
+    expect(kpis.recovered_customers).toEqual({ value: 0, previous_value: 1 });
+  });
+
   it('honours the inactivity override for recovered customers', async () => {
-    const res = await get(`/kpis?${RANGE}&inactivity_days=60`);
+    const res = await get(`/kpis/values?${RANGE}&inactivity_days=60&names=recovered_customers`);
 
     expect(res.body.data.thresholds.inactivity_days).toBe(60);
     expect(res.body.data.kpis.recovered_customers.value).toBe(0);
   });
 
   it('returns only the selected KPIs, computed like the full set', async () => {
-    const res = await get(`/kpis?${RANGE}&kpis=average_ticket,total_sales`);
+    const res = await get(`/kpis/values?${RANGE}&names=average_ticket,total_sales`);
 
     expect(res.status).toBe(200);
     expect(res.body.data.kpis).toEqual({
       average_ticket: expect.objectContaining({ value: '56.67' }),
       total_sales: expect.objectContaining({ value: '170.00' }),
     });
+  });
+});
+
+describe('GET /api/v1/metrics/kpis/:name (real Postgres)', () => {
+  it('returns a single KPI with its metadata', async () => {
+    const res = await get(`/kpis/route_effectiveness?${RANGE}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({
+      name: 'route_effectiveness',
+      unit: 'money',
+      has_previous_period: true,
+      period: { from: '2020-03-01', to: '2020-03-31' },
+      value: '120.00',
+      previous_value: null,
+    });
+  });
+
+  it('answers 404 for an unknown KPI', async () => {
+    const res = await get(`/kpis/monto_cobrado?${RANGE}`);
+
+    expect(res.status).toBe(404);
   });
 });
 

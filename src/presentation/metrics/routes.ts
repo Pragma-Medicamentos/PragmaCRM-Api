@@ -2,7 +2,8 @@ import { Router } from 'express';
 import { MetricsController } from './metrics.controller';
 import { validateParams, validateQuery } from '../middleware/validate';
 import {
-  metricsKpisQuerySchema,
+  metricsKpiParamsSchema,
+  metricsKpiValuesQuerySchema,
   metricsRangeQuerySchema,
   metricsSellerParamsSchema,
   metricsTrendsQuerySchema,
@@ -16,7 +17,16 @@ export class MetricsRoutes {
     // requireAuth + requireRole(ADMIN) are applied when the group is mounted
     // in presentation/routes.ts, not here (convention in CLAUDE.md 8.1).
 
-    router.get('/kpis', validateQuery(metricsKpisQuerySchema), controller.kpis);
+    // KPI cards. '/kpis/values' is registered before '/kpis/:name' so it is
+    // not captured as a KPI called "values".
+    router.get('/kpis', controller.kpiCatalog);
+    router.get('/kpis/values', validateQuery(metricsKpiValuesQuerySchema), controller.kpiValues);
+    router.get(
+      '/kpis/:name',
+      validateParams(metricsKpiParamsSchema),
+      validateQuery(metricsRangeQuerySchema),
+      controller.kpi
+    );
     router.get('/sellers', validateQuery(metricsRangeQuerySchema), controller.sellers);
     router.get(
       '/sellers/:id',

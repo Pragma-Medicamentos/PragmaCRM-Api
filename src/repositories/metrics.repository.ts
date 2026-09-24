@@ -2,8 +2,10 @@ import { Client } from '../lib/prisma';
 import { LocalDateRange } from '../lib/localDateRange';
 import { TrendGranularity } from '../domain/schemas/metrics.schema';
 import { Money } from '../domain/types/customer.types';
-import { InactiveCustomer, TrendPoint } from '../domain/types/metrics.types';
-import { periodKpisSql, snapshotKpisSql } from './metrics/kpis.sql';
+import { CompanyKpis, InactiveCustomer, TrendPoint } from '../domain/types/metrics.types';
+import { KpiName } from '../domain/schemas/metrics.schema';
+import { KpiWindow } from './metrics/fragments.sql';
+import { KPI_REGISTRY } from './metrics/kpiRegistry';
 import { sellerInactiveCustomersSql, sellerPerformanceSql } from './metrics/sellers.sql';
 import { trendsSql } from './metrics/trends.sql';
 import { coverageSql } from './metrics/coverage.sql';
@@ -18,30 +20,19 @@ import { purchaseFrequencySql } from './metrics/purchaseFrequency.sql';
  * $transaction, like the services.
  */
 
-export interface PeriodKpiRow {
-  stops_executed: number;
-  stops_visit: number;
-  stops_dispatch: number;
-  stops_collection: number;
-  visited_customers: number;
-  effective_visits_rate: number | null;
-  average_visit_minutes: number | null;
-  total_sales: Money;
-  orders_count: number;
-  average_ticket: Money | null;
-  average_monthly_sales: Money;
-  route_effectiveness: Money | null;
-  goal_compliance: number | null;
-  customers_without_visit: number;
-  recovered_customers: number;
-  purchase_frequency_days: number | null;
-  new_prospects: number;
-}
-
-export interface SnapshotKpiRow {
-  overdue_portfolio: Money;
-  pending_collections: Money;
-}
+/**
+ * One KPI for the selected period and the previous one. Runs only that KPI's
+ * query (repositories/metrics/kpis/<name>.sql.ts).
+ */
+export const findKpi = async <K extends KpiName>(
+  client: Client,
+  name: K,
+  window: KpiWindow
+): Promise<CompanyKpis[K]> => {
+  const { sql, map } = KPI_REGISTRY[name];
+  const rows = await client.$queryRaw<Record<string, unknown>[]>(sql(window));
+  return map(rows[0]);
+};
 
 export interface SellerRow {
   user_id: string;
@@ -79,25 +70,6 @@ export interface PurchaseFrequencyRow {
   insufficient_data: number;
   average_days: number | null;
 }
-
-/** Every period-dependent company KPI, in a single row. */
-export const findPeriodKpis = async (
-  client: Client,
-  range: LocalDateRange,
-  inactivityDays: number,
-  now: Date
-): Promise<PeriodKpiRow> => {
-  const rows = await client.$queryRaw<PeriodKpiRow[]>(
-    periodKpisSql(range, inactivityDays, now)
-  );
-  return rows[0];
-};
-
-/** Collections as of today: overdue portfolio and pending collections. */
-export const findSnapshotKpis = async (client: Client): Promise<SnapshotKpiRow> => {
-  const rows = await client.$queryRaw<SnapshotKpiRow[]>(snapshotKpisSql());
-  return rows[0];
-};
 
 /** One row per seller, or only the given seller when `sellerId` is set. */
 export const findSellerPerformance = (

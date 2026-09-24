@@ -1,7 +1,13 @@
 import { Prisma } from '../../generated/prisma/client';
+import { ERP_STATUS_SALE } from '../../domain/constants/businessRules';
 import { TrendGranularity } from '../../domain/schemas/metrics.schema';
 import { LocalDateRange } from '../../lib/localDateRange';
-import { TZ, salesInRange, visitsInRange } from './fragments.sql';
+import {
+  TZ,
+  VISIT_AT,
+  SALE_AT,
+  inRange,
+} from './fragments.sql';
 
 /**
  * Stops and sales per local week or month. Buckets without activity are
@@ -32,7 +38,8 @@ export const trendsSql = (
       SELECT date_trunc(${unit}, v.started_at AT TIME ZONE ${TZ}) AS bucket,
              COUNT(*) AS stops
       FROM   visit v
-      WHERE  ${visitsInRange(range)} ${visitSeller}
+      WHERE  v.deleted_at IS NULL
+        AND  ${inRange(VISIT_AT, range)} ${visitSeller}
       GROUP  BY 1
     ),
     ss AS (
@@ -40,7 +47,9 @@ export const trendsSql = (
              COUNT(*)     AS orders,
              SUM(s.total) AS sales
       FROM   sale s
-      WHERE  ${salesInRange(range)} ${saleSeller}
+      WHERE  s.deleted_at IS NULL
+        AND  s.erp_status = ${ERP_STATUS_SALE}
+        AND  ${inRange(SALE_AT, range)} ${saleSeller}
       GROUP  BY 1
     )
     SELECT to_char(b.bucket, 'YYYY-MM-DD')           AS bucket_start,

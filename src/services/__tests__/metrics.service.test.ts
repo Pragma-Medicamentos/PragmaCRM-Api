@@ -1,38 +1,19 @@
 import { Prisma } from '../../generated/prisma/client';
 import { Client } from '../../lib/prisma';
 import { envs } from '../../config/envs';
+import { KPI_NAMES } from '../../domain/schemas/metrics.schema';
 import {
-  getCompanyKpis,
   getCoverage,
+  getKpi,
+  getKpiValues,
   getPurchaseFrequency,
   getSellerDetail,
+  listKpiCatalog,
 } from '../metrics.service';
 
 const NOW = new Date('2026-09-22T18:00:00Z');
 const SELLER_ID = '11111111-1111-1111-1111-111111111101';
-
-const periodRow = (overrides: Record<string, unknown> = {}) => ({
-  stops_executed: 62,
-  stops_visit: 41,
-  stops_dispatch: 12,
-  stops_collection: 9,
-  visited_customers: 40,
-  effective_visits_rate: 85.5,
-  average_visit_minutes: 14.2,
-  total_sales: '7316.00',
-  orders_count: 62,
-  average_ticket: '118.00',
-  average_monthly_sales: '7316.00',
-  route_effectiveness: '1180.00',
-  goal_compliance: 91.2,
-  customers_without_visit: 18,
-  recovered_customers: 3,
-  purchase_frequency_days: 11,
-  new_prospects: 7,
-  ...overrides,
-});
-
-const snapshotRow = { overdue_portfolio: '1450.50', pending_collections: '3200.00' };
+const SEPTEMBER = { from: '2026-09-01', to: '2026-09-30' };
 
 const sellerRow = {
   user_id: SELLER_ID,
@@ -57,88 +38,128 @@ const sellerRow = {
 
 const buildClient = (queryRaw: jest.Mock) => ({ $queryRaw: queryRaw }) as unknown as Client;
 
-/** Flattens a Prisma.Sql into its text and values, to inspect what was sent. */
+/** The Prisma.Sql sent on a given $queryRaw call, to inspect text and values. */
 const sqlOf = (mock: jest.Mock, call: number) => mock.mock.calls[call][0] as Prisma.Sql;
 
-describe('getCompanyKpis', () => {
-  it('pairs every KPI with its previous-period value', async () => {
+const isoInstants = (sql: Prisma.Sql) =>
+  sql.values
+    .filter((value): value is Date => value instanceof Date)
+    .map((value) => value.toISOString());
+
+describe('listKpiCatalog', () => {
+  it('describes every KPI without querying anything', () => {
+    const { kpis } = listKpiCatalog();
+
+    expect(kpis.map((kpi) => kpi.name)).toEqual([...KPI_NAMES]);
+    expect(kpis.find((kpi) => kpi.name === 'total_sales')).toEqual({
+      name: 'total_sales',
+      unit: 'money',
+      has_previous_period: true,
+      thresholds: [],
+    });
+    expect(kpis.find((kpi) => kpi.name === 'overdue_portfolio')?.has_previous_period).toBe(false);
+    expect(kpis.find((kpi) => kpi.name === 'customers_without_visit')?.thresholds).toEqual([
+      'inactivity_days',
+    ]);
+  });
+});
+
+describe('getKpiValues', () => {
+  it('runs one query per requested KPI and nothing else', async () => {
     const queryRaw = jest
       .fn()
-      .mockResolvedValueOnce([periodRow()])
-      .mockResolvedValueOnce([periodRow({ stops_executed: 57, goal_compliance: null })])
-      .mockResolvedValueOnce([snapshotRow]);
+      .mockResolvedValueOnce([{ value: '29264.00', previous_value: '27010.50' }])
+      .mockResolvedValueOnce([{ value: 248, previous_value: 231 }]);
 
-    const result = await getCompanyKpis(
+    const result = await getKpiValues(
       buildClient(queryRaw),
-      { from: '2026-09-01', to: '2026-09-30' },
+      { ...SEPTEMBER, names: ['total_sales', 'stops_executed'] },
       NOW
     );
 
-    expect(result.period).toEqual({ from: '2026-09-01', to: '2026-09-30' });
-    expect(result.previous_period).toEqual({ from: '2026-08-02', to: '2026-08-31' });
-    expect(result.kpis.stops_executed).toEqual({ value: 62, previous_value: 57 });
-    expect(result.kpis.stops_by_type?.value).toEqual({ visit: 41, dispatch: 12, collection: 9 });
-    expect(result.kpis.goal_compliance).toEqual({ value: 91.2, previous_value: null });
-    expect(result.kpis.average_ticket?.value).toBe('118.00');
-  });
-
-  it('reports snapshot KPIs without a previous value', async () => {
-    const queryRaw = jest
-      .fn()
-      .mockResolvedValueOnce([periodRow()])
-      .mockResolvedValueOnce([periodRow()])
-      .mockResolvedValueOnce([snapshotRow]);
-
-    const { kpis } = await getCompanyKpis(buildClient(queryRaw), {}, NOW);
-
-    expect(kpis.overdue_portfolio).toEqual({ value: '1450.50', previous_value: null });
-    expect(kpis.pending_collections).toEqual({ value: '3200.00', previous_value: null });
-  });
-
-  it('returns every KPI when none is selected', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([{ ...periodRow(), ...snapshotRow }]);
-
-    const { kpis } = await getCompanyKpis(buildClient(queryRaw), {}, NOW);
-
-    expect(Object.keys(kpis)).toHaveLength(17);
-    expect(queryRaw).toHaveBeenCalledTimes(3);
-  });
-
-  it('returns only the selected KPIs, in the requested order', async () => {
-    const queryRaw = jest
-      .fn()
-      .mockResolvedValueOnce([periodRow()])
-      .mockResolvedValueOnce([periodRow({ stops_executed: 57 })]);
-
-    const { kpis } = await getCompanyKpis(
-      buildClient(queryRaw),
-      { kpis: ['new_prospects', 'stops_executed'] },
-      NOW
-    );
-
-    expect(Object.keys(kpis)).toEqual(['new_prospects', 'stops_executed']);
-    expect(kpis.stops_executed).toEqual({ value: 62, previous_value: 57 });
-    // No snapshot KPI requested: the collections query is skipped.
     expect(queryRaw).toHaveBeenCalledTimes(2);
+    expect(Object.keys(result.kpis)).toEqual(['total_sales', 'stops_executed']);
+    expect(result.kpis.total_sales).toEqual({ value: '29264.00', previous_value: '27010.50' });
+    expect(result.kpis.stops_executed).toEqual({ value: 248, previous_value: 231 });
+    expect(result.period).toEqual(SEPTEMBER);
+    expect(result.previous_period).toEqual({ from: '2026-08-02', to: '2026-08-31' });
   });
 
-  it('skips both period queries when only snapshot KPIs are requested', async () => {
-    const queryRaw = jest.fn().mockResolvedValueOnce([snapshotRow]);
+  it('computes all 17 KPIs when no name is given', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([{ value: 1, previous_value: 0 }]);
 
-    const { kpis } = await getCompanyKpis(
+    const { kpis } = await getKpiValues(buildClient(queryRaw), {}, NOW);
+
+    expect(queryRaw).toHaveBeenCalledTimes(KPI_NAMES.length);
+    expect(Object.keys(kpis)).toEqual([...KPI_NAMES]);
+  });
+
+  it('maps the stops_by_type row into both periods', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([
+      {
+        visit: 41, dispatch: 12, collection: 9,
+        previous_visit: 30, previous_dispatch: 10, previous_collection: 5,
+      },
+    ]);
+
+    const { kpis } = await getKpiValues(buildClient(queryRaw), { names: ['stops_by_type'] }, NOW);
+
+    expect(kpis.stops_by_type).toEqual({
+      value: { visit: 41, dispatch: 12, collection: 9 },
+      previous_value: { visit: 30, dispatch: 10, collection: 5 },
+    });
+  });
+
+  it('isolates a failing KPI: it comes back as an error, the rest arrive', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce([{ value: 7, previous_value: 7 }]);
+
+    const { kpis } = await getKpiValues(
       buildClient(queryRaw),
-      { kpis: ['overdue_portfolio'] },
+      { names: ['recovered_customers', 'new_prospects'] },
       NOW
     );
 
-    expect(kpis).toEqual({ overdue_portfolio: { value: '1450.50', previous_value: null } });
-    expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(kpis.recovered_customers).toEqual({ error: 'KPI could not be computed' });
+    expect(kpis.new_prospects).toEqual({ value: 7, previous_value: 7 });
+  });
+
+  it('fails the request when every KPI fails', async () => {
+    const queryRaw = jest.fn().mockRejectedValue(new Error('database down'));
+
+    await expect(
+      getKpiValues(buildClient(queryRaw), { names: ['total_sales', 'orders_count'] }, NOW)
+    ).rejects.toThrow('database down');
+  });
+
+  it('scans the previous and the selected period in a single query', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([{ value: '0.00', previous_value: '0.00' }]);
+
+    await getKpiValues(buildClient(queryRaw), { ...SEPTEMBER, names: ['total_sales'] }, NOW);
+
+    const sql = sqlOf(queryRaw, 0);
+    // Span: previous start .. selected end. Split point: selected start.
+    expect(isoInstants(sql)).toEqual(
+      expect.arrayContaining([
+        '2026-08-02T06:00:00.000Z',
+        '2026-09-01T06:00:00.000Z',
+        '2026-10-01T06:00:00.000Z',
+      ])
+    );
+    expect(sql.sql).toContain('erp_status');
+    expect(sql.sql).not.toMatch(/erp_created_at::date/);
   });
 
   it('uses the environment threshold by default and echoes it', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([{ ...periodRow(), ...snapshotRow }]);
+    const queryRaw = jest.fn().mockResolvedValue([{ value: 18, previous_value: 22 }]);
 
-    const result = await getCompanyKpis(buildClient(queryRaw), {}, NOW);
+    const result = await getKpiValues(
+      buildClient(queryRaw),
+      { names: ['customers_without_visit'] },
+      NOW
+    );
 
     expect(result.thresholds).toEqual({
       inactivity_days: envs.INACTIVITY_THRESHOLD_DAYS,
@@ -149,28 +170,53 @@ describe('getCompanyKpis', () => {
   });
 
   it('lets the request override the inactivity threshold', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([{ ...periodRow(), ...snapshotRow }]);
+    const queryRaw = jest.fn().mockResolvedValue([{ value: 3, previous_value: 1 }]);
 
-    const result = await getCompanyKpis(buildClient(queryRaw), { inactivity_days: 60 }, NOW);
+    const result = await getKpiValues(
+      buildClient(queryRaw),
+      { inactivity_days: 60, names: ['recovered_customers'] },
+      NOW
+    );
 
     expect(result.thresholds.inactivity_days).toBe(60);
     expect(sqlOf(queryRaw, 0).values).toContain(60);
-    expect(sqlOf(queryRaw, 1).values).toContain(60);
+  });
+});
+
+describe('getKpi', () => {
+  it('returns one KPI with its unit and previous period', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([{ value: '118.00', previous_value: '112.54' }]);
+
+    const result = await getKpi(buildClient(queryRaw), 'average_ticket', SEPTEMBER, NOW);
+
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      name: 'average_ticket',
+      unit: 'money',
+      has_previous_period: true,
+      period: SEPTEMBER,
+      previous_period: { from: '2026-08-02', to: '2026-08-31' },
+      value: '118.00',
+      previous_value: '112.54',
+    });
   });
 
-  it('filters sales and visits with the local bounds of the range', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([{ ...periodRow(), ...snapshotRow }]);
+  it('has no previous period for a snapshot KPI', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([{ value: '1450.50', previous_value: null }]);
 
-    await getCompanyKpis(buildClient(queryRaw), { from: '2026-09-01', to: '2026-09-30' }, NOW);
+    const result = await getKpi(buildClient(queryRaw), 'overdue_portfolio', {}, NOW);
 
-    const sql = sqlOf(queryRaw, 0);
-    const instants = sql.values
-      .filter((value): value is Date => value instanceof Date)
-      .map((value) => value.toISOString());
-    expect(instants).toContain('2026-09-01T06:00:00.000Z');
-    expect(instants).toContain('2026-10-01T06:00:00.000Z');
-    expect(sql.sql).toContain('erp_status');
-    expect(sql.sql).not.toMatch(/erp_created_at::date/);
+    expect(result.previous_period).toBeNull();
+    expect(result.previous_value).toBeNull();
+  });
+
+  it('answers 404 for an unknown KPI without querying', async () => {
+    const queryRaw = jest.fn();
+
+    await expect(
+      getKpi(buildClient(queryRaw), 'monto_cobrado', {}, NOW)
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(queryRaw).not.toHaveBeenCalled();
   });
 });
 

@@ -20,7 +20,7 @@ Código: `src/services/metrics.service.ts` (orquestación y mapeo), `src/reposit
 | `from` | `YYYY-MM-DD` | primer día del mes en curso | Día local de El Salvador, inclusivo |
 | `to` | `YYYY-MM-DD` | último día del mes de `from` | Inclusivo. Máximo 366 días de rango |
 | `inactivity_days` | entero 1–365 | `INACTIVITY_THRESHOLD_DAYS` (30) | Sobrescribe el umbral solo para esa petición |
-| `kpis` | lista separada por coma | todas | **Solo en `/kpis`.** Ver endpoint 1 |
+| `names` | lista separada por coma | todas | **Solo en `/kpis/values`.** Ver endpoint 1 |
 
 Errores de validación → `400` con `errors[].field` (`from` si `from > to`, `to` si el rango excede 366 días).
 
@@ -39,22 +39,73 @@ Errores de validación → `400` con `errors[].field` (`from` si `from > to`, `t
 
 ## Endpoints
 
-### 1. `GET /kpis` — tarjetas de empresa (`1a`, `1d`, `1v`)
+### 1. KPIs de empresa — tarjetas (`1a`, `1d`, `1v`)
 
-**Selección de KPIs (opcional):** `?kpis=` con los nombres separados por coma, o el parámetro repetido.
+**Cada KPI se calcula con su propia query**, y solo corre si se pide. El SQL de cada una está en `src/repositories/metrics/kpis/<nombre>.sql.ts`. Hay tres endpoints:
 
 ```
-GET /kpis?kpis=stops_executed,average_ticket,customers_without_visit,new_prospects   ← Home (1a)
-GET /kpis                                                                            ← Panel (1d): las 17
+GET /kpis                                        → catálogo: qué KPIs existen (no calcula nada)
+GET /kpis/values?names=a,b,c&from&to             → lote: calcula SOLO esas KPIs, en paralelo
+GET /kpis/:name?from&to                          → una KPI (refrescar una tarjeta)
 ```
 
-- Sin el parámetro devuelve las 17. Con él, `kpis` trae **solo** las pedidas, en el orden pedido.
-- Los duplicados se ignoran. Un nombre desconocido o una lista vacía → `400` (`errors[].field` empieza con `kpis`).
-- Nombres válidos: los 17 de la tabla de abajo (`KPI_NAMES` en `src/domain/schemas/metrics.schema.ts`).
-- El cálculo es el mismo pidas una o todas: las KPIs del período salen de una sola query. Lo que se ahorra es respuesta, y además se omite la query de cartera si no pides `overdue_portfolio` ni `pending_collections` (y las del período si solo pides esas dos).
-- En TypeScript el tipo es `Partial<CompanyKpis>`: el frontend debe tratar cada tarjeta como opcional.
+**Cuál usar:**
 
-Cada KPI viene como `{ value, previous_value }`. `previous_value` es el mismo KPI en el período anterior de igual duración (`previous_period`), para los deltas del Home ("+8 %"). Los KPIs *foto* (cartera) tienen `previous_value: null`.
+| Caso | Llamada |
+|---|---|
+| Home (`1a`), 4 tarjetas | `GET /kpis/values?names=stops_executed,average_ticket,customers_without_visit,new_prospects` |
+| Panel (`1d`), todas | `GET /kpis/values` (sin `names` = las 17), o 2–3 lotes en paralelo por sección para carga progresiva |
+| Refrescar una tarjeta | `GET /kpis/average_ticket?from=…&to=…` |
+
+Un lote es **una** request: autenticación una sola vez y las queries en paralelo dentro del servidor. Pedir 4 KPIs ejecuta 4 queries, no 17.
+
+#### `GET /kpis` — catálogo
+
+```json
+{
+  "kpis": [
+    { "name": "total_sales", "unit": "money", "has_previous_period": true, "thresholds": [] },
+    { "name": "customers_without_visit", "unit": "count", "has_previous_period": true, "thresholds": ["inactivity_days"] },
+    { "name": "overdue_portfolio", "unit": "money", "has_previous_period": false, "thresholds": ["credit_term_days"] }
+  ]
+}
+```
+
+- `unit`: `count`, `money`, `percent`, `minutes` o `days`. Indica cómo formatear el valor.
+- `thresholds`: qué claves del bloque `thresholds` afectan a esa KPI. Son las que el frontend muestra como tag ("Umbral: 30 días").
+- `has_previous_period: false` corresponde a las KPIs *foto*: `previous_value` siempre es `null`.
+
+#### `GET /kpis/values` — lote
+
+Parámetro `names`: nombres separados por coma, o el parámetro repetido (`?names=a&names=b`).
+- Sin `names` calcula las 17.
+- Los duplicados se ignoran.
+- Un nombre desconocido o una lista vacía devuelve `400`, con `errors[].field` empezando por `names`.
+- `kpis` trae solo las pedidas, en el orden en que se pidieron.
+
+**Aislamiento de fallas:** si una KPI falla, llega como `{ "error": "KPI could not be computed" }` y las demás llegan normales. Solo si fallan **todas** se responde `500`. El frontend debe tratar cada tarjeta como opcional y revisar si trae `error`.
+
+Cada KPI viene como `{ value, previous_value }`. `previous_value` es la misma KPI en el período anterior de igual duración (`previous_period`), y sirve para los deltas del Home ("+8 %"). **Se calcula en la misma query**: se recorre una sola vez el tramo `[inicio del período anterior, fin del actual)` y se separan los dos valores con `FILTER`.
+
+#### `GET /kpis/:name` — una KPI
+
+```json
+{
+  "name": "average_ticket",
+  "unit": "money",
+  "has_previous_period": true,
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "previous_period": { "from": "2026-08-02", "to": "2026-08-31" },
+  "thresholds": { "inactivity_days": 30, "credit_term_days": 60, "gps_radius_meters": 80 },
+  "value": "118.00",
+  "previous_value": "112.54"
+}
+```
+
+- Un nombre desconocido devuelve `404`.
+- En las KPIs *foto*, `previous_period` es `null`.
+
+**Ejemplo de respuesta de `/kpis/values` con las 17:**
 
 ```json
 {
@@ -63,7 +114,7 @@ Cada KPI viene como `{ value, previous_value }`. `previous_value` es el mismo KP
   "thresholds": { "inactivity_days": 30, "credit_term_days": 60, "gps_radius_meters": 80 },
   "kpis": {
     "stops_executed":          { "value": 248, "previous_value": 231 },
-    "stops_by_type":           { "value": { "visit": 160, "dispatch": 60, "collection": 28 }, "previous_value": { "...": 0 } },
+    "stops_by_type":           { "value": { "visit": 160, "dispatch": 60, "collection": 28 }, "previous_value": { "visit": 150, "dispatch": 55, "collection": 26 } },
     "visited_customers":       { "value": 140, "previous_value": 133 },
     "effective_visits_rate":   { "value": 84.7, "previous_value": 82.1 },
     "average_visit_minutes":   { "value": 17.3, "previous_value": 18.0 },
@@ -202,11 +253,11 @@ Los buckets sin actividad llegan en cero, así que el gráfico no tiene huecos. 
 
 | Pantalla | Endpoints |
 |---|---|
-| `1a` Resumen (Home) | `/kpis?kpis=stops_executed,average_ticket,customers_without_visit,new_prospects` (con deltas) y `/trends` para "Paradas por semana" |
-| `1d` Panel de métricas | `/kpis` (`stops_executed`, `average_ticket`, `average_monthly_sales`, `route_effectiveness`) y `/sellers` |
+| `1a` Resumen (Home) | `/kpis/values?names=stops_executed,average_ticket,customers_without_visit,new_prospects` (con deltas) y `/trends` para "Paradas por semana" |
+| `1d` Panel de métricas | `/kpis/values?names=stops_executed,average_ticket,average_monthly_sales,route_effectiveness` y `/sellers` |
 | `1e` Tendencias | `/trends`, `/coverage`, `/purchase-frequency` |
 | `1f` Desempeño del equipo | `/sellers`, y `/sellers/:id` al expandir una fila |
-| `1v` Tablet | `/kpis` (+ `purchase_frequency_days`) y `/sellers` |
+| `1v` Tablet | `/kpis/values?names=stops_executed,average_ticket,average_monthly_sales,purchase_frequency_days` y `/sellers` |
 
 ---
 

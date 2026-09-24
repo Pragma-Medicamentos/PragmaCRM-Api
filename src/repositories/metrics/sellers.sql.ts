@@ -2,7 +2,13 @@ import { Prisma } from '../../generated/prisma/client';
 import { ERP_STATUS_SALE } from '../../domain/constants/businessRules';
 import { ROLES } from '../../domain/types/auth.types';
 import { LocalDateRange } from '../../lib/localDateRange';
-import { TZ, goalsCte, salesInRange, visitsInRange } from './fragments.sql';
+import {
+  TZ,
+  VISIT_AT,
+  SALE_AT,
+  inRange,
+  goalsCte,
+} from './fragments.sql';
 
 /**
  * One row per seller. Sales are credited to `sale.user_id`, the ERP seller;
@@ -29,7 +35,8 @@ export const sellerPerformanceSql = (
                              (v.started_at AT TIME ZONE ${TZ})::date))
                FILTER (WHERE v.route_user_id IS NOT NULL)        AS route_days
       FROM   visit v
-      WHERE  ${visitsInRange(range)}
+      WHERE  v.deleted_at IS NULL
+        AND  ${inRange(VISIT_AT, range)}
       GROUP  BY v.user_id
     ),
     ss AS (
@@ -43,7 +50,9 @@ export const sellerPerformanceSql = (
              ON rv.id = s.visit_id
             AND rv.deleted_at IS NULL
             AND rv.route_user_id IS NOT NULL
-      WHERE  ${salesInRange(range)}
+      WHERE  s.deleted_at IS NULL
+        AND  s.erp_status = ${ERP_STATUS_SALE}
+        AND  ${inRange(SALE_AT, range)}
       GROUP  BY s.user_id
     ),
     others AS (
@@ -56,7 +65,8 @@ export const sellerPerformanceSql = (
             AND s.erp_status = ${ERP_STATUS_SALE}
             AND s.user_id IS NOT NULL
             AND s.user_id <> v.user_id
-      WHERE  ${visitsInRange(range)}
+      WHERE  v.deleted_at IS NULL
+        AND  ${inRange(VISIT_AT, range)}
         AND  v.visit_type = 'dispatch'
       GROUP  BY v.user_id
     ),
