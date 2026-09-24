@@ -44,12 +44,12 @@ export const sellerPerformanceSql = (
              COUNT(*)     AS orders,
              SUM(s.total) AS sales,
              AVG(s.total) AS ticket,
-             COALESCE(SUM(s.total) FILTER (WHERE rv.id IS NOT NULL), 0) AS route_sales
+             COALESCE(SUM(s.total) FILTER (WHERE v.id IS NOT NULL), 0) AS route_sales
       FROM   sale s
-      LEFT   JOIN visit rv
-             ON rv.id = s.visit_id
-            AND rv.deleted_at IS NULL
-            AND rv.route_user_id IS NOT NULL
+      LEFT   JOIN visit v
+             ON v.id = s.visit_id
+            AND v.deleted_at IS NULL
+            AND v.route_user_id IS NOT NULL
       WHERE  s.deleted_at IS NULL
         AND  s.erp_status = ${ERP_STATUS_SALE}
         AND  ${inRange(SALE_AT, range)}

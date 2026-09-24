@@ -24,10 +24,10 @@ export const routeEffectivenessSql = (w: KpiWindow): Prisma.Sql => Prisma.sql`
     SELECT COALESCE(SUM(s.total) FILTER (WHERE ${inCurrent(SALE_AT, w)}), 0)  AS amount,
            COALESCE(SUM(s.total) FILTER (WHERE ${inPrevious(SALE_AT, w)}), 0) AS previous_amount
     FROM   sale s
-    JOIN   visit rv
-           ON rv.id = s.visit_id
-          AND rv.deleted_at IS NULL
-          AND rv.route_user_id IS NOT NULL
+    JOIN   visit v
+           ON v.id = s.visit_id
+          AND v.deleted_at IS NULL
+          AND v.route_user_id IS NOT NULL
     WHERE  s.deleted_at IS NULL
       AND  s.erp_status = ${ERP_STATUS_SALE}
       AND  ${inWindow(SALE_AT, w)}

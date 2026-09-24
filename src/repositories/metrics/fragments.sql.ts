@@ -104,10 +104,23 @@ export const goalsCte = (range: LocalDateRange): Prisma.Sql => {
 };
 
 /**
- * Consecutive-purchase gaps. For every confirmed sale up to the end of the
- * range, the days since the same customer's previous confirmed sale. History
- * before the range is read on purpose: the first purchase of the period needs
- * its predecessor, even if it happened a year earlier.
+ * Consecutive-purchase gaps: a CTE (a named, temporary result that lives only
+ * while the query runs) called `gaps`, with one row per confirmed sale up to
+ * the end of the range and the days since the SAME customer's previous
+ * confirmed sale.
+ *
+ *   LAG(erp_created_at) OVER (PARTITION BY customer_id ORDER BY erp_created_at)
+ *   -> within each customer's sales, in date order, the date of the row before.
+ *
+ *   sale                      gaps
+ *   A  10 Jun           ->    A  10 Jun  NULL   (first sale: nothing before)
+ *   A  20 Aug           ->    A  20 Aug    71   (20 Aug - 10 Jun)
+ *   A   5 Sep           ->    A   5 Sep    16   (5 Sep - 20 Aug)
+ *
+ * It is the gap between two sales, not the time since the last sale until
+ * today. History before the range is read on purpose: the first purchase of
+ * the period needs its predecessor, even if it happened a year earlier. Used
+ * by recovered_customers and purchase_frequency_days.
  */
 export const saleGapsCte = (range: DateSpan): Prisma.Sql => Prisma.sql`
   gaps AS (
