@@ -8,6 +8,7 @@ import { CustomersRoutes } from './customers/routes';
 import { DailyRouteRoutes } from './daily-route/routes';
 import { RoutesRoutes } from './routes/routes';
 import { VisitsRoutes } from './visits/routes';
+import { ProspectsRoutes } from './prospects/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
@@ -85,6 +86,10 @@ export class AppRoutes {
       requireRole(ROLES.SELLER),
       VisitsRoutes.routes
     );
+
+    // PCRM-62: prospects. Auth here; role per verb inside ProspectsRoutes
+    // (SELLER POST, ADMIN GET) so PCRM-64 can list without a second mount.
+    router.use('/api/v1/prospects', requireAuth, ProspectsRoutes.routes);
 
     // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
 
