@@ -10,6 +10,7 @@ import {
   listCustomerCreditsQuerySchema,
   listCustomerSalesQuerySchema,
   listCustomersQuerySchema,
+  updateCustomerContactSchema,
   updateCustomerLocationSchema,
 } from '../../domain/schemas/customer.schema';
 
@@ -45,6 +46,12 @@ export class CustomersRoutes {
       validateParams(customerParamsSchema),
       validateBody(updateCustomerLocationSchema),
       controller.updateLocation
+    );
+    router.patch(
+      '/:id/contact',
+      validateParams(customerParamsSchema),
+      validateBody(updateCustomerContactSchema),
+      controller.updateContact
     );
 
     return router;
