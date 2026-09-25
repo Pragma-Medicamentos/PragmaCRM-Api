@@ -26,3 +26,12 @@ export const loginSchema = z.union([
 ]);
 
 export type LoginInput = z.infer<typeof loginSchema>;
+
+// GoTrue rejects shorter passwords (`minimum_password_length = 6` in config.toml).
+export const setPasswordSchema = z
+  .object({
+    password: z.string().min(6, 'Password must be at least 6 characters'),
+  })
+  .strict();
+
+export type SetPasswordInput = z.infer<typeof setPasswordSchema>;

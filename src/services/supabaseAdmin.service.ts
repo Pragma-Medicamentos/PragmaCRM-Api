@@ -86,6 +86,30 @@ export const deleteAuthUser = async (authUserId: string): Promise<void> => {
  * helpers filter by active. Banning additionally kills the refresh, so the
  * session dies instead of lingering until the access token expires.
  */
+/**
+ * Sets the GoTrue password for an account that already signed in (OTP or
+ * Bearer). `password_set_at` is stamped by the `auth_users_sync_password_set_at`
+ * trigger when `encrypted_password` changes; the use case also writes the
+ * column when that trigger left it null.
+ */
+export const setAuthUserPassword = async (
+  authUserId: string,
+  password: string
+): Promise<void> => {
+  const { error } = await admin().auth.admin.updateUserById(authUserId, {
+    password,
+  });
+
+  if (!error) return;
+
+  const status = (error as { status?: number }).status;
+  if (status === 422 || error.code === 'weak_password') {
+    throw CustomError.unprocessable('Password does not meet the requirements');
+  }
+
+  throw error;
+};
+
 export const setAuthUserBanned = async (
   authUserId: string,
   banned: boolean

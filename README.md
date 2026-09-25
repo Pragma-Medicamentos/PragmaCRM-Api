@@ -251,10 +251,11 @@ Atributos: `HttpOnly`, `SameSite` (`lax` en `dev`, `none` en staging/prod; overr
 
 | Método | Ruta | Body | Efecto |
 |---|---|---|---|
-| `POST` | `/api/v1/auth/login` | `{ "email", "password" }` o `{ "email", "otp" }` (6 dígitos) | Fija las dos cookies. `200` con `data.user` y `data.expiresIn` |
+| `POST` | `/api/v1/auth/login` | `{ "email", "password" }` o `{ "email", "otp" }` (6 dígitos; el campo se llama `otp`) | Fija las dos cookies. `200` con `data.user` y `data.expiresIn`. No existe `/auth/otp/verify` |
+| `POST` | `/api/v1/auth/password` | `{ "password" }` (mínimo 6) | Requiere sesión (cookie o Bearer). Fija la contraseña en GoTrue y estampa `password_set_at`. `200` con `data.user`. Sin tokens en el JSON |
 | `POST` | `/api/v1/auth/refresh` | vacío | Rota la sesión de GoTrue y reescribe las cookies. Sin cookie de refresh: `401` y las borra |
 | `POST` | `/api/v1/auth/logout` | vacío | Revoca el access token en Supabase (best-effort) y borra las cookies. Idempotente |
-| `POST` | `/api/v1/auth/otp` | `{ "email" }` | Sigue solo enviando el código. No abre sesión |
+| `POST` | `/api/v1/auth/otp` | `{ "email" }` | Solo envía el código. La sesión se abre con `POST /login` y `{ "email", "otp" }` |
 
 El cliente web llama con `credentials: 'include'` (y el `x-api-key` de siempre). CORS responde `Access-Control-Allow-Credentials: true` y refleja el origen de `CORS_ORIGIN`. Tras el login, las rutas protegidas no necesitan `Authorization`: la cookie `pcrm_access` basta. Un `401` en una ruta de negocio se resuelve con `POST /auth/refresh` y un reintento.
 
@@ -288,6 +289,11 @@ curl -i -b cookies.txt -c cookies.txt -H "x-api-key: $API_KEY" \
 
 curl -i -b cookies.txt -c cookies.txt -H "x-api-key: $API_KEY" \
   -X POST http://localhost:3000/api/v1/auth/logout
+
+# Contraseña de la cuenta ya autenticada. No devuelve tokens.
+curl -i -b cookies.txt -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"password":"nueva-clave"}' \
+  http://localhost:3000/api/v1/auth/password
 ```
 
 ```json

@@ -9,6 +9,9 @@ import {
 } from '../../../use-cases/establish-session.use-case';
 import { revokeSession } from '../../../services/supabaseSession.service';
 import { CustomError } from '../../../domain/errors/CustomError';
+import { verifyAccessToken } from '../../../lib/supabaseJwt';
+import { findUserByAuthUserId } from '../../../services/auth.service';
+import { setUserPassword } from '../../../use-cases/set-password.use-case';
 
 jest.mock('../../../lib/supabaseJwt', () => ({
   verifyAccessToken: jest.fn(),
@@ -30,9 +33,16 @@ jest.mock('../../../services/supabaseSession.service', () => ({
   revokeSession: jest.fn(),
 }));
 
+jest.mock('../../../use-cases/set-password.use-case', () => ({
+  setUserPassword: jest.fn(),
+}));
+
 const establishSessionMock = establishSession as jest.Mock;
 const refreshEstablishedSessionMock = refreshEstablishedSession as jest.Mock;
 const revokeSessionMock = revokeSession as jest.Mock;
+const verifyAccessTokenMock = verifyAccessToken as jest.Mock;
+const findUserByAuthUserIdMock = findUserByAuthUserId as jest.Mock;
+const setUserPasswordMock = setUserPassword as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
@@ -89,6 +99,23 @@ describe('POST /api/v1/auth/login', () => {
     );
   });
 
+  it('opens a session from { email, otp }', async () => {
+    establishSessionMock.mockResolvedValue(session);
+
+    const res = await request(app)
+      .post('/api/v1/auth/login')
+      .set('x-api-key', API_KEY)
+      .send({ email: 'admin@pragma.test', otp: '123456' });
+
+    expect(res.status).toBe(200);
+    expect(establishSessionMock).toHaveBeenCalledWith(expect.anything(), {
+      email: 'admin@pragma.test',
+      otp: '123456',
+    });
+    expect(JSON.stringify(res.body)).not.toContain('access-jwt');
+    expect(JSON.stringify(res.body)).not.toContain('refresh-opaque');
+  });
+
   it('rejects a body that sends password and otp together', async () => {
     const res = await request(app)
       .post('/api/v1/auth/login')
@@ -97,6 +124,58 @@ describe('POST /api/v1/auth/login', () => {
 
     expect(res.status).toBe(400);
     expect(establishSessionMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/v1/auth/password', () => {
+  const passwordSetAt = '2026-09-25T15:00:00.000Z';
+
+  it('answers 401 without a cookie or bearer token', async () => {
+    const res = await request(app)
+      .post('/api/v1/auth/password')
+      .set('x-api-key', API_KEY)
+      .send({ password: 'new-secret' });
+
+    expect(res.status).toBe(401);
+    expect(setUserPasswordMock).not.toHaveBeenCalled();
+  });
+
+  it('sets the password for a cookie session and does not return tokens', async () => {
+    verifyAccessTokenMock.mockResolvedValue({ sub: session.user.authUserId });
+    findUserByAuthUserIdMock.mockResolvedValue({
+      id: session.user.id,
+      auth_user_id: session.user.authUserId,
+      role: ROLES.ADMIN,
+      name: 'Admin',
+      email: 'admin@pragma.test',
+      active: true,
+      password_set_at: null,
+    });
+    setUserPasswordMock.mockResolvedValue({
+      ...session.user,
+      passwordSetAt,
+    });
+
+    const res = await request(app)
+      .post('/api/v1/auth/password')
+      .set('x-api-key', API_KEY)
+      .set('Cookie', 'pcrm_access=leaked-access-token; pcrm_refresh=leaked-refresh-token')
+      .send({ password: 'new-secret' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      success: true,
+      message: 'Password set',
+      data: {
+        user: { ...session.user, passwordSetAt },
+      },
+    });
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain('leaked-access-token');
+    expect(body).not.toContain('leaked-refresh-token');
+    expect(body).not.toContain('new-secret');
+    expect(body).not.toContain('access_token');
+    expect(body).not.toContain('refresh_token');
   });
 });
 
