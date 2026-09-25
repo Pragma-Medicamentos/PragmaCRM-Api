@@ -555,7 +555,8 @@ BEGIN
   SELECT u.id,
          EXTRACT(YEAR  FROM m.month_start)::smallint,
          EXTRACT(MONTH FROM m.month_start)::smallint,
-         round(COALESCE(NULLIF(sales.amount, 0), 1500) * (0.8 + random() * 0.4), -1)
+         -- random() is float8; round(float8, int) does not exist, only round(numeric, int).
+         round((COALESCE(NULLIF(sales.amount, 0), 1500) * (0.8 + random() * 0.4))::numeric, -1)
   FROM   app_user u
   CROSS  JOIN generate_series(
            date_trunc('month', now() AT TIME ZONE 'America/El_Salvador') - interval '12 months',

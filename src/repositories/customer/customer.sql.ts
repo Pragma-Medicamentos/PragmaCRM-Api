@@ -60,6 +60,7 @@ export const customerCoreSql = (id: string): Prisma.Sql => Prisma.sql`
          c.trade_name,
          c.establishment_type,
          c.address,
+         c.place_id,
          c.municipality,
          c.zone,
          c.phone,

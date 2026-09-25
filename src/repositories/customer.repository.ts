@@ -65,6 +65,7 @@ export interface CustomerCoreRow {
   trade_name: string | null;
   establishment_type: string | null;
   address: string | null;
+  place_id: string | null;
   municipality: string | null;
   zone: string | null;
   phone: string | null;
