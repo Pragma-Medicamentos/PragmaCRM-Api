@@ -38,10 +38,13 @@ fisico no siempre puede alcanzar el localhost de la Mac. Ver la tabla de variabl
 | `PORT`                        | puerto de escucha HTTP                                                |
 | `DATABASE_URL`                | conexion a Postgres (Supabase)                                        |
 | `LOG_LEVEL`                   | nivel de pino                                                         |
+| `BUSINESS_TIMEZONE`           | zona horaria del negocio, `America/El_Salvador` por defecto (5.7)     |
 | `UPLOAD_MAX_FILE_SIZE_MB`     | techo del JSON de ventas subido manualmente (RF-03)                   |
+| `INACTIVITY_THRESHOLD_DAYS`   | umbral de inactividad del panel de metricas (RF-09), 30 por defecto   |
 | `SUPABASE_URL`                | issuer / JWKS de Supabase Auth                                        |
 | `SUPABASE_SERVICE_ROLE_KEY`   | bypassea RLS — **solo servidor**, nunca en Web ni APK                 |
 | `CORS_ORIGIN`                 | origenes permitidos para el dashboard web (separados por coma)        |
+| `AUTH_COOKIE_SAMESITE`        | `lax` \| `strict` \| `none`. Default `lax` en dev, `none` fuera. Cookies de sesión web (PCRM-109) |
 | `API_KEY`                     | valor esperado en el header `x-api-key` de toda ruta salvo `/api/health` |
 
 No hay variables `OTP_*` propias: el largo y la expiracion del codigo los define `supabase/config.toml`.

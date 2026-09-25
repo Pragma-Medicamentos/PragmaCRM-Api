@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { get } from 'env-var';
+import { IANAZone } from 'luxon';
 
 // Application-level environment. Different from NODE_ENV: this one describes
 // the deployment (dev/staging/prod), NODE_ENV describes how Node runs and
@@ -10,6 +11,17 @@ import { get } from 'env-var';
 const STAGE = get('STAGE').required().asEnum(['dev', 'staging', 'prod'] as const);
 const isLocal = STAGE === 'dev';
 
+// Business timezone (CLAUDE.md 5.7). ERP timestamps carry no offset and every
+// local-day boundary (sales per day, visit day, metrics ranges) is computed in
+// it. Validated at boot: luxon does not throw on an unknown zone, it silently
+// yields invalid dates, and the metrics SQL inlines this value as a literal.
+const BUSINESS_TIMEZONE = get('BUSINESS_TIMEZONE').default('America/El_Salvador').asString();
+if (!IANAZone.isValidZone(BUSINESS_TIMEZONE)) {
+  throw new Error(
+    `env-var: "BUSINESS_TIMEZONE" should be a valid IANA timezone, but is set to "${BUSINESS_TIMEZONE}"`
+  );
+}
+
 export const envs = {
   STAGE,
   PORT: get('PORT').required().asPortNumber(),
@@ -19,6 +31,10 @@ export const envs = {
   DATABASE_URL: get('DATABASE_URL').required().asString(),
 
   LOG_LEVEL: get('LOG_LEVEL').default('info').asString(),
+
+  // Changing it re-attributes the whole history to different local days
+  // (sales per route, visit day checks, metrics periods). Not a tuning knob.
+  BUSINESS_TIMEZONE,
 
   // Maximum size of the ERP sales JSON on manual upload (RF-03).
   //
@@ -41,6 +57,13 @@ export const envs = {
   // default; nginx caps at 1 MB and needs `client_max_body_size` raised.
   // See docs/DEPLOY_DOKPLOY.md.
   UPLOAD_MAX_FILE_SIZE_MB: get('UPLOAD_MAX_FILE_SIZE_MB').default('100').asIntPositive(),
+
+  // Days without a visit (or without a purchase) after which a customer counts
+  // as inactive. Drives "customers without visit" and "recovered customers" in
+  // the metrics panel (RF-09). 30 days is provisional, taken from wireframe
+  // 1f: the client has not signed a value yet (CLAUDE.md 5.8, Anexo B #4).
+  // Each metrics request can still override it with `?inactivity_days=`.
+  INACTIVITY_THRESHOLD_DAYS: get('INACTIVITY_THRESHOLD_DAYS').default('30').asIntPositive(),
   // Base URL of the Supabase project. Issuer and JWKS endpoint are derived
   // from it, so there is no point declaring three variables for one value.
   SUPABASE_URL: get('SUPABASE_URL').required().asUrlString(),
@@ -62,6 +85,15 @@ export const envs = {
   CORS_ORIGIN: isLocal
     ? get('CORS_ORIGIN').default('http://localhost:5173').asString()
     : get('CORS_ORIGIN').required().asString(),
+
+  // Browser session cookies (PCRM-109). `lax` is enough when the dashboard and
+  // the API share a site (localhost ports, or subdomains of one registrable
+  // domain). `none` is required when they do not: a cross-site credentialed
+  // fetch drops Lax cookies. `none` forces Secure, which browsers reject on
+  // plain HTTP except localhost.
+  AUTH_COOKIE_SAMESITE: get('AUTH_COOKIE_SAMESITE')
+    .default(isLocal ? 'lax' : 'none')
+    .asEnum(['lax', 'strict', 'none'] as const),
 
   // Static shared secret sent in the `x-api-key` header. Every request to the
   // API except `/api/health` must present it (middleware/apiKey.ts). It is a

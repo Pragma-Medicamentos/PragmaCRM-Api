@@ -237,17 +237,63 @@ falla — ver `.env.template`.
 > La `service_role` key es un **bypass total de RLS usable por HTTP desde cualquier parte**.
 > Filtrarla es peor que filtrar la `DATABASE_URL`. Solo servidor: nunca en el bundle web ni en el APK.
 
+### Sesión web en cookies (PCRM-109)
+
+El dashboard **no guarda** `access_token` ni `refresh_token` en `localStorage`.
+Los emite esta API en cookies `HttpOnly` y el navegador las adjunta solo.
+
+| Cookie | Path | Qué lleva |
+|---|---|---|
+| `pcrm_access` | `/api/v1` | JWT de acceso. La lee `requireAuth` |
+| `pcrm_refresh` | `/api/v1/auth` | Refresh token. No viaja en el resto de rutas |
+
+Atributos: `HttpOnly`, `SameSite` (`lax` en `dev`, `none` en staging/prod; override `AUTH_COOKIE_SAMESITE`) y `Secure` fuera de `dev` o cuando `SameSite=none`. El cuerpo JSON **no** incluye los tokens.
+
+| Método | Ruta | Body | Efecto |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/login` | `{ "email", "password" }` o `{ "email", "otp" }` (6 dígitos; el campo se llama `otp`) | Fija las dos cookies. `200` con `data.user` y `data.expiresIn`. No existe `/auth/otp/verify` |
+| `POST` | `/api/v1/auth/password` | `{ "password" }` (mínimo 6) | Requiere sesión (cookie o Bearer). Fija la contraseña en GoTrue y estampa `password_set_at`. `200` con `data.user`. Sin tokens en el JSON |
+| `POST` | `/api/v1/auth/refresh` | vacío | Rota la sesión de GoTrue y reescribe las cookies. Sin cookie de refresh: `401` y las borra |
+| `POST` | `/api/v1/auth/logout` | vacío | Revoca el access token en Supabase (best-effort) y borra las cookies. Idempotente |
+| `POST` | `/api/v1/auth/otp` | `{ "email" }` | Solo envía el código. La sesión se abre con `POST /login` y `{ "email", "otp" }` |
+
+El cliente web llama con `credentials: 'include'` (y el `x-api-key` de siempre). CORS responde `Access-Control-Allow-Credentials: true` y refleja el origen de `CORS_ORIGIN`. Tras el login, las rutas protegidas no necesitan `Authorization`: la cookie `pcrm_access` basta. Un `401` en una ruta de negocio se resuelve con `POST /auth/refresh` y un reintento.
+
+**Móvil.** La app Android no usa estas cookies. Sigue mandando `Authorization: Bearer <access_token>` obtenido con el SDK de Supabase. Si el request trae Bearer, `requireAuth` lo usa y ignora la cookie.
+
 ### Cómo llama un cliente
 
-El token va en el header `Authorization`. En web y móvil lo da el SDK de Supabase
-(`supabase.auth.getSession()`); para probar a mano:
+El token va en el header `Authorization` (móvil y pruebas) o en la cookie `pcrm_access` (web).
+Para probar a mano, sin cookies:
 
 ```bash
 TOKEN=$(curl -s "$SUPABASE_URL/auth/v1/token?grant_type=password" \
   -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' \
   -d '{"email":"admin@pragma.test","password":"..."}' | jq -r .access_token)
 
-curl http://localhost:3000/api/v1/me -H "Authorization: Bearer $TOKEN"
+curl http://localhost:3000/api/v1/me -H "Authorization: Bearer $TOKEN" -H "x-api-key: $API_KEY"
+```
+
+Sesión por cookie (lo que usa el dashboard):
+
+```bash
+# Fija pcrm_access y pcrm_refresh. -c las guarda; -b las reenvía.
+curl -i -c cookies.txt -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"email":"admin@pragma.test","password":"..."}' \
+  http://localhost:3000/api/v1/auth/login
+
+curl -i -b cookies.txt -H "x-api-key: $API_KEY" http://localhost:3000/api/v1/me
+
+curl -i -b cookies.txt -c cookies.txt -H "x-api-key: $API_KEY" \
+  -X POST http://localhost:3000/api/v1/auth/refresh
+
+curl -i -b cookies.txt -c cookies.txt -H "x-api-key: $API_KEY" \
+  -X POST http://localhost:3000/api/v1/auth/logout
+
+# Contraseña de la cuenta ya autenticada. No devuelve tokens.
+curl -i -b cookies.txt -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"password":"nueva-clave"}' \
+  http://localhost:3000/api/v1/auth/password
 ```
 
 ```json

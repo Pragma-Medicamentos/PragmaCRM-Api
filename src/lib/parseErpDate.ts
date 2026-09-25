@@ -1,4 +1,5 @@
 import { DateTime } from 'luxon';
+import { envs } from '../config/envs';
 
 /**
  * Parsing for the date formats found in the ERP sales export.
@@ -20,8 +21,12 @@ import { DateTime } from 'luxon';
  * customer's local time (CLAUDE.md 5.7).
  */
 
-/** Customer timezone. See CLAUDE.md 5.7. */
-export const ERP_TIMEZONE = 'America/El_Salvador';
+/**
+ * Customer timezone, from envs.BUSINESS_TIMEZONE (default America/El_Salvador).
+ * See CLAUDE.md 5.7. Kept under this name because the importer, the visits
+ * service and the metrics engine already import it from here.
+ */
+export const ERP_TIMEZONE = envs.BUSINESS_TIMEZONE;
 
 /**
  * Accepted formats, in the order they are tried. Luxon requires an exact

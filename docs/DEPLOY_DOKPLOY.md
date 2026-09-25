@@ -86,9 +86,12 @@ hay que llenar.
 | `SUPABASE_URL` | proyecto Testing | proyecto Producción | De aquí salen el issuer y el JWKS |
 | `SUPABASE_SERVICE_ROLE_KEY` | 🔒 | 🔒 | Bypass total de RLS: filtrarla es peor que filtrar `DATABASE_URL` |
 | `API_KEY` | 🔒 distinta por entorno | 🔒 | Header `x-api-key` en toda ruta salvo `/api/health` |
-| `CORS_ORIGIN` | dominio del dashboard de staging | dominio del dashboard de producción | **Obligatoria fuera de `dev`**: sin ella el arranque falla |
+| `CORS_ORIGIN` | dominio del dashboard de staging | dominio del dashboard de producción | **Obligatoria fuera de `dev`**: sin ella el arranque falla. El navegador solo adjunta las cookies de sesión si este origen coincide y el cliente usa `credentials: 'include'` |
+| `AUTH_COOKIE_SAMESITE` | `none` (default) | `none` (default) | Opcional. `lax` si el dashboard y la API comparten sitio (mismo dominio registrable). `none` si no: un fetch cross-site no envía cookies `Lax`. `none` implica `Secure` |
 | `LOG_LEVEL` | `info` | `info` | Opcional |
+| `BUSINESS_TIMEZONE` | `America/El_Salvador` | `America/El_Salvador` | Opcional. Zona horaria del negocio (CLAUDE.md 5.7). Debe ser la misma en todos los entornos; si es inválida el arranque falla |
 | `UPLOAD_MAX_FILE_SIZE_MB` | `100` | `100` | Opcional. Ver Memoria |
+| `INACTIVITY_THRESHOLD_DAYS` | `30` | `30` | Opcional. Umbral de inactividad del panel de métricas (RF-09). Provisional, CLAUDE.md 5.8 |
 
 🔒 = secreto. No sale del panel de Dokploy ni de la bóveda que use el equipo.
 
