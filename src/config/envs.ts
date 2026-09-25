@@ -86,6 +86,15 @@ export const envs = {
     ? get('CORS_ORIGIN').default('http://localhost:5173').asString()
     : get('CORS_ORIGIN').required().asString(),
 
+  // Browser session cookies (PCRM-109). `lax` is enough when the dashboard and
+  // the API share a site (localhost ports, or subdomains of one registrable
+  // domain). `none` is required when they do not: a cross-site credentialed
+  // fetch drops Lax cookies. `none` forces Secure, which browsers reject on
+  // plain HTTP except localhost.
+  AUTH_COOKIE_SAMESITE: get('AUTH_COOKIE_SAMESITE')
+    .default(isLocal ? 'lax' : 'none')
+    .asEnum(['lax', 'strict', 'none'] as const),
+
   // Static shared secret sent in the `x-api-key` header. Every request to the
   // API except `/api/health` must present it (middleware/apiKey.ts). It is a
   // transport-level gate on top of the caller's own JWT auth: it carries no
