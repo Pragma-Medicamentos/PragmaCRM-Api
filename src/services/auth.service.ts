@@ -28,6 +28,21 @@ export const findUserByAuthUserId = (
     },
   });
 
+/**
+ * First password only. Later changes keep the original timestamp: that is
+ * what `/me` uses to tell "still onboarding" from "already chose a password".
+ * Matches the trigger guard `password_set_at IS NULL`.
+ */
+export const stampPasswordSetAt = (
+  client: Client,
+  userId: string,
+  at: Date
+): Promise<{ count: number }> =>
+  client.app_user.updateMany({
+    where: { id: userId, deleted_at: null, password_set_at: null },
+    data: { password_set_at: at, updated_at: at },
+  });
+
 export const findActiveUserByEmail = (
   client: Client,
   email: string

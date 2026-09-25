@@ -50,7 +50,15 @@ export class Server {
 
     //* Middlewares
     this.app.use(requestMetadata);
-    this.app.use(cors({ origin: corsOrigins() }));
+    // credentials: the browser will only attach the HttpOnly session cookies
+    // (PCRM-109) when the response allows them and the web origin is echoed
+    // back. `origin` is already an explicit list, never `*`.
+    this.app.use(
+      cors({
+        origin: corsOrigins(),
+        credentials: true,
+      })
+    );
     this.app.use(express.json({ limit: '1mb' }));
     this.app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
