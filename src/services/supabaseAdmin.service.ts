@@ -40,6 +40,44 @@ export const createSellerAuthUser = async (
 };
 
 /**
+ * Creates a banned auth account for a seller discovered in an ERP import. The
+ * ERP payload carries no email, so the account holds a non-routable
+ * placeholder until an admin sets the real one (`updateAuthUserEmail`) and
+ * enables the seller. The ban keeps it unusable in the meantime.
+ */
+export const createPendingSellerAuthUser = async (
+  erpUserId: number
+): Promise<CreatedAuthUser> => {
+  const { data, error } = await admin().auth.admin.createUser({
+    email: `erp-${erpUserId}@pending.invalid`,
+    email_confirm: true,
+    ban_duration: '876000h',
+  });
+
+  if (error) throw error;
+
+  return { authUserId: data.user.id };
+};
+
+/** Keeps the auth account in step when an admin edits the seller's email. */
+export const updateAuthUserEmail = async (
+  authUserId: string,
+  email: string
+): Promise<void> => {
+  const { error } = await admin().auth.admin.updateUserById(authUserId, {
+    email,
+    email_confirm: true,
+  });
+
+  if (!error) return;
+
+  if (error.code === 'email_exists') {
+    throw CustomError.conflict('Ya existe una cuenta de acceso con este correo');
+  }
+  throw error;
+};
+
+/**
  * Sends a 6-digit OTP to an existing auth account. Uses the service role so
  * sign-in works with enable_signup = false: only accounts created by the API
  * can receive a code.

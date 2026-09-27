@@ -57,6 +57,7 @@ const stagingResult = (overrides: Partial<ImportSalesResult> = {}): ImportSalesR
   inserted: 2,
   updated: 0,
   sync_failed: 0,
+  sellers: { created_count: 0, created: [], unmapped: [] },
   ...overrides,
 });
 
