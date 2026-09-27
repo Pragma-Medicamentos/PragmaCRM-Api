@@ -1,6 +1,8 @@
 import { StagingResult, SyncResult } from '../domain/types/sales-import.types';
 import { Client, prisma } from '../lib/prisma';
-import { syncStagedSales } from '../services/salesSync.service';
+import { logger } from '../lib/adapters/logger';
+import { deleteAuthUser } from '../services/supabaseAdmin.service';
+import { SellerProvisioning, syncStagedSales } from '../services/salesSync.service';
 import { stageSalesFile } from '../services/salesStaging.service';
 
 /**
@@ -23,6 +25,32 @@ const TRANSACTION_MAX_WAIT_MS = 10_000;
 export const importSalesFile = async (
   fileBuffer: Buffer,
   uploadedBy: string
+): Promise<ImportSalesResult> => {
+  // Auth accounts created for new sellers live outside the transaction; if it
+  // rolls back they must be deleted or a retry would find them orphaned.
+  const provisioning: SellerProvisioning = { created: [], unmapped: [], createdAuthUserIds: [] };
+
+  try {
+    return await runImport(fileBuffer, uploadedBy, provisioning);
+  } catch (error) {
+    await Promise.all(
+      provisioning.createdAuthUserIds.map((id) =>
+        deleteAuthUser(id).catch((cleanupError) =>
+          logger.error('Could not roll back an auth account after a failed import', {
+            auth_user_id: id,
+            cleanup_error: cleanupError,
+          })
+        )
+      )
+    );
+    throw error;
+  }
+};
+
+const runImport = (
+  fileBuffer: Buffer,
+  uploadedBy: string,
+  provisioning: SellerProvisioning
 ): Promise<ImportSalesResult> =>
   prisma.$transaction(
     async (tx: Client) => {
@@ -34,7 +62,7 @@ export const importSalesFile = async (
       //
       // Runs inside this same transaction by receiving `tx`, so a failure
       // halfway through the upsert cannot leave the batch half applied.
-      const sync = await syncStagedSales(tx, result.upload_id);
+      const sync = await syncStagedSales(tx, result.upload_id, provisioning);
 
       return { ...result, ...sync };
     },

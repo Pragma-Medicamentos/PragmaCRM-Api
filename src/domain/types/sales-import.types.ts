@@ -87,6 +87,17 @@ export interface StagingResult {
   };
 }
 
+/** A seller created from the payload because its `erp_user_id` was unknown. */
+export interface SellerCreated {
+  erp_user_id: number;
+  name: string;
+}
+
+/** A seller in the payload that could not be created; its sales load unlinked. */
+export interface SellerUnmapped extends SellerCreated {
+  reason: string;
+}
+
 /** Result of draining `sale_staging` into the live tables (PCRM-34). */
 export interface SyncResult {
   /** Sales upserted into `sale`, inserted or updated. */
@@ -101,4 +112,13 @@ export interface SyncResult {
    * which counts intake-time rejections.
    */
   sync_failed: number;
+  /**
+   * Sellers auto-created by this import (disabled, awaiting an admin) and
+   * those that could not be mapped.
+   */
+  sellers: {
+    created_count: number;
+    created: SellerCreated[];
+    unmapped: SellerUnmapped[];
+  };
 }

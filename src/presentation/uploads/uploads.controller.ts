@@ -15,7 +15,12 @@ const buildMessage = (result: ImportSalesResult): string => {
   const syncPart = `${inserted} inserted, ${updated} updated${
     sync_failed > 0 ? `, ${sync_failed} failed to synchronize` : ''
   }`;
-  return `${base}, ${rejectedPart}. ${syncPart}.`;
+  const { created_count } = result.sellers;
+  const sellersPart =
+    created_count > 0
+      ? ` ${created_count} new ${created_count === 1 ? 'seller' : 'sellers'} created (disabled, pending admin activation).`
+      : '';
+  return `${base}, ${rejectedPart}. ${syncPart}.${sellersPart}`;
 };
 
 export class UploadsController {
@@ -40,6 +45,8 @@ export class UploadsController {
         inserted: result.inserted,
         updated: result.updated,
         sync_failed: result.sync_failed,
+        sellers_created: result.sellers.created_count,
+        sellers_unmapped: result.sellers.unmapped.length,
         request_id: res.getHeader('X-Request-ID'),
       });
 
@@ -54,6 +61,7 @@ export class UploadsController {
           inserted: result.inserted,
           updated: result.updated,
           sync_failed: result.sync_failed,
+          sellers: result.sellers,
           range: {
             from: toIsoDate(result.range.from),
             to: toIsoDate(result.range.to),
