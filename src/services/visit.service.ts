@@ -71,6 +71,7 @@ export const confirmVisit = async (
       prospect_id: true,
       stop_type: true,
       route_user_id: true,
+      is_extra: true,
       route_user: { select: { user_id: true, route_id: true } },
     },
   });
@@ -111,14 +112,20 @@ export const confirmVisit = async (
     input.longitude
   );
 
-  const routeCustomer = await client.route_customer.findFirst({
-    where: {
-      route_id: stop.route_user.route_id,
-      customer_id: stop.customer_id,
-      deleted_at: null,
-    },
-    select: { id: true },
-  });
+  // An admin-added extra stop (PCRM-158) never links to the route's planned
+  // composition, even when the customer also happens to be a route member —
+  // the lookup would then find that unrelated membership and misattribute
+  // this one-off check-in to it.
+  const routeCustomer = stop.is_extra
+    ? null
+    : await client.route_customer.findFirst({
+        where: {
+          route_id: stop.route_user.route_id,
+          customer_id: stop.customer_id,
+          deleted_at: null,
+        },
+        select: { id: true },
+      });
 
   const rows = await client.$queryRaw<VisitRow[]>(
     insertVisitSql({

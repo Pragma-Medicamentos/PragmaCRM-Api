@@ -409,7 +409,7 @@ describe('getDailyRoute — consulta', () => {
     // The sv.id tiebreak is what keeps list keys and map-pin identity stable
     // across refetches.
     expect(ranSql($queryRaw)).toMatch(
-      /ORDER BY COALESCE\(rc\.sort_order, \?\) ASC, lower\(COALESCE\(c\.name, p\.name\)\) ASC, sv\.id ASC/
+      /ORDER BY COALESCE\(CASE WHEN sv\.is_extra THEN NULL ELSE rc\.sort_order END, \?\) ASC, lower\(COALESCE\(c\.name, p\.name\)\) ASC, sv\.id ASC/
     );
     // 32767 = smallint's maximum: sends extras and prospects to the end.
     expect(ranQuery($queryRaw).values).toContain(32767);
@@ -512,7 +512,7 @@ describe('getDailyRoute — consulta', () => {
     expect(clauses.on['v']).not.toContain('customer_id');
   });
 
-  it('deriva is_extra de la ausencia de un route_customer vivo', async () => {
+  it('deriva is_extra del flag guardado o de la ausencia de un route_customer vivo', async () => {
     const { client, $queryRaw } = buildClient([]);
 
     await getDailyRoute(client, SELLER_ID, DATE);
@@ -520,12 +520,22 @@ describe('getDailyRoute — consulta', () => {
     const sql = ranSql($queryRaw);
     const clauses = clausesOf(sql);
 
-    expect(sql).toContain('(rc.id IS NULL) AS is_extra');
+    expect(sql).toContain('(sv.is_extra OR rc.id IS NULL) AS is_extra');
     // "Live route_customer row for THIS route and THIS customer" -- drop any
     // of the three and is_extra stops meaning what the contract says.
     expect(clauses.on['rc']).toContain('rc.route_id = ru.route_id');
     expect(clauses.on['rc']).toContain('rc.customer_id = sv.customer_id');
     expect(clauses.on['rc']).toContain('rc.deleted_at IS NULL');
+  });
+
+  it('fuerza sort_order a NULL en una parada extra aunque el cliente esté en la ruta', async () => {
+    const { client, $queryRaw } = buildClient([]);
+
+    await getDailyRoute(client, SELLER_ID, DATE);
+
+    expect(ranSql($queryRaw)).toContain(
+      '(CASE WHEN sv.is_extra THEN NULL ELSE rc.sort_order END)::int AS sort_order'
+    );
   });
 
   it('lee zone y municipality solo de customer, nunca del prospecto', async () => {
