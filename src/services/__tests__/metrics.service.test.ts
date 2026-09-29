@@ -260,7 +260,7 @@ describe('getSellerDetail', () => {
 
 describe('getCoverage', () => {
   it('keeps customers without a pin out of the map but in the counts', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([
+    const queryRaw = jest.fn().mockResolvedValueOnce([
       { customer_id: 'a', name: 'A', trade_name: null, lat: 13.7, lng: -89.2, visited: true, last_visit_at: null },
       { customer_id: 'b', name: 'B', trade_name: null, lat: 13.6, lng: -89.1, visited: false, last_visit_at: null },
       { customer_id: 'c', name: 'C', trade_name: null, lat: null, lng: null, visited: true, last_visit_at: null },

@@ -3,6 +3,7 @@ import { Client } from '../../lib/prisma';
 import { StopType } from '../../domain/schemas/daily-route.schema';
 import { TargetKind } from '../../domain/types/daily-route.types';
 import {
+  ensureDailyStops,
   getDailyRoute,
   setStopCustomerLocation,
 } from '../daily-route.service';
@@ -93,8 +94,13 @@ const stopRow = (overrides: Partial<StopRow> = {}): StopRow => ({
 
 const buildClient = (rows: StopRow[]) => {
   const $queryRaw = jest.fn().mockResolvedValue(rows);
-  const client = { $queryRaw } as unknown as Client;
-  return { client, $queryRaw };
+  // ensureDailyStops runs before the SELECT (PCRM-161); most of these tests
+  // use a DATE in the past relative to the real clock, so it never fires,
+  // but the mock is here so a test using today/a future date does not throw
+  // on a missing $executeRaw.
+  const $executeRaw = jest.fn().mockResolvedValue(0);
+  const client = { $queryRaw, $executeRaw } as unknown as Client;
+  return { client, $queryRaw, $executeRaw };
 };
 
 const ranQuery = ($queryRaw: jest.Mock): Prisma.Sql => $queryRaw.mock.calls[0][0];
@@ -409,7 +415,7 @@ describe('getDailyRoute — consulta', () => {
     // The sv.id tiebreak is what keeps list keys and map-pin identity stable
     // across refetches.
     expect(ranSql($queryRaw)).toMatch(
-      /ORDER BY COALESCE\(rc\.sort_order, \?\) ASC, lower\(COALESCE\(c\.name, p\.name\)\) ASC, sv\.id ASC/
+      /ORDER BY COALESCE\(CASE WHEN sv\.is_extra OR sv\.prospect_id IS NOT NULL THEN NULL ELSE sv\.sort_order END, \?\) ASC, lower\(COALESCE\(c\.name, p\.name\)\) ASC, sv\.id ASC/
     );
     // 32767 = smallint's maximum: sends extras and prospects to the end.
     expect(ranQuery($queryRaw).values).toContain(32767);
@@ -439,7 +445,7 @@ describe('getDailyRoute — consulta', () => {
     expect(ranQuery($queryRaw).values).toContain(SELLER_ID);
   });
 
-  it('filtra deleted_at en las siete tablas que toca', async () => {
+  it('filtra deleted_at en las seis tablas que toca', async () => {
     const { client, $queryRaw } = buildClient([]);
 
     await getDailyRoute(client, SELLER_ID, DATE);
@@ -450,7 +456,7 @@ describe('getDailyRoute — consulta', () => {
     expect(clauses.where).toContain('ru.deleted_at IS NULL');
 
     // Every joined table carries its own, inside its own ON clause.
-    for (const alias of ['r', 'sv', 'c', 'p', 'rc', 'v']) {
+    for (const alias of ['r', 'sv', 'c', 'p', 'v']) {
       expect(clauses.on[alias]).toContain(`${alias}.deleted_at IS NULL`);
     }
   });
@@ -463,9 +469,9 @@ describe('getDailyRoute — consulta', () => {
     const clauses = clausesOf(ranSql($queryRaw));
 
     // Moving any of these into the WHERE turns its LEFT JOIN into an inner
-    // join and silently drops stops -- a stop at a customer with no live
-    // route_customer row would vanish instead of coming back as an extra.
-    for (const alias of ['c', 'p', 'rc', 'v']) {
+    // join and silently drops stops -- a stop at a customer with a
+    // soft-deleted target would vanish instead of coming back as an extra.
+    for (const alias of ['c', 'p', 'v']) {
       expect(clauses.kind[alias]).toBe('left');
       expect(clauses.where).not.toContain(`${alias}.deleted_at IS NULL`);
     }
@@ -512,20 +518,29 @@ describe('getDailyRoute — consulta', () => {
     expect(clauses.on['v']).not.toContain('customer_id');
   });
 
-  it('deriva is_extra de la ausencia de un route_customer vivo', async () => {
+  it('deriva is_extra del flag guardado o de que la parada sea un prospecto, sin tocar route_customer', async () => {
     const { client, $queryRaw } = buildClient([]);
 
     await getDailyRoute(client, SELLER_ID, DATE);
 
     const sql = ranSql($queryRaw);
-    const clauses = clausesOf(sql);
 
-    expect(sql).toContain('(rc.id IS NULL) AS is_extra');
-    // "Live route_customer row for THIS route and THIS customer" -- drop any
-    // of the three and is_extra stops meaning what the contract says.
-    expect(clauses.on['rc']).toContain('rc.route_id = ru.route_id');
-    expect(clauses.on['rc']).toContain('rc.customer_id = sv.customer_id');
-    expect(clauses.on['rc']).toContain('rc.deleted_at IS NULL');
+    // PCRM-161: is_extra and sort_order come only from scheduled_visit now.
+    // A prospect stop has no route membership at all, so it is extra by
+    // construction; an ordinary generated or PCRM-158 stamped stop carries
+    // its own is_extra.
+    expect(sql).toContain('(sv.is_extra OR sv.prospect_id IS NOT NULL) AS is_extra');
+    expect(sql).not.toContain('route_customer');
+  });
+
+  it('fuerza sort_order a NULL en una parada extra aunque el cliente esté en la ruta', async () => {
+    const { client, $queryRaw } = buildClient([]);
+
+    await getDailyRoute(client, SELLER_ID, DATE);
+
+    expect(ranSql($queryRaw)).toContain(
+      '(CASE WHEN sv.is_extra OR sv.prospect_id IS NOT NULL THEN NULL ELSE sv.sort_order END)::int AS sort_order'
+    );
   });
 
   it('lee zone y municipality solo de customer, nunca del prospecto', async () => {
@@ -697,5 +712,205 @@ describe('setStopCustomerLocation', () => {
     });
 
     expect($executeRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * ensureDailyStops (PCRM-161): materializes scheduled_visit from the
+ * seller's weekly route composition. Postgres does the actual work -- the
+ * NOT EXISTS gate and the unique index are what make it idempotent and safe
+ * under concurrency, not any check in this service -- so these tests assert
+ * the shape of the SQL it builds, same approach as 'getDailyRoute — consulta'
+ * above, and note in each case what real guarantee backs the assertion.
+ */
+describe('ensureDailyStops — generación de paradas', () => {
+  beforeEach(() => {
+    // Fixes "today" well before every date these tests generate against, so
+    // the past/today/future comparisons do not depend on the real wall clock.
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-28T12:00:00.000Z'));
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const buildExecClient = (affected = 1) => {
+    const $executeRaw = jest.fn().mockResolvedValue(affected);
+    const client = { $executeRaw } as unknown as Client;
+    return { client, $executeRaw };
+  };
+
+  const ranStatement = ($executeRaw: jest.Mock): Prisma.Sql => $executeRaw.mock.calls[0][0];
+
+  const ranSql = ($executeRaw: jest.Mock): string =>
+    ranStatement($executeRaw).sql.replace(/\s+/g, ' ').trim();
+
+  // 2026-10-05 is a Monday in America/El_Salvador -> ISO weekday 1.
+  const MONDAY = '2026-10-05';
+
+  it('genera desde route_customer: customer_id, stop_type, sort_order, is_extra false', async () => {
+    const { client, $executeRaw } = buildExecClient();
+
+    await ensureDailyStops(client, SELLER_ID, MONDAY);
+
+    const sql = ranSql($executeRaw);
+    expect(sql).toContain(
+      'INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, sort_order, is_extra)'
+    );
+    expect(sql).toContain('SELECT ru.id, ?::date, rc.customer_id, rc.stop_type, rc.sort_order, false');
+  });
+
+  it('filtra por route.active, ru.day (día ISO) y las tres tablas vivas', async () => {
+    const { client, $executeRaw } = buildExecClient();
+
+    await ensureDailyStops(client, SELLER_ID, MONDAY);
+
+    const sql = ranSql($executeRaw);
+    expect(sql).toContain('r.deleted_at IS NULL');
+    expect(sql).toContain('r.active');
+    expect(sql).toContain('rc.deleted_at IS NULL');
+    expect(sql).toContain('c.deleted_at IS NULL');
+    expect(sql).toContain('c.active');
+    expect(sql).toContain('ru.deleted_at IS NULL');
+    // Monday -> 1, matching route_user.day (CLAUDE.md 5.1).
+    expect(ranStatement($executeRaw).values).toContain(1);
+  });
+
+  it('la puerta de idempotencia mira cualquier fila planificada del vendedor/día, sin filtrar por deleted_at', async () => {
+    const { client, $executeRaw } = buildExecClient();
+
+    await ensureDailyStops(client, SELLER_ID, MONDAY);
+
+    const sql = ranSql($executeRaw);
+    // "Already generated" is answered by any planned row -- live or
+    // soft-deleted -- which is what freezes the day even after later edits
+    // to route_customer. The real once-per-day guarantee under concurrency
+    // is scheduled_visit_planned_uq + ON CONFLICT DO NOTHING, asserted below.
+    expect(sql).toMatch(
+      /NOT EXISTS \( SELECT 1 FROM scheduled_visit sv JOIN route_user ru2 ON ru2\.id = sv\.route_user_id WHERE ru2\.user_id = \?::uuid AND sv\.visit_date = \?::date AND NOT sv\.is_extra AND sv\.customer_id IS NOT NULL \)/
+    );
+  });
+
+  it('termina en ON CONFLICT DO NOTHING, sin bucle de inserts del lado de JS', async () => {
+    const { client, $executeRaw } = buildExecClient();
+
+    await Promise.all([
+      ensureDailyStops(client, SELLER_ID, MONDAY),
+      ensureDailyStops(client, SELLER_ID, MONDAY),
+    ]);
+
+    // Each call issues exactly one statement; the real duplicate-proofing is
+    // scheduled_visit_planned_uq (route_user_id, visit_date, customer_id)
+    // WHERE NOT is_extra AND deleted_at IS NULL AND customer_id IS NOT NULL,
+    // which makes the loser of a real race skip every colliding row instead
+    // of erroring -- a guarantee this mocked client cannot exercise.
+    expect($executeRaw).toHaveBeenCalledTimes(2);
+    for (const call of $executeRaw.mock.calls) {
+      expect((call[0] as Prisma.Sql).sql.replace(/\s+/g, ' ').trim()).toMatch(/ON CONFLICT DO NOTHING\s*$/);
+    }
+  });
+
+  it('salta un customer+stop_type que ya tiene una parada extra viva del vendedor ese día', async () => {
+    const { client, $executeRaw } = buildExecClient();
+
+    await ensureDailyStops(client, SELLER_ID, MONDAY);
+
+    const sql = ranSql($executeRaw);
+    expect(sql).toMatch(
+      /AND sx\.is_extra AND sx\.deleted_at IS NULL AND sx\.customer_id = rc\.customer_id AND sx\.stop_type = rc\.stop_type/
+    );
+  });
+
+  it('no ejecuta el INSERT para una fecha pasada', async () => {
+    const { client, $executeRaw } = buildExecClient();
+
+    const inserted = await ensureDailyStops(client, SELLER_ID, '2020-01-01');
+
+    expect(inserted).toBe(0);
+    expect($executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('ejecuta el INSERT para hoy y para una fecha futura', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-22T18:00:00.000Z'));
+    const { client, $executeRaw } = buildExecClient();
+
+    await ensureDailyStops(client, SELLER_ID, '2026-09-22');
+    expect($executeRaw).toHaveBeenCalledTimes(1);
+
+    await ensureDailyStops(client, SELLER_ID, '2026-12-25');
+    expect($executeRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('no revienta cuando el vendedor no tiene ruta ese día; getDailyRoute sigue devolviendo vacío', async () => {
+    const $executeRaw = jest.fn().mockResolvedValue(0);
+    const $queryRaw = jest.fn().mockResolvedValue([]);
+    const client = { $executeRaw, $queryRaw } as unknown as Client;
+
+    const route = await getDailyRoute(client, SELLER_ID, MONDAY);
+
+    expect(route).toEqual({ date: MONDAY, routes: [], stops: [] });
+  });
+
+  it('es idempotente: la segunda llamada de getDailyRoute no vuelve a insertar', async () => {
+    // First call finds nothing planned yet and inserts 3 rows; second call
+    // hits the NOT EXISTS gate and inserts 0. Both issue the exact same INSERT
+    // statement -- the gate, not a JS check, is what makes the repeat a no-op.
+    const $executeRaw = jest
+      .fn()
+      .mockResolvedValueOnce(3)
+      .mockResolvedValueOnce(0);
+    const stops = [stopRow()];
+    const $queryRaw = jest.fn().mockResolvedValue(stops);
+    const client = { $executeRaw, $queryRaw } as unknown as Client;
+
+    await getDailyRoute(client, SELLER_ID, MONDAY);
+    const second = await getDailyRoute(client, SELLER_ID, MONDAY);
+
+    expect($executeRaw).toHaveBeenCalledTimes(2);
+    const [firstSql, secondSql] = $executeRaw.mock.calls.map(
+      (call) => (call[0] as Prisma.Sql).sql
+    );
+    expect(firstSql).toBe(secondSql);
+
+    expect(second.stops).toHaveLength(1);
+    expect(second.stops[0].id).toBe(stops[0].id);
+    // Both getDailyRoute calls read from the same $queryRaw mock, so this only
+    // confirms the SELECT still runs and returns rows after a zero-insert
+    // ensureDailyStops -- not that a real second day produces the same rows.
+  });
+
+  it('queda congelada tras un cambio en route_customer: segunda generación inserta 0 por la puerta, no por route_customer', async () => {
+    // Simulates "the weekly composition changed after the day was generated":
+    // the mock cannot mutate route_customer, so what stands in for the freeze
+    // is asserting the gate clause fires (NOT EXISTS over scheduled_visit) and
+    // that the SELECT never joins route_customer at all -- sort_order and
+    // is_extra come only from scheduled_visit (sv.sort_order, sv.is_extra), so
+    // a later edit to route_customer has nothing left to change. The real
+    // guarantee is scheduled_visit_planned_uq + this NOT EXISTS gate, proven
+    // against the seeded database, not here.
+    const $executeRaw = jest
+      .fn()
+      .mockResolvedValueOnce(3)
+      .mockResolvedValueOnce(0);
+    const $queryRaw = jest.fn().mockResolvedValue([]);
+    const client = { $executeRaw, $queryRaw } as unknown as Client;
+
+    await getDailyRoute(client, SELLER_ID, MONDAY);
+    await getDailyRoute(client, SELLER_ID, MONDAY);
+
+    expect($executeRaw).toHaveBeenCalledTimes(2);
+    for (const call of $executeRaw.mock.calls) {
+      const sql = (call[0] as Prisma.Sql).sql.replace(/\s+/g, ' ').trim();
+      expect(sql).toMatch(
+        /NOT EXISTS \( SELECT 1 FROM scheduled_visit sv JOIN route_user ru2 ON ru2\.id = sv\.route_user_id WHERE ru2\.user_id = \?::uuid AND sv\.visit_date = \?::date AND NOT sv\.is_extra AND sv\.customer_id IS NOT NULL \)/
+      );
+    }
+
+    const selectSql = (ranQuery($queryRaw) as Prisma.Sql).sql
+      .replace(/\/\*[\s\S]*?\*\//g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    expect(selectSql).not.toContain('route_customer');
+    expect(selectSql).toContain('sv.sort_order');
+    expect(selectSql).toContain('sv.is_extra');
   });
 });

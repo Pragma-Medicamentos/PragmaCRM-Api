@@ -10,6 +10,14 @@ describe('handleError', () => {
     });
   });
 
+  it('includes code in the result when CustomError has one', () => {
+    expect(handleError(CustomError.notFound('Not found', 'CUSTOMER_NOT_FOUND'))).toEqual({
+      statusCode: 404,
+      message: 'Not found',
+      code: 'CUSTOMER_NOT_FOUND',
+    });
+  });
+
   it('maps a ZodError to 400 listing every issue', () => {
     const schema = z.object({ nombre: z.string(), edad: z.number() });
     const result = schema.safeParse({ nombre: 1, edad: 'x' });

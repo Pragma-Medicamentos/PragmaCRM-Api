@@ -11,10 +11,12 @@ import { ErrorHandlerInterface } from '../domain/errors/errorHandler.interface';
 export const handleError = (error: unknown): ErrorHandlerInterface => {
   let statusCode = 500;
   let message = 'Internal server error';
+  let code: string | undefined;
 
   if (error instanceof CustomError) {
     statusCode = error.statusCode;
     message = error.message;
+    code = error.code;
   } else if (error instanceof ZodError) {
     statusCode = 400;
     message = error.issues
@@ -58,5 +60,5 @@ export const handleError = (error: unknown): ErrorHandlerInterface => {
     }
   }
 
-  return { statusCode, message };
+  return code ? { statusCode, message, code } : { statusCode, message };
 };
