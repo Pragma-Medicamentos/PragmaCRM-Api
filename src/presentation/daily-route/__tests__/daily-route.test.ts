@@ -4,7 +4,11 @@ import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
 import { envs } from '../../../config/envs';
 import { findUserByAuthUserId } from '../../../services/auth.service';
-import { getDailyRoute } from '../../../services/daily-route.service';
+import {
+  getDailyRoute,
+  setStopCustomerLocation,
+} from '../../../services/daily-route.service';
+import { CustomError } from '../../../domain/errors/CustomError';
 import { ROLES } from '../../../domain/types/auth.types';
 import { DailyRoute } from '../../../domain/types/daily-route.types';
 
@@ -21,11 +25,13 @@ jest.mock('../../../services/auth.service', () => ({
 
 jest.mock('../../../services/daily-route.service', () => ({
   getDailyRoute: jest.fn(),
+  setStopCustomerLocation: jest.fn(),
 }));
 
 const verifyAccessTokenMock = verifyAccessToken as unknown as jest.Mock;
 const findUserByAuthUserIdMock = findUserByAuthUserId as jest.Mock;
 const getDailyRouteMock = getDailyRoute as jest.Mock;
+const setStopCustomerLocationMock = setStopCustomerLocation as jest.Mock;
 
 const AUTH_ID = '66666666-6666-6666-6666-666666666666';
 const SELLER_ID = '33333333-3333-3333-3333-333333333333';
@@ -78,6 +84,10 @@ const nonEmptyRoute: DailyRoute = {
       zone: 'Col. Escalón',
       municipality: 'San Salvador',
       phone: '7788-2233',
+      personality: 'verde',
+      potential: 'medio',
+      establishment_type: 'Farmacia',
+      credit_limit: 2500,
       location: { lat: 13.7012, lng: -89.2412 },
       sort_order: 3,
       is_extra: false,
@@ -190,5 +200,97 @@ describe('GET /api/v1/me/route', () => {
       expect.arrayContaining([expect.objectContaining({ field: 'date' })])
     );
     expect(getDailyRouteMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /api/v1/me/route/stops/:id/location', () => {
+  const STOP_ID = '69b10917-fcbb-4450-b909-73963b7534d8';
+  const body = { latitude: 13.7012, longitude: -89.2412, accuracy_meters: 9 };
+
+  it('fija la ubicación del cliente de la parada para el vendedor autenticado', async () => {
+    asSeller();
+    const data = {
+      customer_id: 'd4444444-4444-4444-4444-444444444444',
+      location: { lat: 13.7012, lng: -89.2412 },
+    };
+    setStopCustomerLocationMock.mockResolvedValue(data);
+
+    const res = await request(app)
+      .patch(`/api/v1/me/route/stops/${STOP_ID}/location`)
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY)
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      success: true,
+      message: 'Ubicación del cliente establecida correctamente',
+      data,
+    });
+    // The seller comes from the token, never from the request.
+    expect(setStopCustomerLocationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      SELLER_ID,
+      STOP_ID,
+      body
+    );
+  });
+
+  it('propaga el 409 del service cuando el cliente ya tenía ubicación', async () => {
+    asSeller();
+    setStopCustomerLocationMock.mockRejectedValue(
+      CustomError.conflict('This customer already has a location')
+    );
+
+    const res = await request(app)
+      .patch(`/api/v1/me/route/stops/${STOP_ID}/location`)
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY)
+      .send(body);
+
+    expect(res.status).toBe(409);
+    expect(res.body.success).toBe(false);
+  });
+
+  it('responde 400 sin accuracy_meters y nunca llama al service', async () => {
+    asSeller();
+
+    const res = await request(app)
+      .patch(`/api/v1/me/route/stops/${STOP_ID}/location`)
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY)
+      .send({ latitude: 13.7, longitude: -89.2 });
+
+    expect(res.status).toBe(400);
+    expect(setStopCustomerLocationMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 400 cuando el id de la parada no es un uuid', async () => {
+    asSeller();
+
+    const res = await request(app)
+      .patch('/api/v1/me/route/stops/no-es-uuid/location')
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY)
+      .send(body);
+
+    expect(res.status).toBe(400);
+    expect(setStopCustomerLocationMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 403 para un Administrador y nunca llama al service', async () => {
+    verifyAccessTokenMock.mockResolvedValue({ sub: AUTH_ID });
+    findUserByAuthUserIdMock.mockResolvedValue(adminRecord);
+
+    const res = await request(app)
+      .patch(`/api/v1/me/route/stops/${STOP_ID}/location`)
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY)
+      .send(body);
+
+    // Admins set pins through PATCH /customers/:id/location, which can also
+    // move an existing one; this route is the seller's narrower door.
+    expect(res.status).toBe(403);
+    expect(setStopCustomerLocationMock).not.toHaveBeenCalled();
   });
 });

@@ -2,13 +2,18 @@ import { DateTime } from 'luxon';
 import { Prisma } from '../generated/prisma/client';
 import { Client } from '../lib/prisma';
 import { CustomError } from '../domain/errors/CustomError';
-import { StopType } from '../domain/schemas/daily-route.schema';
+import {
+  SetStopLocationInput,
+  StopType,
+} from '../domain/schemas/daily-route.schema';
 import {
   DailyRoute,
   DailyRouteStop,
   RouteRef,
+  StopCustomerLocation,
   TargetKind,
 } from '../domain/types/daily-route.types';
+import { GPS_RADIUS_METERS } from './visit.service';
 
 // --- Business constants -----------------------------------------------------
 //
@@ -40,7 +45,8 @@ const UNPLANNED_SORT_ORDER = 32767;
  * ============================================================================
  * 1. MAIN METHODS — called directly by the me controller:
  *
- *      GET /api/v1/me/route -> getDailyRoute
+ *      GET   /api/v1/me/route                     -> getDailyRoute
+ *      PATCH /api/v1/me/route/stops/:id/location  -> setStopCustomerLocation
  * ============================================================================
  */
 
@@ -73,6 +79,78 @@ export const getDailyRoute = async (
     date: visitDate,
     routes: toRoutes(rows),
     stops: rows.map(toStop),
+  };
+};
+
+/**
+ * PCRM-160: the seller fixes the GPS pin of a stop's customer while standing
+ * at it, so a customer nobody ever located can be visited and validated.
+ *
+ * Deliberately narrower than the admin's PATCH /customers/:id/location
+ * (RF-02): it only fills an EMPTY pin. Moving an existing one stays an admin
+ * action, because every past and future visit to that customer is validated
+ * against it. The `location IS NULL` guard lives in the UPDATE itself rather
+ * than in a prior read, so two concurrent requests cannot both write — the
+ * loser simply matches no row and gets the 409.
+ *
+ * Keyed by the stop, not the customer: the seller's app only knows stops, and
+ * going through `scheduled_visit -> route_user` is what proves the customer is
+ * on this seller's agenda. Any date is accepted, like confirmVisit: the stop
+ * being assigned to the seller is the authorisation.
+ */
+export const setStopCustomerLocation = async (
+  client: Client,
+  sellerId: string,
+  stopId: string,
+  input: SetStopLocationInput
+): Promise<StopCustomerLocation> => {
+  // Coarser than the validation radius and the pin could sit outside the
+  // circle the seller must later stand in to confirm a visit. The app refuses
+  // the same readings; this is the authoritative copy of that rule.
+  if (input.accuracy_meters > GPS_RADIUS_METERS) {
+    throw CustomError.unprocessable(
+      `GPS accuracy must be ${GPS_RADIUS_METERS} m or better to set a location`
+    );
+  }
+
+  const stop = await client.scheduled_visit.findFirst({
+    where: { id: stopId, deleted_at: null },
+    select: {
+      customer_id: true,
+      route_user: { select: { user_id: true, deleted_at: true } },
+    },
+  });
+  if (!stop || stop.route_user.deleted_at !== null) {
+    throw CustomError.notFound('Scheduled visit not found');
+  }
+
+  if (stop.route_user.user_id !== sellerId) {
+    throw CustomError.forbidden('This stop is not assigned to you');
+  }
+
+  // `prospect.location` exists, but prospects are registered with their pin
+  // (PCRM-62) and a visit cannot be executed on one anyway.
+  if (!stop.customer_id) {
+    throw CustomError.unprocessable(
+      'Locations can only be set on customer stops'
+    );
+  }
+
+  const updated = await client.$executeRaw(
+    setEmptyCustomerLocationSql(
+      stop.customer_id,
+      input.latitude,
+      input.longitude
+    )
+  );
+
+  if (updated === 0) {
+    throw CustomError.conflict('This customer already has a location');
+  }
+
+  return {
+    customer_id: stop.customer_id,
+    location: { lat: input.latitude, lng: input.longitude },
   };
 };
 
@@ -182,6 +260,10 @@ interface DailyRouteStopRow {
   zone: string | null;
   municipality: string | null;
   phone: string | null;
+  personality: string | null;
+  potential: string | null;
+  establishment_type: string | null;
+  credit_limit: number | null;
   lat: number | null;
   lng: number | null;
   sort_order: number | null;
@@ -250,6 +332,10 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
          c.zone                   AS zone,
          c.municipality           AS municipality,
          COALESCE(c.phone, p.phone)           AS phone,
+         c.personality            AS personality,
+         c.potential              AS potential,
+         c.establishment_type     AS establishment_type,
+         c.credit_limit::float8   AS credit_limit,
          extensions.st_y(COALESCE(c.location, p.location)::extensions.geometry)::float8 AS lat,
          extensions.st_x(COALESCE(c.location, p.location)::extensions.geometry)::float8 AS lng,
          rc.sort_order::int       AS sort_order,
@@ -298,4 +384,28 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
   ORDER  BY COALESCE(rc.sort_order, ${UNPLANNED_SORT_ORDER}) ASC,
             lower(COALESCE(c.name, p.name)) ASC,
             sv.id ASC
+`;
+
+/**
+ * SQL for setStopCustomerLocation. Writes only when the pin is still empty:
+ * the affected-row count (0 or 1) is how the service tells a fresh write from
+ * a customer that already had a location.
+ *
+ * Same point construction as the admin's setCustomerLocationSql — longitude
+ * first, as ST_MakePoint expects.
+ */
+const setEmptyCustomerLocationSql = (
+  customerId: string,
+  latitude: number,
+  longitude: number
+): Prisma.Sql => Prisma.sql`
+  UPDATE customer
+  SET    location = extensions.ST_SetSRID(
+           extensions.ST_MakePoint(${longitude}, ${latitude}),
+           4326
+         )::extensions.geography,
+         updated_at = now()
+  WHERE  id = ${customerId}::uuid
+    AND  deleted_at IS NULL
+    AND  location IS NULL
 `;

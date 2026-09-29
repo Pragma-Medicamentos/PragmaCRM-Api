@@ -2,7 +2,11 @@ import { Prisma } from '../../generated/prisma/client';
 import { Client } from '../../lib/prisma';
 import { StopType } from '../../domain/schemas/daily-route.schema';
 import { TargetKind } from '../../domain/types/daily-route.types';
-import { getDailyRoute } from '../daily-route.service';
+import {
+  getDailyRoute,
+  setStopCustomerLocation,
+} from '../daily-route.service';
+import { CustomError } from '../../domain/errors/CustomError';
 
 const SELLER_ID = '11111111-1111-1111-1111-111111111101';
 const ROUTE_ID = '22222222-2222-2222-2222-222222222201';
@@ -45,6 +49,10 @@ interface StopRow {
   zone: string | null;
   municipality: string | null;
   phone: string | null;
+  personality: string | null;
+  potential: string | null;
+  establishment_type: string | null;
+  credit_limit: number | null;
   lat: number | null;
   lng: number | null;
   sort_order: number | null;
@@ -70,6 +78,10 @@ const stopRow = (overrides: Partial<StopRow> = {}): StopRow => ({
   zone: 'Escalon',
   municipality: 'San Salvador',
   phone: '2200-0001',
+  personality: 'rojo',
+  potential: 'alto',
+  establishment_type: 'Farmacia',
+  credit_limit: 1500.5,
   lat: 13.7533400206238,
   lng: -89.2287687322544,
   sort_order: 1,
@@ -227,6 +239,19 @@ describe('getDailyRoute — mapeo fila→DTO', () => {
     const route = await getDailyRoute(client, SELLER_ID, DATE);
 
     expect(route.stops[0].completed_at).toBeNull();
+  });
+
+  it('pasa el perfil comercial del cliente al DTO', async () => {
+    const { client } = buildClient([stopRow()]);
+
+    const route = await getDailyRoute(client, SELLER_ID, DATE);
+
+    expect(route.stops[0]).toMatchObject({
+      personality: 'rojo',
+      potential: 'alto',
+      establishment_type: 'Farmacia',
+      credit_limit: 1500.5,
+    });
   });
 
   it('pasa al DTO el zone y municipality nulos de un prospecto', async () => {
@@ -517,5 +542,160 @@ describe('getDailyRoute — consulta', () => {
     expect(sql).toContain('c.municipality AS municipality');
     expect(sql).not.toMatch(/COALESCE\(c\.zone/);
     expect(sql).not.toMatch(/COALESCE\(c\.municipality/);
+  });
+
+  it('lee el perfil comercial solo de customer y castea credit_limit a número', async () => {
+    const { client, $queryRaw } = buildClient([]);
+
+    await getDailyRoute(client, SELLER_ID, DATE);
+
+    const sql = ranSql($queryRaw);
+
+    // Same reasoning as zone: prospect has none of these columns. The cast is
+    // what keeps $queryRaw from handing back a Prisma Decimal, which would
+    // serialise as a string and break `credit_limit: number | null`.
+    expect(sql).toContain('c.personality AS personality');
+    expect(sql).toContain('c.potential AS potential');
+    expect(sql).toContain('c.establishment_type AS establishment_type');
+    expect(sql).toContain('c.credit_limit::float8 AS credit_limit');
+  });
+});
+
+describe('setStopCustomerLocation', () => {
+  const STOP_ID = '69b10917-fcbb-4450-b909-73963b7534d8';
+  const CUSTOMER_ID = 'b09d04b7-f931-4162-b028-7b6ed0fc9f88';
+  const input = { latitude: 13.7, longitude: -89.2, accuracy_meters: 12 };
+
+  type StopLookup = {
+    customer_id: string | null;
+    route_user: { user_id: string; deleted_at: Date | null };
+  } | null;
+
+  const buildLocationClient = (stop: StopLookup, updated = 1) => {
+    const findFirst = jest.fn().mockResolvedValue(stop);
+    const $executeRaw = jest.fn().mockResolvedValue(updated);
+    const client = {
+      scheduled_visit: { findFirst },
+      $executeRaw,
+    } as unknown as Client;
+    return { client, findFirst, $executeRaw };
+  };
+
+  const ownStop = (overrides: Partial<NonNullable<StopLookup>> = {}) => ({
+    customer_id: CUSTOMER_ID,
+    route_user: { user_id: SELLER_ID, deleted_at: null },
+    ...overrides,
+  });
+
+  const statusOf = async (promise: Promise<unknown>) => {
+    try {
+      await promise;
+    } catch (error) {
+      return (error as CustomError).statusCode;
+    }
+    throw new Error('expected the call to throw');
+  };
+
+  it('escribe la ubicación y la devuelve como {lat, lng}', async () => {
+    const { client, $executeRaw } = buildLocationClient(ownStop());
+
+    const result = await setStopCustomerLocation(client, SELLER_ID, STOP_ID, input);
+
+    expect(result).toEqual({
+      customer_id: CUSTOMER_ID,
+      location: { lat: 13.7, lng: -89.2 },
+    });
+    expect($executeRaw).toHaveBeenCalledTimes(1);
+  });
+
+  it('solo escribe si el cliente todavía no tiene ubicación', async () => {
+    const { client, $executeRaw } = buildLocationClient(ownStop());
+
+    await setStopCustomerLocation(client, SELLER_ID, STOP_ID, input);
+
+    const query: Prisma.Sql = $executeRaw.mock.calls[0][0];
+    const sql = query.sql.replace(/\s+/g, ' ');
+    // The guard has to sit in the UPDATE itself: checked in a prior read, two
+    // concurrent requests could both see an empty pin and both write.
+    expect(sql).toContain('AND location IS NULL');
+    expect(sql).toContain('deleted_at IS NULL');
+    // ST_MakePoint takes longitude first.
+    expect(query.values.slice(0, 2)).toEqual([-89.2, 13.7]);
+  });
+
+  it('responde 409 cuando el cliente ya tenía ubicación', async () => {
+    const { client } = buildLocationClient(ownStop(), 0);
+
+    await expect(
+      statusOf(setStopCustomerLocation(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(409);
+  });
+
+  it('responde 404 cuando la parada no existe', async () => {
+    const { client, $executeRaw } = buildLocationClient(null);
+
+    await expect(
+      statusOf(setStopCustomerLocation(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(404);
+    expect($executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('responde 404 cuando la asignación de la parada fue borrada', async () => {
+    const { client, $executeRaw } = buildLocationClient(
+      ownStop({ route_user: { user_id: SELLER_ID, deleted_at: new Date() } })
+    );
+
+    await expect(
+      statusOf(setStopCustomerLocation(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(404);
+    expect($executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('responde 403 cuando la parada es de otro vendedor', async () => {
+    const { client, $executeRaw } = buildLocationClient(
+      ownStop({ route_user: { user_id: 'otro-vendedor', deleted_at: null } })
+    );
+
+    await expect(
+      statusOf(setStopCustomerLocation(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(403);
+    expect($executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('responde 422 cuando la parada es de un prospecto', async () => {
+    const { client, $executeRaw } = buildLocationClient(
+      ownStop({ customer_id: null })
+    );
+
+    await expect(
+      statusOf(setStopCustomerLocation(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(422);
+    expect($executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('responde 422 cuando la precisión es peor que el radio de validación', async () => {
+    const { client, findFirst, $executeRaw } = buildLocationClient(ownStop());
+
+    await expect(
+      statusOf(
+        setStopCustomerLocation(client, SELLER_ID, STOP_ID, {
+          ...input,
+          accuracy_meters: 81,
+        })
+      )
+    ).resolves.toBe(422);
+    expect(findFirst).not.toHaveBeenCalled();
+    expect($executeRaw).not.toHaveBeenCalled();
+  });
+
+  it('acepta una precisión exactamente igual al radio', async () => {
+    const { client, $executeRaw } = buildLocationClient(ownStop());
+
+    await setStopCustomerLocation(client, SELLER_ID, STOP_ID, {
+      ...input,
+      accuracy_meters: 80,
+    });
+
+    expect($executeRaw).toHaveBeenCalledTimes(1);
   });
 });
