@@ -443,6 +443,18 @@ export const syncStagedSalesChunk = async (
 };
 
 /**
+ * Moves an upload from `staged` to `processing` before the sync loop begins,
+ * so the in-progress endpoint can report it while the request is still running
+ * (PCRM-169). The terminal status is still written by `finalizeUploadSync`.
+ */
+export const markUploadProcessing = async (client: Client, uploadId: string): Promise<void> => {
+  await client.upload.update({
+    where: { id: uploadId },
+    data: { status: 'processing', updated_at: new Date() },
+  });
+};
+
+/**
  * Writes aggregated sync counters onto `upload` and sets its terminal status.
  * Same rules as the former end of `syncStagedSales` (CLAUDE.md 8.1).
  */
