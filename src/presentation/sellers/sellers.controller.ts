@@ -13,10 +13,10 @@ import {
   getSellerById,
   listSellers,
   SellerRecord,
-  updateSeller,
 } from '../../services/seller.service';
 import { createSeller } from '../../use-cases/create-seller.use-case';
 import { resendSellerOtp } from '../../use-cases/resend-seller-otp.use-case';
+import { updateSellerEverywhere } from '../../use-cases/update-seller.use-case';
 import { setSellerStatusEverywhere } from '../../use-cases/set-seller-status.use-case';
 
 export class SellersController {
@@ -73,7 +73,7 @@ export class SellersController {
     try {
       const { id } = req.params as unknown as SellerParams;
       const data = req.body as UpdateSellerInput;
-      const seller = await updateSeller(prisma, id, data);
+      const seller = await updateSellerEverywhere(prisma, id, data);
 
       const response: ApiResponse<SellerRecord> = {
         success: true,

@@ -81,6 +81,31 @@ const buildApp = () => {
 const app = buildApp();
 
 describe('requireAuth', () => {
+  it('acepta el JWT de la cookie pcrm_access cuando no hay Bearer', async () => {
+    validToken();
+    findUserByAuthUserIdMock.mockResolvedValue(appUser());
+
+    const res = await request(app)
+      .get('/api/test/auth')
+      .set('Cookie', 'pcrm_access=token-de-cookie');
+
+    expect(res.status).toBe(200);
+    expect(verifyAccessTokenMock).toHaveBeenCalledWith('token-de-cookie');
+  });
+
+  it('el header Authorization gana sobre la cookie', async () => {
+    validToken();
+    findUserByAuthUserIdMock.mockResolvedValue(appUser());
+
+    const res = await request(app)
+      .get('/api/test/auth')
+      .set('Authorization', BEARER)
+      .set('Cookie', 'pcrm_access=token-de-cookie');
+
+    expect(res.status).toBe(200);
+    expect(verifyAccessTokenMock).toHaveBeenCalledWith('token-de-prueba');
+  });
+
   it('responde 401 cuando no hay header Authorization', async () => {
     const res = await request(app).get('/api/test/auth');
 

@@ -7,6 +7,8 @@ import {
   getCustomerProfile,
   listCustomerSales,
   listCustomers,
+  updateCustomerContact,
+  updateCustomerLocation,
 } from '../../../services/customer.service';
 
 // The customers module is admin-only now (RF-02). The auth chain is stubbed
@@ -35,12 +37,16 @@ jest.mock('../../../services/customer.service', () => ({
   listCustomerSales: jest.fn(),
   getCreditStatus: jest.fn(),
   assertCustomerExists: jest.fn(),
+  updateCustomerLocation: jest.fn(),
+  updateCustomerContact: jest.fn(),
 }));
 
 const listCustomersMock = listCustomers as jest.Mock;
 const getCustomerProfileMock = getCustomerProfile as jest.Mock;
 const listCustomerSalesMock = listCustomerSales as jest.Mock;
 const getCreditStatusMock = getCreditStatus as jest.Mock;
+const updateCustomerLocationMock = updateCustomerLocation as jest.Mock;
+const updateCustomerContactMock = updateCustomerContact as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
@@ -198,5 +204,153 @@ describe('GET /api/v1/customers/:id/credits', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.totals.credit_available).toBe('4855.00');
+  });
+});
+
+describe('PATCH /api/v1/customers/:id/location', () => {
+  const locationBody = { latitude: 13.6929, longitude: -89.2182 };
+
+  it('rechaza un id que no es uuid', async () => {
+    const res = await request(app)
+      .patch('/api/v1/customers/no-es-uuid/location')
+      .set(AUTH)
+      .send(locationBody);
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe('id');
+  });
+
+  it('rechaza una latitud fuera de rango', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/customers/${CUSTOMER_ID}/location`)
+      .set(AUTH)
+      .send({ latitude: 100, longitude: -89.2182 });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe('latitude');
+  });
+
+  it('propaga el 404 del service', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    updateCustomerLocationMock.mockRejectedValue(
+      CustomError.notFound('Customer not found')
+    );
+
+    const res = await request(app)
+      .patch(`/api/v1/customers/${CUSTOMER_ID}/location`)
+      .set(AUTH)
+      .send(locationBody);
+
+    expect(res.status).toBe(404);
+    expect(res.body.message).toBe('Customer not found');
+  });
+
+  it('devuelve la ubicación actualizada', async () => {
+    updateCustomerLocationMock.mockResolvedValue({
+      id: CUSTOMER_ID,
+      name: 'Farmacia San José',
+      location: { lat: 13.6929, lng: -89.2182 },
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/customers/${CUSTOMER_ID}/location`)
+      .set(AUTH)
+      .send(locationBody);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.location).toEqual({ lat: 13.6929, lng: -89.2182 });
+    expect(updateCustomerLocationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      CUSTOMER_ID,
+      locationBody
+    );
+  });
+
+  it('acepta address y place_id opcionales de Places', async () => {
+    const body = {
+      ...locationBody,
+      address: 'Av. La Revolución 123, San Salvador',
+      place_id: 'ChIJplace123',
+    };
+    updateCustomerLocationMock.mockResolvedValue({
+      id: CUSTOMER_ID,
+      name: 'Farmacia San José',
+      address: body.address,
+      place_id: body.place_id,
+      location: { lat: 13.6929, lng: -89.2182 },
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/customers/${CUSTOMER_ID}/location`)
+      .set(AUTH)
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.address).toBe(body.address);
+    expect(res.body.data.place_id).toBe(body.place_id);
+    expect(updateCustomerLocationMock).toHaveBeenCalledWith(
+      expect.anything(),
+      CUSTOMER_ID,
+      body
+    );
+  });
+});
+
+describe('PATCH /api/v1/customers/:id/contact', () => {
+  it('rechaza un id que no es uuid', async () => {
+    const res = await request(app)
+      .patch('/api/v1/customers/no-es-uuid/contact')
+      .set(AUTH)
+      .send({ phone: '7822-0667' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe('id');
+  });
+
+  it('rechaza un body vacío', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/customers/${CUSTOMER_ID}/contact`)
+      .set(AUTH)
+      .send({});
+
+    expect(res.status).toBe(400);
+  });
+
+  it('propaga el 404 del service', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    updateCustomerContactMock.mockRejectedValue(
+      CustomError.notFound('Customer not found')
+    );
+
+    const res = await request(app)
+      .patch(`/api/v1/customers/${CUSTOMER_ID}/contact`)
+      .set(AUTH)
+      .send({ phone: '7822-0667' });
+
+    expect(res.status).toBe(404);
+    expect(res.body.message).toBe('Customer not found');
+  });
+
+  it('actualiza phone y trade_name', async () => {
+    const body = { phone: '7822-0667', trade_name: 'Farmacia Central' };
+    updateCustomerContactMock.mockResolvedValue({
+      id: CUSTOMER_ID,
+      name: 'Farmacia San José',
+      ...body,
+    });
+
+    const res = await request(app)
+      .patch(`/api/v1/customers/${CUSTOMER_ID}/contact`)
+      .set(AUTH)
+      .send(body);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.phone).toBe(body.phone);
+    expect(res.body.data.trade_name).toBe(body.trade_name);
+    expect(updateCustomerContactMock).toHaveBeenCalledWith(
+      expect.anything(),
+      CUSTOMER_ID,
+      body
+    );
   });
 });

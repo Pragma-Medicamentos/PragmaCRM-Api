@@ -6,9 +6,16 @@ import {
   efactsoftSaleSchema,
   formatZodIssues,
 } from '../domain/schemas/efactsoft-sale.schema';
-import { SyncResult } from '../domain/types/sales-import.types';
+import { ROLES } from '../domain/types/auth.types';
+import {
+  SellerCreated,
+  SellerUnmapped,
+  SyncResult,
+} from '../domain/types/sales-import.types';
+import { logger } from '../lib/adapters/logger';
 import { ERP_TIMEZONE, parseErpTimestamp } from '../lib/parseErpDate';
 import { Client } from '../lib/prisma';
+import { createPendingSellerAuthUser } from './supabaseAdmin.service';
 
 /**
  * Synchronizer of the ERP sales queue (RF-03, PCRM-34).
@@ -18,6 +25,9 @@ import { Client } from '../lib/prisma';
  * `balance_snapshot`. Every row that reaches this module is already a
  * confirmed sale (`estado = 2`) — quotations never make it into
  * `sale_staging` (CLAUDE.md 5.5, confirmed 2026-09-11).
+ *
+ * Sellers embedded in the payload are resolved by `erp_user_id` and created
+ * when unknown (see `resolveUserId`).
  *
  * Also attempts to attribute each sale to the visit that produced it
  * (CLAUDE.md 5.4): same customer, same Salvadoran calendar day. This is the
@@ -52,10 +62,19 @@ const toDecimalInput = (value: string | number | null | undefined): string | nul
 
 const isZeroBalance = (value: string | number): boolean => Number(value) === 0;
 
-const buildCustomerName = (venta: EfactsoftSaleHeader): string => {
-  const fullName = [venta.nombres, venta.apellidos].filter(Boolean).join(' ').trim();
-  return fullName || venta.cliente?.trim() || venta.nombre_comercial?.trim() || 'Sin nombre';
-};
+/**
+ * `venta.nombres` / `venta.apellidos` are NOT the customer: they correlate
+ * 1:1 with `id_usuario` / `usuario` in the real export (the salesperson who
+ * processed the sale). `venta.nombre_comercial`, `venta.razon_social`,
+ * `venta.telefono`, `venta.celular` and `venta.direccion` are all constant
+ * across every sale — Droguería Pragma's own issuer identity (DTE receptor
+ * block), not the customer's. Confirmed 2026-09-23: every `customer.phone`
+ * had converged on the same value, the owner's own number. The only field
+ * that actually varies per customer is `venta.cliente`. Verified against a
+ * full production export, 2026-09-19.
+ */
+const buildCustomerName = (venta: EfactsoftSaleHeader): string =>
+  venta.cliente?.trim() || 'Sin nombre';
 
 /**
  * Upserts the customer embedded in the sale header (CLAUDE.md 6.2/9.2).
@@ -76,10 +95,12 @@ const upsertCustomer = async (client: Client, venta: EfactsoftSaleHeader): Promi
 
   const shared = {
     name: buildCustomerName(venta),
-    trade_name: venta.nombre_comercial ?? null,
-    address: venta.direccion ?? null,
-    phone: venta.telefono ?? null,
-    mobile: venta.celular ?? null,
+    // trade_name/address/phone/mobile are deliberately NOT sourced from
+    // venta.nombre_comercial/direccion/telefono/celular: those are the
+    // issuer's own constant fields (see buildCustomerName above), not the
+    // customer's. The payload carries no per-customer contact fields at all;
+    // they stay null on import and are set by hand from the dashboard (RF-02)
+    // if backend adds that field.
     credit_limit: toDecimalInput(venta.limite_credito ?? null),
     ...(venta.credito !== null && venta.credito !== undefined
       ? { credit: venta.credito === 1 }
@@ -147,15 +168,78 @@ const findMatchingVisitId = async (
   return visit?.id ?? null;
 };
 
-/** Finds an existing salesperson by the ERP link. Never creates one — sellers are managed via RF-01. */
-const findUserId = async (client: Client, erpUserId: number | null | undefined): Promise<string | null> => {
+/**
+ * Per-import bookkeeping for sellers found in the payload. `createdAuthUserIds`
+ * is owned by the caller so it can delete those accounts if the surrounding
+ * transaction rolls back: Supabase Auth is not part of it.
+ */
+export interface SellerProvisioning {
+  created: SellerCreated[];
+  unmapped: SellerUnmapped[];
+  createdAuthUserIds: string[];
+}
+
+/**
+ * Resolves the salesperson of a sale by `erp_user_id` only — the name is never
+ * used to match. An unknown id creates the seller on the spot: `Vendedor` role,
+ * disabled, no email, and a banned auth account (see
+ * `createPendingSellerAuthUser`). An admin sets the email and enables it
+ * afterwards, which triggers the standard OTP onboarding. Nothing secret is
+ * generated, logged or returned here.
+ *
+ * Failing to provision an account does not fail the import: the sale is loaded
+ * without a seller, the id is reported in `unmapped`, and re-importing the file
+ * links it once the problem is gone (`upsertSale` rewrites `user_id`).
+ */
+const resolveUserId = async (
+  client: Client,
+  venta: EfactsoftSaleHeader,
+  provisioning: SellerProvisioning
+): Promise<string | null> => {
+  const erpUserId = venta.id_usuario;
   if (erpUserId === null || erpUserId === undefined) return null;
 
-  const user = await client.app_user.findFirst({
+  const existing = await client.app_user.findFirst({
     where: { erp_user_id: erpUserId, deleted_at: null },
     select: { id: true },
   });
-  return user?.id ?? null;
+  if (existing) return existing.id;
+
+  // Do not retry an id that already failed earlier in this same import.
+  if (provisioning.unmapped.some((u) => u.erp_user_id === erpUserId)) return null;
+
+  const name = venta.usuario?.trim() || `Vendedor ERP ${erpUserId}`;
+
+  let authUserId: string;
+  try {
+    ({ authUserId } = await createPendingSellerAuthUser(erpUserId));
+  } catch (error) {
+    logger.error('Could not create the auth account for an ERP seller', {
+      erp_user_id: erpUserId,
+      error,
+    });
+    provisioning.unmapped.push({
+      erp_user_id: erpUserId,
+      name,
+      reason: 'Could not create the access account',
+    });
+    return null;
+  }
+  provisioning.createdAuthUserIds.push(authUserId);
+
+  const created = await client.app_user.create({
+    data: {
+      erp_user_id: erpUserId,
+      name,
+      role: ROLES.SELLER,
+      active: false,
+      auth_user_id: authUserId,
+    },
+    select: { id: true },
+  });
+  provisioning.created.push({ erp_user_id: erpUserId, name });
+
+  return created.id;
 };
 
 /** Upserts the product embedded in a detail line. `erp_product_id` is a plain PK: a native upsert is safe. */
@@ -271,7 +355,11 @@ const upsertSaleDetail = async (
  * Takes `Client` so it can run inside the same `$transaction` as
  * `stageSalesFile` (CLAUDE.md 8.1).
  */
-export const syncStagedSales = async (client: Client, uploadId: string): Promise<SyncResult> => {
+export const syncStagedSales = async (
+  client: Client,
+  uploadId: string,
+  provisioning: SellerProvisioning = { created: [], unmapped: [], createdAuthUserIds: [] }
+): Promise<SyncResult> => {
   const pendingRows = await client.sale_staging.findMany({
     where: { upload_id: uploadId, status: 'pending' },
     orderBy: { id: 'asc' },
@@ -298,7 +386,7 @@ export const syncStagedSales = async (client: Client, uploadId: string): Promise
     const { venta, detalle } = parsed.data;
 
     const customerId = await upsertCustomer(client, venta);
-    const userId = await findUserId(client, venta.id_usuario);
+    const userId = await resolveUserId(client, venta, provisioning);
     const { wasInsert } = await upsertSale(client, venta, customerId, userId, uploadId);
 
     for (const line of detalle) {
@@ -339,5 +427,15 @@ export const syncStagedSales = async (client: Client, uploadId: string): Promise
     },
   });
 
-  return { processed: inserted + updated, inserted, updated, sync_failed: failed };
+  return {
+    processed: inserted + updated,
+    inserted,
+    updated,
+    sync_failed: failed,
+    sellers: {
+      created_count: provisioning.created.length,
+      created: provisioning.created,
+      unmapped: provisioning.unmapped,
+    },
+  };
 };

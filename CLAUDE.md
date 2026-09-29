@@ -326,7 +326,7 @@ Nombres reales entre paréntesis.
 
 ### 5.7 Zona horaria
 
-**`America/El_Salvador`** (UTC−6, sin horario de verano).
+**`America/El_Salvador`** (UTC−6, sin horario de verano). En código sale de la variable `BUSINESS_TIMEZONE` (default ese valor), expuesta como `ERP_TIMEZONE` desde `src/lib/parseErpDate.ts`.
 
 Todo cruce entre `timestamptz` y `date` debe convertirse explícitamente. **Sin la conversión, las ventas facturadas después de las 6:00 p.m. se atribuyen al día siguiente y rompen la venta por ruta.** Es un error silencioso y difícil de detectar.
 
@@ -339,9 +339,9 @@ Estas no viven en el modelo de datos y **deben quedar en el manual técnico**, n
 | Constante | Valor | Impacto si cambia |
 |---|---|---|
 | Plazo de crédito | 60 días | Recálculo retroactivo de cartera vencida y mora |
-| **Umbral de inactividad** | **⚠ Pendiente de definir** | Determina clientes inactivos, recuperados y "clientes sin visita". La especificación menciona cortes de 30/60/90 días para reportes pero no fija cuál usan los KPIs |
+| **Umbral de inactividad** | **30 días, provisional** (wireframe `1f`). Configurable con `INACTIVITY_THRESHOLD_DAYS` y por petición con `?inactivity_days=`; las respuestas de métricas lo devuelven en `thresholds`. **Pendiente de firma del cliente** | Determina clientes inactivos, recuperados y "clientes sin visita". La especificación menciona cortes de 30/60/90 días para reportes pero no fija cuál usan los KPIs |
 | Radio de validación GPS | 80 metros | Recálculo retroactivo del histórico de alertas fuera de radio |
-| Zona horaria | `America/El_Salvador` | Ver 5.7 |
+| Zona horaria | `America/El_Salvador`, en `BUSINESS_TIMEZONE` | Ver 5.7. Recalcula a qué día local pertenece todo el histórico |
 | Estado de venta válido | `erp_status = 2` | Excluye cotizaciones de todo cálculo |
 | Ventas de contado | Excluidas de cobranza | Criterio sobre `payment` / `payment_id` |
 
@@ -783,6 +783,8 @@ NODE_ENV       # "development" en local, "production" en TODO remoto (nunca "sta
 PORT
 DATABASE_URL   # Cadena de conexión a PostgreSQL (Supabase)
 LOG_LEVEL      # Opcional, por defecto "info"
+INACTIVITY_THRESHOLD_DAYS  # Opcional, por defecto 30. Umbral del panel de métricas (ver 5.8)
+BUSINESS_TIMEZONE          # Opcional, por defecto America/El_Salvador. Validada al arrancar (ver 5.7)
 ```
 
 Plantilla en `.env.template`. Los tests de integración leen `.env.test` (ver `.env.test.example`). Toda variable nueva se declara en `src/config/envs.ts` con `env-var` y falla el arranque si es requerida y falta.
@@ -797,7 +799,10 @@ src/presentation/
   <modulo>/routes.ts               ← registra rutas + aplica validateBody/validateQuery
   <modulo>/<modulo>.controller.ts  ← extrae datos del request, llama al service, arma ApiResponse
   middleware/                      ← requestMetadata, validate
-src/services/                      ← lógica de negocio, acceso directo a Prisma
+src/services/                      ← lógica de negocio, acceso directo a Prisma (API tipada)
+src/repositories/                  ← acceso a datos con SQL crudo ($queryRaw / $executeRaw)
+  <modulo>.repository.ts           ← funciones find*/set* que ejecutan el SQL y devuelven filas tipadas
+  <modulo>/*.sql.ts                ← builders Prisma.sql y fragmentos compartidos
 src/use-cases/                     ← operaciones que orquestan varios services
 src/domain/
   schemas/                         ← esquemas Zod + tipos inferidos
@@ -812,6 +817,8 @@ src/lib/
 ```
 
 Un módulo nuevo se agrega creando `src/presentation/<modulo>/{routes.ts, <modulo>.controller.ts}`, su service en `src/services/`, sus esquemas Zod en `src/domain/schemas/`, y montándolo en `src/presentation/routes.ts` bajo `/api/v1/<recurso>`. `health/` es el ejemplo mínimo a copiar.
+
+**SQL crudo va en `src/repositories/`, no en el service.** Cuando un módulo necesita `$queryRaw` / `$executeRaw` (columnas `geography`, CTEs de métricas, agregados que la API de Prisma no expresa), el SQL vive en `src/repositories/<modulo>/*.sql.ts` y lo ejecuta `<modulo>.repository.ts`, que devuelve filas tipadas. El service orquesta, aplica reglas de negocio y mapea; no escribe SQL. Las lecturas y escrituras con la API tipada de Prisma (`findMany`, `update`…) siguen en el service. Excepción: queries de una línea sin lógica, como los `pg_advisory_xact_lock` de `visit.service` y `route.service`. Referencia: `customer` y `metrics`. **Deuda conocida:** `visit.service.ts` todavía arma en el service el INSERT con PostGIS, el cálculo de distancia y el SELECT de la visita; se mueve a `visit.repository.ts` cuando se vuelva a tocar ese módulo. En los tests de services, el cliente falso sigue mockeando `$queryRaw` porque el repositorio recibe ese mismo `Client`.
 
 Los services reciben el tipo `Client` de `src/lib/prisma.ts` (unión de `PrismaClient` y el cliente de transacción), de modo que la misma función corra suelta o dentro de un `$transaction`.
 
@@ -1036,7 +1043,7 @@ Ninguno bloquea el desarrollo, pero todos afectan la calidad del resultado y deb
 | 1 | ¿La asignación de ruta lleva `fecha date` o día de la semana + vigencia? | Modelo de rutas y generación de jornadas | Jimmy / equipo | ✅ **Cerrada.** La base implementó `route_user.day` + vigencia |
 | 2 | ¿`sale.route_id` denormalizado o join en runtime? | Atribución de venta a ruta | Equipo | ✅ **Cerrada.** No existe `route_id`; atribución vía `sale.visit_id` |
 | 3 | ¿`visit` absorbe `scheduled_visit`? ¿Se crea además `parada_unica`? | Define la tabla más consultada del sistema | Jimmy / equipo | ✅ **Cerrada.** Son dos tablas separadas; `scheduled_visit` absorbió `parada_unica` vía `reason` + FKs nullable |
-| 4 | ¿Cuál es el **umbral de inactividad**? | Determina clientes inactivos, recuperados y "sin visita" | Cliente | ⚠ Abierta |
+| 4 | ¿Cuál es el **umbral de inactividad**? | Determina clientes inactivos, recuperados y "sin visita" | Cliente | ⚠ Abierta. Provisional: 30 días, configurable (ver 5.8) |
 | 5 | ¿Qué hace el sistema cuando el vendedor está **fuera del radio GPS**? ¿Bloquea, advierte o registra con bandera? | Define el flujo central de RF-06 | Cliente | ⚠ Abierta |
 | 6 | ¿`goal` obtiene un RF nuevo o una excepción documentada? | Trazabilidad del GPI | Andrés / equipo | ⚠ Abierta |
 | 7 | ¿`customer.place_id` se mantiene? Implica Google Places API sin presupuesto | Costo y alcance | Cliente / equipo | ⚠ Abierta |

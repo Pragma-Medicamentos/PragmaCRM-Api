@@ -1,5 +1,20 @@
 import { Client } from '../../lib/prisma';
 import { syncStagedSales } from '../salesSync.service';
+import { createPendingSellerAuthUser } from '../supabaseAdmin.service';
+
+jest.mock('../supabaseAdmin.service', () => ({
+  createPendingSellerAuthUser: jest.fn(),
+}));
+jest.mock('../../lib/adapters/logger', () => ({
+  logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+}));
+
+const createAuthUserMock = createPendingSellerAuthUser as jest.Mock;
+
+beforeEach(() => {
+  createAuthUserMock.mockReset();
+  createAuthUserMock.mockResolvedValue({ authUserId: 'auth-1' });
+});
 
 /**
  * Prisma client double: records what the synchronizer writes without
@@ -26,6 +41,7 @@ const createClientMock = (
   const balanceSnapshots: Record<string, unknown>[] = [];
   const stagingUpdates: Record<string, unknown>[] = [];
   const uploadUpdates: Record<string, unknown>[] = [];
+  const users: Record<string, unknown>[] = [];
 
   const client = {
     sale_staging: {
@@ -57,6 +73,10 @@ const createClientMock = (
           ? { id: options.existingUserId }
           : null
       ),
+      create: jest.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        users.push(data);
+        return { id: 'new-user-id' };
+      }),
     },
     visit: {
       findFirst: jest.fn(async () =>
@@ -110,6 +130,7 @@ const createClientMock = (
     balanceSnapshots,
     stagingUpdates,
     uploadUpdates,
+    users,
   };
 };
 
@@ -154,7 +175,7 @@ describe('syncStagedSales — new sale', () => {
 
     const result = await syncStagedSales(client, 'upload-1');
 
-    expect(result).toEqual({ processed: 1, inserted: 1, updated: 0, sync_failed: 0 });
+    expect(result).toMatchObject({ processed: 1, inserted: 1, updated: 0, sync_failed: 0 });
     expect(sales).toHaveLength(1);
     expect(sales[0]).toMatchObject({ erp_sale_id: 101, upload_id: 'upload-1' });
     expect(products).toHaveLength(1);
@@ -199,13 +220,82 @@ describe('syncStagedSales — new sale', () => {
     expect(spies.customer.findFirst).not.toHaveBeenCalled();
   });
 
-  it('leaves user_id null when the ERP salesperson does not map to an app_user', async () => {
-    const { client, sales } = createClientMock({ existingUserId: null });
+  it('links the sale to an existing seller by erp_user_id without creating anything', async () => {
+    const { client, sales, users, spies } = createClientMock({ existingUserId: 'existing-user-id' });
     (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
+
+    const result = await syncStagedSales(client, 'upload-1');
+
+    expect(sales[0].user_id).toBe('existing-user-id');
+    expect(spies.app_user.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { erp_user_id: 26, deleted_at: null }, select: { id: true } })
+    );
+    expect(users).toHaveLength(0);
+    expect(createAuthUserMock).not.toHaveBeenCalled();
+    expect(result.sellers).toEqual({ created_count: 0, created: [], unmapped: [] });
+  });
+
+  it('creates an unknown seller disabled, with the Vendedor role, and links the sale to it', async () => {
+    const { client, sales, users } = createClientMock({ existingUserId: null });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { usuario: 'Ana Perez' } }),
+    ]);
+
+    const result = await syncStagedSales(client, 'upload-1');
+
+    expect(createAuthUserMock).toHaveBeenCalledWith(26);
+    expect(users).toEqual([
+      { erp_user_id: 26, name: 'Ana Perez', role: 'Vendedor', active: false, auth_user_id: 'auth-1' },
+    ]);
+    expect(sales[0].user_id).toBe('new-user-id');
+    expect(result.sellers).toEqual({
+      created_count: 1,
+      created: [{ erp_user_id: 26, name: 'Ana Perez' }],
+      unmapped: [],
+    });
+  });
+
+  it('reports a seller as unmapped when the auth account fails, and still imports the sale', async () => {
+    createAuthUserMock.mockRejectedValue(new Error('supabase down'));
+    const { client, sales, users } = createClientMock({ existingUserId: null });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { usuario: 'Ana Perez' } }),
+      stagingRow(2, { venta: { usuario: 'Ana Perez' } }),
+    ]);
+
+    const result = await syncStagedSales(client, 'upload-1');
+
+    expect(users).toHaveLength(0);
+    expect(sales.map((s) => s.user_id)).toEqual([null, null]);
+    expect(result.processed).toBe(2);
+    // Attempted once per import, not once per sale.
+    expect(createAuthUserMock).toHaveBeenCalledTimes(1);
+    expect(result.sellers.unmapped).toEqual([
+      { erp_user_id: 26, name: 'Ana Perez', reason: 'Could not create the access account' },
+    ]);
+  });
+
+  it('does not touch sellers for a sale with no id_usuario', async () => {
+    const { client, sales, spies } = createClientMock();
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { id_usuario: null } }),
+    ]);
 
     await syncStagedSales(client, 'upload-1');
 
     expect(sales[0].user_id).toBeNull();
+    expect(spies.app_user.findFirst).not.toHaveBeenCalled();
+    expect(createAuthUserMock).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent: re-importing finds the seller created before and creates nothing', async () => {
+    const { client, users } = createClientMock({ existingUserId: 'new-user-id' });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
+
+    const result = await syncStagedSales(client, 'upload-1');
+
+    expect(users).toHaveLength(0);
+    expect(result.sellers.created_count).toBe(0);
   });
 
   it('links the sale to the visit of the same customer and Salvadoran calendar day', async () => {
@@ -263,7 +353,7 @@ describe('syncStagedSales — re-processing an existing sale (idempotency)', () 
 
     const result = await syncStagedSales(client, 'upload-1');
 
-    expect(result).toEqual({ processed: 1, inserted: 0, updated: 1, sync_failed: 0 });
+    expect(result).toMatchObject({ processed: 1, inserted: 0, updated: 1, sync_failed: 0 });
     expect(sales[0].erp_created_at).toBe(firstStamp);
     expect(sales[0].last_payment_at).toBe(firstStamp);
     // pending_balance is the one field always overwritten (CLAUDE.md 5.5).

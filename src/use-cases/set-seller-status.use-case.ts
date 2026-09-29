@@ -1,6 +1,7 @@
 import { Client } from '../lib/prisma';
 import { logger } from '../lib/adapters/logger';
-import { setSellerStatus, SellerRecord } from '../services/seller.service';
+import { CustomError } from '../domain/errors/CustomError';
+import { getSellerById, setSellerStatus, SellerRecord } from '../services/seller.service';
 import { setAuthUserBanned } from '../services/supabaseAdmin.service';
 
 // RLS already hides every row from a disabled seller, because the app_auth
@@ -11,6 +12,12 @@ export const setSellerStatusEverywhere = async (
   id: string,
   active: boolean
 ): Promise<SellerRecord> => {
+  // Sellers created by the ERP import have no email until an admin sets one;
+  // enabling them without it would leave an account nobody can sign in to.
+  if (active && !(await getSellerById(client, id)).email) {
+    throw CustomError.conflict('Ingrese el correo del vendedor antes de habilitarlo');
+  }
+
   const seller = await setSellerStatus(client, id, active);
 
   if (seller.auth_user_id) {

@@ -5,7 +5,10 @@ import { verifyAccessToken } from '../../lib/supabaseJwt';
 import { prisma } from '../../lib/prisma';
 import { AppRoutes } from '../../presentation/routes';
 import { Server } from '../../presentation/server';
+import { randomUUID } from 'crypto';
+import { envs } from '../../config/envs';
 import { ROLES } from '../../domain/types/auth.types';
+import { createPendingSellerAuthUser } from '../../services/supabaseAdmin.service';
 
 /**
  * ERP sales JSON upload against real Postgres (RF-03, PCRM-32 / PCRM-33 /
@@ -25,6 +28,17 @@ jest.mock('../../lib/supabaseJwt', () => ({
   JwksUnavailableError: class extends Error {},
   warmUpJwks: jest.fn(),
 }));
+
+// No real service_role key in .env.test: the auth account of a seller created
+// by the import is faked, but it still has to exist in auth.users because
+// app_user.auth_user_id is guarded by a trigger against that table.
+jest.mock('../../services/supabaseAdmin.service', () => ({
+  createPendingSellerAuthUser: jest.fn(),
+}));
+
+const createPendingSellerAuthUserMock = createPendingSellerAuthUser as jest.Mock;
+const fakeAuthUserIds: string[] = [];
+const erpUserIdsSeen = new Set<number>();
 
 const verifyAccessTokenMock = verifyAccessToken as unknown as jest.Mock;
 
@@ -65,13 +79,31 @@ beforeAll(async () => {
   });
   adminId = admin.id;
   verifyAccessTokenMock.mockResolvedValue({ sub: ADMIN_AUTH_ID });
+
+  createPendingSellerAuthUserMock.mockImplementation(async (erpUserId: number) => {
+    const authUserId = randomUUID();
+    await prisma.$executeRaw`
+      insert into auth.users (id, instance_id, aud, role, email)
+      values (
+        ${authUserId}::uuid,
+        '00000000-0000-0000-0000-000000000000'::uuid,
+        'authenticated', 'authenticated', ${`erp-${erpUserId}@pending.invalid`}
+      )`;
+    fakeAuthUserIds.push(authUserId);
+    erpUserIdsSeen.add(erpUserId);
+    return { authUserId };
+  });
 });
 
 /** Ids created during the run, cleaned up at the end. */
 const createdUploadIds: string[] = [];
 
 const upload = async (content: Buffer, filename = 'sales.json') => {
-  const res = await request(app).post(ENDPOINT).attach('file', content, filename);
+  const res = await request(app)
+    .post(ENDPOINT)
+    .set('Authorization', 'Bearer integration-token')
+    .set('x-api-key', envs.API_KEY)
+    .attach('file', content, filename);
   if (res.body?.data?.upload_id) createdUploadIds.push(res.body.data.upload_id);
   return res;
 };
@@ -115,10 +147,15 @@ afterAll(async () => {
   // Synced by the sync tests below (erp_customer_id 25, erp_product_id 2).
   await prisma.customer.deleteMany({ where: { erp_customer_id: 25 } });
   await prisma.product.deleteMany({ where: { erp_product_id: 2 } });
+  // Sellers auto-created by the import (their sales are already gone).
+  await prisma.app_user.deleteMany({ where: { erp_user_id: { in: [...erpUserIdsSeen] } } });
   await prisma.app_user.delete({ where: { id: adminId } });
   await prisma.$executeRaw`delete from auth.users where id = ${ADMIN_AUTH_ID}::uuid`;
-  await prisma.$disconnect();
-  server.close();
+  for (const id of fakeAuthUserIds) {
+    await prisma.$executeRaw`delete from auth.users where id = ${id}::uuid`;
+  }
+  // close() disconnects Prisma too.
+  await server.close();
 });
 
 describe('upload of the real ERP export', () => {
@@ -148,7 +185,7 @@ describe('upload of the real ERP export', () => {
       inserted: 344,
       updated: 0,
       status: 'completed',
-      uploaded_by: null,
+      uploaded_by: adminId,
     });
     expect(stored.range_from?.toISOString().slice(0, 10)).toBe('2026-08-08');
 
@@ -299,8 +336,9 @@ describe('synchronization into the live tables (PCRM-34)', () => {
     expect(created.pending_balance?.toString()).toBe('0');
     expect(created.erp_created_at).not.toBeNull();
     expect(created.last_payment_at).not.toBeNull(); // saldop 0.00 on arrival
-    // id_usuario 26 does not map to any app_user in this suite: not attributable to a route.
-    expect(created.user_id).toBeNull();
+    // id_usuario 26 was unknown: the import created its seller and linked the sale.
+    const seller = await prisma.app_user.findFirstOrThrow({ where: { erp_user_id: 26, deleted_at: null } });
+    expect(created.user_id).toBe(seller.id);
     expect(created.sale_detail).toHaveLength(1);
 
     const customer = await prisma.customer.findFirstOrThrow({ where: { erp_customer_id: 25 } });
@@ -331,5 +369,59 @@ describe('synchronization into the live tables (PCRM-34)', () => {
     expect(after.last_payment_at).not.toBeNull();
 
     expect(await prisma.sale.count({ where: { erp_sale_id: 900_031 } })).toBe(1);
+  });
+});
+
+describe('sellers found in the payload', () => {
+  const ERP_USER_ID = 987_001;
+  const sellerSale = (id: number, name = 'Vendedor de Prueba') =>
+    sale(id, { id_usuario: ERP_USER_ID, usuario: name });
+
+  it('creates an unknown seller disabled, reports it, and links the sale to it', async () => {
+    const res = await upload(toBuffer([sellerSale(900_040)]));
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.sellers).toEqual({
+      created_count: 1,
+      created: [{ erp_user_id: ERP_USER_ID, name: 'Vendedor de Prueba' }],
+      unmapped: [],
+    });
+
+    const seller = await prisma.app_user.findFirstOrThrow({ where: { erp_user_id: ERP_USER_ID } });
+    expect(seller).toMatchObject({ role: ROLES.SELLER, active: false, email: null });
+    expect(seller.auth_user_id).not.toBeNull();
+
+    const linked = await prisma.sale.findUniqueOrThrow({ where: { erp_sale_id: 900_040 } });
+    expect(linked.user_id).toBe(seller.id);
+  });
+
+  it('maps by erp_user_id, ignoring a different name, and does not duplicate on re-import', async () => {
+    await upload(toBuffer([sellerSale(900_041)]));
+    const authCallsBefore = createPendingSellerAuthUserMock.mock.calls.length;
+
+    const res = await upload(toBuffer([sellerSale(900_041, 'Otro Nombre Distinto')]));
+
+    expect(res.body.data.sellers).toEqual({ created_count: 0, created: [], unmapped: [] });
+    expect(createPendingSellerAuthUserMock.mock.calls.length).toBe(authCallsBefore);
+    expect(await prisma.app_user.count({ where: { erp_user_id: ERP_USER_ID, deleted_at: null } })).toBe(1);
+    const seller = await prisma.app_user.findFirstOrThrow({ where: { erp_user_id: ERP_USER_ID } });
+    expect(seller.name).toBe('Vendedor de Prueba');
+  });
+
+  it('links to a seller the admin already created with that erp_user_id', async () => {
+    const existingErpId = 987_002;
+    erpUserIdsSeen.add(existingErpId);
+    const existing = await prisma.app_user.create({
+      data: { role: ROLES.SELLER, name: 'Manual', erp_user_id: existingErpId, active: true },
+      select: { id: true },
+    });
+    const authCallsBefore = createPendingSellerAuthUserMock.mock.calls.length;
+
+    const res = await upload(toBuffer([sale(900_042, { id_usuario: existingErpId, usuario: 'Manual' })]));
+
+    expect(res.body.data.sellers.created_count).toBe(0);
+    expect(createPendingSellerAuthUserMock.mock.calls.length).toBe(authCallsBefore);
+    const linked = await prisma.sale.findUniqueOrThrow({ where: { erp_sale_id: 900_042 } });
+    expect(linked.user_id).toBe(existing.id);
   });
 });

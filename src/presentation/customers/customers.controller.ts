@@ -7,8 +7,11 @@ import {
   ListCustomerCreditsQuery,
   ListCustomerSalesQuery,
   ListCustomersQuery,
+  UpdateCustomerContactInput,
+  UpdateCustomerLocationInput,
 } from '../../domain/schemas/customer.schema';
 import {
+  CustomerCore,
   CustomerCreditItem,
   CustomerCreditTotals,
   CustomerListItem,
@@ -22,6 +25,8 @@ import {
   getCustomerProfile,
   listCustomerSales,
   listCustomers,
+  updateCustomerContact,
+  updateCustomerLocation,
 } from '../../services/customer.service';
 
 export class CustomersController {
@@ -96,6 +101,42 @@ export class CustomersController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'CustomersController.listCredits');
+    }
+  }
+
+  /** RF-02: set the customer's exact GPS pin for routing. */
+  public async updateLocation(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as CustomerParams;
+      const data = req.body as UpdateCustomerLocationInput;
+      const customer = await updateCustomerLocation(prisma, id, data);
+
+      const response: ApiResponse<CustomerCore> = {
+        success: true,
+        message: 'Customer location updated successfully',
+        data: customer,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'CustomersController.updateLocation');
+    }
+  }
+
+  /** Manual override for phone / trade_name — the Efactsoft import cannot set either. */
+  public async updateContact(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as CustomerParams;
+      const data = req.body as UpdateCustomerContactInput;
+      const customer = await updateCustomerContact(prisma, id, data);
+
+      const response: ApiResponse<CustomerCore> = {
+        success: true,
+        message: 'Customer contact info updated successfully',
+        data: customer,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'CustomersController.updateContact');
     }
   }
 }

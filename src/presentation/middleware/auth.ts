@@ -5,6 +5,7 @@ import {
 } from '../../lib/supabaseJwt';
 import { CustomError } from '../../domain/errors/CustomError';
 import { AuthenticatedUser, Role, isRole } from '../../domain/types/auth.types';
+import { readAccessCookie } from '../../lib/authCookies';
 import { findUserByAuthUserId } from '../../services/auth.service';
 import { logger } from '../../lib/adapters/logger';
 import { prisma } from '../../lib/prisma';
@@ -39,7 +40,9 @@ export const requireAuth = async (
   next: NextFunction
 ): Promise<void> => {
   try {
-    const token = bearerToken(req);
+    // Bearer wins so the Android client (and any existing caller) is unchanged
+    // when it sends Authorization. The cookie is the web session (PCRM-109).
+    const token = bearerToken(req) ?? readAccessCookie(req);
 
     if (!token) {
       logRejection(req, res, 'missing_or_invalid_token');

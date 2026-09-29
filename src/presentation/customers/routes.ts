@@ -1,11 +1,17 @@
 import { Router } from 'express';
 import { CustomersController } from './customers.controller';
-import { validateParams, validateQuery } from '../middleware/validate';
+import {
+  validateBody,
+  validateParams,
+  validateQuery,
+} from '../middleware/validate';
 import {
   customerParamsSchema,
   listCustomerCreditsQuerySchema,
   listCustomerSalesQuerySchema,
   listCustomersQuerySchema,
+  updateCustomerContactSchema,
+  updateCustomerLocationSchema,
 } from '../../domain/schemas/customer.schema';
 
 export class CustomersRoutes {
@@ -34,6 +40,18 @@ export class CustomersRoutes {
       validateParams(customerParamsSchema),
       validateQuery(listCustomerCreditsQuerySchema),
       controller.listCredits
+    );
+    router.patch(
+      '/:id/location',
+      validateParams(customerParamsSchema),
+      validateBody(updateCustomerLocationSchema),
+      controller.updateLocation
+    );
+    router.patch(
+      '/:id/contact',
+      validateParams(customerParamsSchema),
+      validateBody(updateCustomerContactSchema),
+      controller.updateContact
     );
 
     return router;

@@ -4,7 +4,11 @@ Este documento describe cómo se validan y despliegan los cambios de esquema (mi
 Supabase) a través de GitHub Actions.
 
 > **Alcance:** cubre únicamente el pipeline de **migraciones de base de datos**. El despliegue del
-> runtime de la aplicación (la imagen Docker) es independiente y se define aparte.
+> runtime de la aplicación (la imagen Docker) lo hace Dokploy en el VPS y está documentado en
+> [DEPLOY_DOKPLOY.md](./DEPLOY_DOKPLOY.md).
+>
+> Los dos van acoplados en el orden: **primero la migración, después el redeploy**. Al mergear a
+> `staging` o `prod`, GitHub Actions aplica el esquema y recién entonces se redespliega la API.
 
 ---
 

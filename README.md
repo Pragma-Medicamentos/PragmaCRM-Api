@@ -12,6 +12,41 @@ Supabase y Prisma como cliente de acceso a datos.
 ## Puesta en marcha
 
 ```bash
+npm install
+npm run dev-api      # Solo Api
+# o bien
+npm run dev-web      # Api + Web
+# o bien
+npm run dev-mobile   # Api + Mobile (Expo)
+```
+
+Los tres hacen el mismo bootstrap de base: copian `.env.template` a `.env` si falta, levantan
+Supabase local, corren `prisma generate`, arrancan `npm run dev` en background y esperan a
+`/api/health`. Al terminar imprimen el mapa de puertos (Supabase Studio, Mail, Web) y los nombres
+de las variables críticas (sin secretos) y devuelven la terminal — detalle completo en
+[docs/dx-ports-env.md](./docs/dx-ports-env.md). Para ver los logs de la Api en vivo despues,
+`npm run log-api` (Ctrl+C solo corta la vista, la Api sigue corriendo).
+
+`npm run dev-api` (`scripts/dev-api.sh`) hace solo la parte de Api, sin tocar Web ni Mobile.
+
+`npm run dev-web` (`scripts/dev-web.sh`) además, **si `PragmaCRM-Web` existe como carpeta hermana**
+(mismo padre que `PragmaCRM-Api`), copia su `.env`, levanta `npm run dev` de Web en background y
+espera a que responda en `http://localhost:5173`.
+
+`npm run dev-mobile` (`scripts/dev-mobile.sh`) además, **si `PragmaCRM-Mobile` existe como carpeta
+hermana**, copia su `.env` si falta y arranca `npx expo start`. A diferencia de Web, Expo se deja en
+**foreground** — su CLI es interactivo (QR, teclas `a`/`i`/`w` para abrir Android/iOS/Web) — así que
+el script no vuelve hasta que salís de Expo con Ctrl+C; Api y Supabase quedan corriendo igual y se
+apagan después con `npm run dev-down`. El `.env` de Mobile no apunta al stack local por defecto
+(usa un proyecto real de Supabase y necesita la URL de la Api según el destino: emulador Android,
+simulador iOS o dispositivo físico) — el script te dice qué completar a mano la primera vez.
+
+> La primera vez, `npx supabase start` descarga varias imágenes de Docker y puede tardar unos
+> minutos. Si falla con `failed to connect to the docker API`, Docker Desktop no está arriba.
+
+Los pasos manuales, por si hace falta ejecutarlos por separado:
+
+```bash
 # 1. Variables de entorno
 cp .env.template .env
 
@@ -31,25 +66,32 @@ npm run dev
 Comprobación rápida:
 
 ```bash
-curl http://localhost:3000/api/health
+npm run smoke
+# GET http://localhost:3000/api/health
 # {"success":true,"message":"API is healthy","data":{"uptime":1.2,"version":"1.0.0"}}
 ```
 
-> La primera vez, `npx supabase start` descarga varias imágenes de Docker y puede tardar unos
-> minutos. Si falla con `failed to connect to the docker API`, Docker Desktop no está arriba.
-
 ## Scripts
 
-| Script                     | Qué hace                                    |
-| -------------------------- | ------------------------------------------- |
-| `npm run dev`              | Servidor con hot-reload                     |
+| Script                     | Qué hace                                                    |
+| -------------------------- | ------------------------------------------------------------ |
+| `npm run dev-api`          | Bootstrap solo Api: Supabase local + prisma generate + Api + smoke |
+| `npm run dev-web`          | Igual que `dev-api`, y ademas Web (si esta clonado como carpeta hermana) |
+| `npm run dev-mobile`       | Igual que `dev-api`, y ademas `expo start` en foreground (si Mobile esta clonado como carpeta hermana) |
+| `npm run dev-down`         | Apaga Api, Web y Supabase local levantados por `dev-api` / `dev-web` / `dev-mobile` |
+| `npm run log-api`          | Sigue en vivo el log de la Api ya levantada (Ctrl+C para dejar de ver, la Api sigue corriendo) |
+| `npm run dev`              | Servidor con hot-reload                                       |
+| `npm run build`            | Compila a `dist/`                                             |
+| `npm run start`            | Build + ejecuta el compilado                                  |
+| `npm run seed`             | Reset de la DB local aplicando el seed (`supabase/seed.sql`)  |
+| `npm run reset`            | Reset de la DB local sin seed (solo migraciones)              |
+| `npm run smoke`            | Health check + OTP dry-run contra la Api ya levantada         |
+| `npm run lint`             | ESLint sobre `src/`                                           |
+| `npm run tsc`              | Type-check sin emitir                                         |
+| `npm run test`             | Tests unitarios                                               |
+| `npm run test:integration` | Tests de integración (requiere `.env.test`)                   |
 
-| `npm run build`            | Compila a `dist/`                           |
-| `npm run start`            | Build + ejecuta el compilado                |
-| `npm run lint`             | ESLint sobre `src/`                         |
-| `npm run tsc`              | Type-check sin emitir                       |
-| `npm run test`             | Tests unitarios                             |
-| `npm run test:integration` | Tests de integración (requiere `.env.test`) |
+Detalle de puertos y variables de entorno (Api/Web/Mobile): [docs/dx-ports-env.md](./docs/dx-ports-env.md).
 
 ## Base de datos
 
@@ -195,17 +237,63 @@ falla — ver `.env.template`.
 > La `service_role` key es un **bypass total de RLS usable por HTTP desde cualquier parte**.
 > Filtrarla es peor que filtrar la `DATABASE_URL`. Solo servidor: nunca en el bundle web ni en el APK.
 
+### Sesión web en cookies (PCRM-109)
+
+El dashboard **no guarda** `access_token` ni `refresh_token` en `localStorage`.
+Los emite esta API en cookies `HttpOnly` y el navegador las adjunta solo.
+
+| Cookie | Path | Qué lleva |
+|---|---|---|
+| `pcrm_access` | `/api/v1` | JWT de acceso. La lee `requireAuth` |
+| `pcrm_refresh` | `/api/v1/auth` | Refresh token. No viaja en el resto de rutas |
+
+Atributos: `HttpOnly`, `SameSite` (`lax` en `dev`, `none` en staging/prod; override `AUTH_COOKIE_SAMESITE`) y `Secure` fuera de `dev` o cuando `SameSite=none`. El cuerpo JSON **no** incluye los tokens.
+
+| Método | Ruta | Body | Efecto |
+|---|---|---|---|
+| `POST` | `/api/v1/auth/login` | `{ "email", "password" }` o `{ "email", "otp" }` (6 dígitos; el campo se llama `otp`) | Fija las dos cookies. `200` con `data.user` y `data.expiresIn`. No existe `/auth/otp/verify` |
+| `POST` | `/api/v1/auth/password` | `{ "password" }` (mínimo 6) | Requiere sesión (cookie o Bearer). Fija la contraseña en GoTrue y estampa `password_set_at`. `200` con `data.user`. Sin tokens en el JSON |
+| `POST` | `/api/v1/auth/refresh` | vacío | Rota la sesión de GoTrue y reescribe las cookies. Sin cookie de refresh: `401` y las borra |
+| `POST` | `/api/v1/auth/logout` | vacío | Revoca el access token en Supabase (best-effort) y borra las cookies. Idempotente |
+| `POST` | `/api/v1/auth/otp` | `{ "email" }` | Solo envía el código. La sesión se abre con `POST /login` y `{ "email", "otp" }` |
+
+El cliente web llama con `credentials: 'include'` (y el `x-api-key` de siempre). CORS responde `Access-Control-Allow-Credentials: true` y refleja el origen de `CORS_ORIGIN`. Tras el login, las rutas protegidas no necesitan `Authorization`: la cookie `pcrm_access` basta. Un `401` en una ruta de negocio se resuelve con `POST /auth/refresh` y un reintento.
+
+**Móvil.** La app Android no usa estas cookies. Sigue mandando `Authorization: Bearer <access_token>` obtenido con el SDK de Supabase. Si el request trae Bearer, `requireAuth` lo usa y ignora la cookie.
+
 ### Cómo llama un cliente
 
-El token va en el header `Authorization`. En web y móvil lo da el SDK de Supabase
-(`supabase.auth.getSession()`); para probar a mano:
+El token va en el header `Authorization` (móvil y pruebas) o en la cookie `pcrm_access` (web).
+Para probar a mano, sin cookies:
 
 ```bash
 TOKEN=$(curl -s "$SUPABASE_URL/auth/v1/token?grant_type=password" \
   -H "apikey: $SUPABASE_ANON_KEY" -H 'Content-Type: application/json' \
   -d '{"email":"admin@pragma.test","password":"..."}' | jq -r .access_token)
 
-curl http://localhost:3000/api/v1/me -H "Authorization: Bearer $TOKEN"
+curl http://localhost:3000/api/v1/me -H "Authorization: Bearer $TOKEN" -H "x-api-key: $API_KEY"
+```
+
+Sesión por cookie (lo que usa el dashboard):
+
+```bash
+# Fija pcrm_access y pcrm_refresh. -c las guarda; -b las reenvía.
+curl -i -c cookies.txt -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"email":"admin@pragma.test","password":"..."}' \
+  http://localhost:3000/api/v1/auth/login
+
+curl -i -b cookies.txt -H "x-api-key: $API_KEY" http://localhost:3000/api/v1/me
+
+curl -i -b cookies.txt -c cookies.txt -H "x-api-key: $API_KEY" \
+  -X POST http://localhost:3000/api/v1/auth/refresh
+
+curl -i -b cookies.txt -c cookies.txt -H "x-api-key: $API_KEY" \
+  -X POST http://localhost:3000/api/v1/auth/logout
+
+# Contraseña de la cuenta ya autenticada. No devuelve tokens.
+curl -i -b cookies.txt -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+  -d '{"password":"nueva-clave"}' \
+  http://localhost:3000/api/v1/auth/password
 ```
 
 ```json
@@ -386,15 +474,21 @@ y el detalle está en [docs/Contexto_KPIs_Pragma_CRM.md](./docs/Contexto_KPIs_Pr
 `multipart/form-data`, en el campo `file`. El tamaño máximo lo fija
 `UPLOAD_MAX_FILE_SIZE_MB` (100 por defecto).
 
-> **Al desplegar detrás de nginx hay que subir `client_max_body_size` al mismo
-> valor.** Por defecto nginx corta en **1 MB** y responde un 413 en HTML antes
-> de que la petición llegue a la API — con esa configuración ni siquiera un
-> export mensual de 5 MB pasaría, y el dashboard no podría mostrar el mensaje
-> de error real.
+> **El proxy que quede delante tiene que permitir un body de ese tamaño.** Si
+> lo corta, responde un 413 en HTML antes de que la petición llegue a la API y
+> el dashboard no puede mostrar el mensaje de error real.
+>
+> En el VPS el proxy es **Traefik** (lo gestiona Dokploy) y no impone límite de
+> body por defecto: no hay nada que configurar. Solo si alguien pone **nginx**
+> delante hay que subir el límite, porque corta en 1 MB — con eso ni un export
+> mensual de 5 MB pasaría:
+>
+> ```nginx
+> client_max_body_size 100m;
+> ```
 
-```nginx
-client_max_body_size 100m;
-```
+El archivo se procesa **en memoria**, así que el contenedor necesita holgura:
+ver la nota de memoria en [docs/DEPLOY_DOKPLOY.md](./docs/DEPLOY_DOKPLOY.md).
 
 ## Despliegue de migraciones
 
@@ -405,7 +499,16 @@ Ver [docs/CI_CD.md](./docs/CI_CD.md).
 
 ## Docker
 
+Probar la imagen en local, la misma que Dokploy construye en el VPS:
+
 ```bash
-docker build -t pragmacrm-api .
-docker run --rm -p 3000:3000 --env-file .env pragmacrm-api
+docker build -t pragmacrm-api:local .
+docker run --rm -p 3000:3000 --env-file .env --name pcrm pragmacrm-api:local
 ```
+
+El contenedor arranca con `node dist/app.js` (el `CMD` de la imagen). **No usar
+`npm start`**: ese script recompila con `tsc`, que es una devDependency y no
+está en la etapa de runtime.
+
+El despliegue en el VPS —variables por entorno, dominio, memoria, verificación
+y rollback— está en [docs/DEPLOY_DOKPLOY.md](./docs/DEPLOY_DOKPLOY.md).

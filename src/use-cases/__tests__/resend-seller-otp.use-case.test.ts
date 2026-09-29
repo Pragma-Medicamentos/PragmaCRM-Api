@@ -16,6 +16,7 @@ const seller: SellerRecord = {
   id: SELLER_ID,
   name: 'Vendedor Nuevo',
   email: 'nuevo@pragma.test',
+  erp_user_id: null,
   active: true,
   auth_user_id: AUTH_ID,
   created_at: new Date(),
