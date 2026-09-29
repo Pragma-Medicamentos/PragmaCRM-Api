@@ -39,6 +39,11 @@ describe('handleError', () => {
     ['P2002', 409, 'Duplicate record.'],
     ['P2003', 400, 'Reference error: one or more related records do not exist.'],
     ['P2025', 404, 'Record not found.'],
+    [
+      'P2028',
+      504,
+      'The import timed out while writing sales. Try a smaller file, or contact support if a single month fails.',
+    ],
   ])('maps the Prisma code %s', (code, statusCode, message) => {
     expect(handleError({ code })).toEqual({ statusCode, message });
   });

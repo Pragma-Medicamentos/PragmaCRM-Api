@@ -1,5 +1,10 @@
 import { Client } from '../../lib/prisma';
-import { syncStagedSales } from '../salesSync.service';
+import {
+  SYNC_CHUNK_SIZE,
+  finalizeUploadSync,
+  syncStagedSales,
+  syncStagedSalesChunk,
+} from '../salesSync.service';
 import { createPendingSellerAuthUser } from '../supabaseAdmin.service';
 
 jest.mock('../supabaseAdmin.service', () => ({
@@ -408,7 +413,114 @@ describe('syncStagedSales — every processed row is marked', () => {
     await syncStagedSales(client, 'upload-1');
 
     expect(spies.sale_staging.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { upload_id: 'upload-1', status: 'pending' } })
+      expect.objectContaining({
+        where: { upload_id: 'upload-1', status: 'pending' },
+        orderBy: { id: 'asc' },
+        take: SYNC_CHUNK_SIZE + 1,
+      })
     );
+  });
+});
+
+describe('syncStagedSalesChunk — limited drain without finalizing upload', () => {
+  it('processes only up to the limit and reports has_more when more pending remain', async () => {
+    const { client, stagingUpdates, uploadUpdates, sales } = createClientMock();
+    const rows = [stagingRow(1), stagingRow(2), stagingRow(3)];
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue(rows);
+
+    const chunk = await syncStagedSalesChunk(client, 'upload-1', {
+      created: [],
+      unmapped: [],
+      createdAuthUserIds: [],
+    }, 2);
+
+    expect(chunk).toEqual({ inserted: 2, updated: 0, sync_failed: 0, has_more: true });
+    expect(sales).toHaveLength(2);
+    expect(stagingUpdates).toHaveLength(2);
+    // Intermediate chunks must not touch upload status.
+    expect(uploadUpdates).toHaveLength(0);
+    expect(client.sale_staging.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 3 })
+    );
+  });
+
+  it('reports has_more false when the fetch fits in the limit', async () => {
+    const { client, uploadUpdates } = createClientMock();
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
+
+    const chunk = await syncStagedSalesChunk(client, 'upload-1', {
+      created: [],
+      unmapped: [],
+      createdAuthUserIds: [],
+    }, 2);
+
+    expect(chunk.has_more).toBe(false);
+    expect(chunk.inserted).toBe(1);
+    expect(uploadUpdates).toHaveLength(0);
+  });
+});
+
+describe('finalizeUploadSync', () => {
+  it('writes aggregated counters and completed status', async () => {
+    const { client, uploadUpdates } = createClientMock();
+
+    await finalizeUploadSync(client, 'upload-1', {
+      inserted: 10,
+      updated: 5,
+      sync_failed: 0,
+    });
+
+    expect(uploadUpdates[0]).toMatchObject({
+      inserted: 10,
+      updated: 5,
+      status: 'completed',
+    });
+  });
+
+  it('marks upload failed when every row in sync failed', async () => {
+    const { client, uploadUpdates } = createClientMock();
+
+    await finalizeUploadSync(client, 'upload-1', {
+      inserted: 0,
+      updated: 0,
+      sync_failed: 3,
+    });
+
+    expect(uploadUpdates[0]).toMatchObject({
+      status: 'failed',
+      failed: { increment: 3 },
+    });
+  });
+});
+
+describe('syncStagedSales — drains across multiple internal chunks', () => {
+  it('issues multiple findMany calls when pending rows exceed SYNC_CHUNK_SIZE', async () => {
+    const { client, uploadUpdates, stagingUpdates } = createClientMock();
+
+    // First fetch: full chunk + one peek row => has_more.
+    // Second fetch: the remaining row only => done.
+    const firstBatch = Array.from({ length: SYNC_CHUNK_SIZE + 1 }, (_, i) => stagingRow(i + 1));
+    const secondBatch = [stagingRow(SYNC_CHUNK_SIZE + 1)];
+    (client.sale_staging.findMany as jest.Mock)
+      .mockResolvedValueOnce(firstBatch)
+      .mockResolvedValueOnce(secondBatch);
+
+    const result = await syncStagedSales(client, 'upload-1');
+
+    expect(client.sale_staging.findMany).toHaveBeenCalledTimes(2);
+    expect(stagingUpdates).toHaveLength(SYNC_CHUNK_SIZE + 1);
+    expect(result).toMatchObject({
+      processed: SYNC_CHUNK_SIZE + 1,
+      inserted: SYNC_CHUNK_SIZE + 1,
+      updated: 0,
+      sync_failed: 0,
+    });
+    // Finalize once after all chunks.
+    expect(uploadUpdates).toHaveLength(1);
+    expect(uploadUpdates[0]).toMatchObject({
+      inserted: SYNC_CHUNK_SIZE + 1,
+      updated: 0,
+      status: 'completed',
+    });
   });
 });
