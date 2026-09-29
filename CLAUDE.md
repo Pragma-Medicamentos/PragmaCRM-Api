@@ -293,6 +293,7 @@ En la base: `scheduled_visit.stop_type` (default `'visit'`) para la parada plani
 - **Radio de validación: 80 metros.** Tomado del wireframe de ubicación del cliente.
 - El radio **no está persistido por visita**. Si cambia, todo el histórico de alertas "fuera de radio" se recalcula retroactivamente.
 - Se guarda `visit.checkin_location` y `visit.distance_meters` en cada visita.
+- **Cliente sin GPS (PCRM-160, decidido por el equipo el 29/09/2026).** RF-02 asigna la ubicación al Administrador, pero el Vendedor también puede fijarla desde la parada **solo si el cliente no tiene ubicación** (`PATCH /api/v1/me/route/stops/:id/location`), con precisión ≤ 80 m y tras una confirmación en la app. Mover una ubicación existente sigue siendo exclusivo del Administrador. Diferido: registrar quién y cuándo la fijó.
 
 **⚠ Contradicción conocida sin resolver:** el comportamiento cuando el vendedor está fuera de rango difiere entre tres documentos del proyecto. Los casos de uso lo modelan como `<<extend>>` "Notificar fuera de rango GPS", lo que sugiere que se permite marcar y se alerta, pero no está confirmado si bloquea, advierte o registra con bandera. **Requiere decisión del cliente.**
 
