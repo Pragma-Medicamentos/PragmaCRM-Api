@@ -50,6 +50,11 @@ export const handleError = (error: unknown): ErrorHandlerInterface => {
     } else if (prismaCode === 'P2025') {
       statusCode = 404;
       message = 'Record not found.';
+    } else if (prismaCode === 'P2028') {
+      // Interactive transaction timed out (e.g. sales import sync).
+      statusCode = 504;
+      message =
+        'The import timed out while writing sales. Try a smaller file, or contact support if a single month fails.';
     }
   }
 

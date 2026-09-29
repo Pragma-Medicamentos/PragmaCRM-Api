@@ -47,13 +47,21 @@ import { createPendingSellerAuthUser } from './supabaseAdmin.service';
  * (CLAUDE.md 9.2). `product.erp_product_id` and `sale.erp_sale_id` are plain
  * primary keys, so `upsert` uses Postgres' `ON CONFLICT` directly for those.
  *
- * No `SAVEPOINT` is used inside the batch: this runs inside the same
- * transaction as `stageSalesFile` (see `importSalesFile.use-case.ts`), and a
- * database-level failure (e.g. an unexpected FK violation) aborts the whole
- * transaction rather than just the offending row. In practice this should be
- * rare, because every row already passed the intake schema
+ * No `SAVEPOINT` is used inside a chunk: a database-level failure (e.g. an
+ * unexpected FK violation) aborts that chunk's transaction. Earlier committed
+ * chunks stay applied; upserts on ERP natural keys make a retry safe
+ * (see `importSalesFile.use-case.ts`). In practice mid-chunk failures should
+ * be rare, because every row already passed the intake schema
  * (`efactsoftSaleSchema`) before reaching `sale_staging`.
  */
+
+/**
+ * How many pending staging rows one sync transaction processes.
+ * ~50 × ~14 sequential awaits stays well under Prisma's 120 s TX timeout;
+ * a full month (~350–400 sales) therefore needs several chunk transactions
+ * instead of one monolithic sync (PCRM-168).
+ */
+export const SYNC_CHUNK_SIZE = 50;
 
 const toDecimalInput = (value: string | number | null | undefined): string | null => {
   if (value === null || value === undefined) return null;
@@ -349,21 +357,38 @@ const upsertSaleDetail = async (
   });
 };
 
+/** Counts produced by one sync chunk (before upload finalization). */
+export interface SyncChunkResult {
+  inserted: number;
+  updated: number;
+  sync_failed: number;
+  /** True when more `pending` rows remain for this upload_id. */
+  has_more: boolean;
+}
+
 /**
- * Drains every `pending` row of one upload into the live tables.
+ * Processes up to `limit` pending staging rows for one upload.
  *
- * Takes `Client` so it can run inside the same `$transaction` as
- * `stageSalesFile` (CLAUDE.md 8.1).
+ * Does **not** finalize `upload` status — the orchestrator aggregates chunk
+ * counts and calls `finalizeUploadSync` once nothing is left pending.
+ * Takes `Client` so each chunk can run inside its own `$transaction`.
  */
-export const syncStagedSales = async (
+export const syncStagedSalesChunk = async (
   client: Client,
   uploadId: string,
-  provisioning: SellerProvisioning = { created: [], unmapped: [], createdAuthUserIds: [] }
-): Promise<SyncResult> => {
-  const pendingRows = await client.sale_staging.findMany({
+  provisioning: SellerProvisioning,
+  limit: number = SYNC_CHUNK_SIZE
+): Promise<SyncChunkResult> => {
+  // Fetch one extra row so we know whether another chunk is needed without a
+  // separate COUNT round-trip.
+  const fetched = await client.sale_staging.findMany({
     where: { upload_id: uploadId, status: 'pending' },
     orderBy: { id: 'asc' },
+    take: limit + 1,
   });
+
+  const has_more = fetched.length > limit;
+  const pendingRows = has_more ? fetched.slice(0, limit) : fetched;
 
   let inserted = 0;
   let updated = 0;
@@ -414,6 +439,20 @@ export const syncStagedSales = async (
     else updated += 1;
   }
 
+  return { inserted, updated, sync_failed: failed, has_more };
+};
+
+/**
+ * Writes aggregated sync counters onto `upload` and sets its terminal status.
+ * Same rules as the former end of `syncStagedSales` (CLAUDE.md 8.1).
+ */
+export const finalizeUploadSync = async (
+  client: Client,
+  uploadId: string,
+  totals: { inserted: number; updated: number; sync_failed: number }
+): Promise<void> => {
+  const { inserted, updated, sync_failed: failed } = totals;
+
   await client.upload.update({
     where: { id: uploadId },
     data: {
@@ -425,6 +464,36 @@ export const syncStagedSales = async (
       status: failed > 0 && inserted + updated === 0 ? 'failed' : 'completed',
       updated_at: new Date(),
     },
+  });
+};
+
+/**
+ * Drains every `pending` row of one upload into the live tables on a single
+ * `Client` (one transaction when the caller wraps it). Large imports should
+ * prefer the chunked orchestration in `importSalesFile` instead.
+ */
+export const syncStagedSales = async (
+  client: Client,
+  uploadId: string,
+  provisioning: SellerProvisioning = { created: [], unmapped: [], createdAuthUserIds: [] }
+): Promise<SyncResult> => {
+  let inserted = 0;
+  let updated = 0;
+  let failed = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const chunk = await syncStagedSalesChunk(client, uploadId, provisioning, SYNC_CHUNK_SIZE);
+    inserted += chunk.inserted;
+    updated += chunk.updated;
+    failed += chunk.sync_failed;
+    hasMore = chunk.has_more;
+  }
+
+  await finalizeUploadSync(client, uploadId, {
+    inserted,
+    updated,
+    sync_failed: failed,
   });
 
   return {
