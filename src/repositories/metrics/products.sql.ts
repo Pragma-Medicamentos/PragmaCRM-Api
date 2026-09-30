@@ -13,6 +13,10 @@ import { SALE_AT, inRange } from './fragments.sql';
  * so the page of top N still carries the period's full total. Orphan lines
  * (`product_id IS NULL`) and deleted products are out: they have no catalog
  * row to name.
+ *
+ * `quantity` is in each line's own unit of measure (a product sells by the
+ * UNIDAD and by the DOCENA); `factor` converts it to the product's base unit,
+ * so `units` adds like with like.
  */
 export const productRankingSql = (
   range: LocalDateRange,
@@ -21,7 +25,7 @@ export const productRankingSql = (
   WITH sold AS (
     SELECT d.product_id,
            COALESCE(SUM(d.total), 0)    AS amount,
-           COALESCE(SUM(d.quantity), 0) AS units
+           COALESCE(SUM(d.quantity * COALESCE(d.factor, 1)), 0) AS units
     FROM   sale_detail d
     JOIN   sale s
            ON s.erp_sale_id = d.erp_sale_id
@@ -37,7 +41,7 @@ export const productRankingSql = (
          p.code,
          p.name,
          sold.amount::numeric(14,2)::text   AS amount,
-         sold.units::numeric(12,4)::text    AS units,
+         sold.units::numeric(16,4)::text    AS units,
          SUM(sold.amount) OVER ()::numeric(14,2)::text AS total_amount
   FROM   sold
   JOIN   product p

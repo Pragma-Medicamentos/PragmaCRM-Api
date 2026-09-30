@@ -212,7 +212,7 @@ export interface ProductRanking {
   name: string;
   /** Sold amount in the period, VAT included. */
   amount: Money;
-  /** Units sold, as a `numeric(12,4)` string: the column keeps 4 decimals. */
+  /** Units sold in the product's base unit (`quantity × factor`), 4-decimal string. */
   units: string;
 }
 

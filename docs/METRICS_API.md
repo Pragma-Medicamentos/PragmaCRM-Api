@@ -269,7 +269,7 @@ Productos ordenados por monto vendido en el período. Misma regla de venta confi
 | `product_id` | `product.erp_product_id`, la PK natural del ERP (entero) |
 | `code` | `product.code`. Puede ser `null` |
 | `amount` | `SUM(sale_detail.total)` del producto en el período, IVA incluido (decisión D-1). String de dos decimales, como todo el dinero |
-| `units` | `SUM(sale_detail.quantity)`. String con hasta 4 decimales: la columna es `numeric(12,4)` |
+| `units` | `SUM(sale_detail.quantity × COALESCE(sale_detail.factor, 1))`, en la unidad base del producto (la de factor 1). `quantity` viene en la unidad de medida de cada línea: el mismo producto se vende por UNIDAD y por DOCENA (factor 12). String con hasta 4 decimales |
 | `total_amount` | Monto de **todos** los productos con venta en el período, **antes** de aplicar `limit`. Permite mostrar "top 50 de un total de $X" |
 
 - `limit` recorta las filas devueltas, nunca `total_amount`.

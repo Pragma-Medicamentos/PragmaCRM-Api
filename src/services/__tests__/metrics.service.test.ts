@@ -318,6 +318,8 @@ describe('getProductRanking', () => {
     expect(sql.sql).toContain('s.erp_status =');
     expect(sql.sql).toContain('d.product_id IS NOT NULL');
     expect(sql.sql).toContain('p.deleted_at IS NULL');
+    // Each line's quantity is in its own unit of measure: normalise to the base unit.
+    expect(sql.sql).toContain('SUM(d.quantity * COALESCE(d.factor, 1))');
     // Half-open [start, end) on the raw column, never `::date` in the WHERE.
     expect(sql.sql).toContain('s.erp_created_at >=');
     expect(sql.sql).toContain('s.erp_created_at <');
