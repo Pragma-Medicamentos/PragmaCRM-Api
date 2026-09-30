@@ -2,7 +2,12 @@ import { Client } from '../lib/prisma';
 import { LocalDateRange } from '../lib/localDateRange';
 import { TrendGranularity } from '../domain/schemas/metrics.schema';
 import { Money } from '../domain/types/customer.types';
-import { CompanyKpis, InactiveCustomer, TrendPoint } from '../domain/types/metrics.types';
+import {
+  CompanyKpis,
+  InactiveCustomer,
+  ProductRanking,
+  TrendPoint,
+} from '../domain/types/metrics.types';
 import { KpiName } from '../domain/schemas/metrics.schema';
 import { KpiWindow } from './metrics/fragments.sql';
 import { KPI_REGISTRY } from './metrics/kpiRegistry';
@@ -10,6 +15,7 @@ import { sellerInactiveCustomersSql, sellerPerformanceSql } from './metrics/sell
 import { trendsSql } from './metrics/trends.sql';
 import { coverageSql } from './metrics/coverage.sql';
 import { purchaseFrequencySql } from './metrics/purchaseFrequency.sql';
+import { productRankingSql } from './metrics/products.sql';
 
 /*
  * Data access of the metrics panel (RF-09). Every raw SQL statement of the
@@ -71,6 +77,11 @@ export interface PurchaseFrequencyRow {
   average_days: number | null;
 }
 
+/** A ranking row: the product plus the period total, repeated on every row. */
+export interface ProductRankingRow extends ProductRanking {
+  total_amount: Money;
+}
+
 /** One row per seller, or only the given seller when `sellerId` is set. */
 export const findSellerPerformance = (
   client: Client,
@@ -104,6 +115,14 @@ export const findCoverage = (
   client: Client,
   range: LocalDateRange
 ): Promise<CoverageRow[]> => client.$queryRaw<CoverageRow[]>(coverageSql(range));
+
+/** Top `limit` products by sold amount in the range, best first. */
+export const findProductRanking = (
+  client: Client,
+  range: LocalDateRange,
+  limit: number
+): Promise<ProductRankingRow[]> =>
+  client.$queryRaw<ProductRankingRow[]>(productRankingSql(range, limit));
 
 /** Customers per purchase-frequency bucket. Undefined never happens in practice. */
 export const findPurchaseFrequencyBuckets = async (

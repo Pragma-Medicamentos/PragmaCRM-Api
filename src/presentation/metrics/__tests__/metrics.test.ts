@@ -7,6 +7,7 @@ import {
   getKpi,
   getKpiValues,
   getCoverage,
+  getProductRanking,
   getPurchaseFrequency,
   getSellerDetail,
   getTrends,
@@ -34,6 +35,7 @@ jest.mock('../../../services/metrics.service', () => ({
   getSellerDetail: jest.fn(),
   getTrends: jest.fn(),
   getCoverage: jest.fn(),
+  getProductRanking: jest.fn(),
   getPurchaseFrequency: jest.fn(),
 }));
 
@@ -42,6 +44,7 @@ const getKpiValuesMock = getKpiValues as jest.Mock;
 const getKpiMock = getKpi as jest.Mock;
 const getSellerDetailMock = getSellerDetail as jest.Mock;
 const getTrendsMock = getTrends as jest.Mock;
+const getProductRankingMock = getProductRanking as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
@@ -80,6 +83,7 @@ beforeEach(() => {
   getTrendsMock.mockResolvedValue({ ...context, granularity: 'week', points: [] });
   (getCoverage as jest.Mock).mockResolvedValue({ ...context, customers: [] });
   (getPurchaseFrequency as jest.Mock).mockResolvedValue({ ...context, buckets: [] });
+  getProductRankingMock.mockResolvedValue({ ...context, products: [], total_amount: '0.00' });
 });
 
 describe('metrics access control', () => {
@@ -267,7 +271,58 @@ describe('GET /api/v1/metrics/trends', () => {
   });
 });
 
-describe.each(['/coverage', '/purchase-frequency', '/sellers'])('GET /api/v1/metrics%s', (path) => {
+describe('GET /api/v1/metrics/products', () => {
+  it('returns the ranking with the default limit of 50', async () => {
+    getProductRankingMock.mockResolvedValue({
+      ...context,
+      products: [
+        { position: 1, product_id: 42, code: 'ABC-1', name: 'Producto X', amount: '1500.00', units: '120.0000' },
+        { position: 2, product_id: 7, code: null, name: 'Producto Y', amount: '900.00', units: '30.5000' },
+      ],
+      total_amount: '5000.00',
+    });
+
+    const res = await request(app)
+      .get('/api/v1/metrics/products?from=2026-09-01&to=2026-09-30')
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.message).toBe('Product sales ranking retrieved successfully');
+    expect(res.body.data.total_amount).toBe('5000.00');
+    expect(res.body.data.products.map((p: { position: number }) => p.position)).toEqual([1, 2]);
+    expect(res.body.data.products[0]).toEqual({
+      position: 1,
+      product_id: 42,
+      code: 'ABC-1',
+      name: 'Producto X',
+      amount: '1500.00',
+      units: '120.0000',
+    });
+    expect(getProductRankingMock).toHaveBeenCalledWith(expect.anything(), {
+      from: '2026-09-01',
+      to: '2026-09-30',
+      limit: 50,
+    });
+  });
+
+  it('coerces an explicit limit to a number', async () => {
+    await request(app).get('/api/v1/metrics/products?limit=10').set(AUTH);
+
+    expect(getProductRankingMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ limit: 10 })
+    );
+  });
+
+  it.each(['0', '501', 'abc'])('rejects limit=%s', async (limit) => {
+    const res = await request(app).get(`/api/v1/metrics/products?limit=${limit}`).set(AUTH);
+
+    expect(res.status).toBe(400);
+    expect(getProductRankingMock).not.toHaveBeenCalled();
+  });
+});
+
+describe.each(['/coverage', '/products', '/purchase-frequency', '/sellers'])('GET /api/v1/metrics%s', (path) => {
   it('responds 200 for an admin', async () => {
     const res = await request(app).get(`/api/v1/metrics${path}`).set(AUTH);
 
