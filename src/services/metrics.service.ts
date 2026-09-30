@@ -9,6 +9,7 @@ import {
   KPI_NAMES,
   KpiName,
   MetricsKpiValuesQuery,
+  MetricsProductsQuery,
   MetricsRangeQuery,
   MetricsTrendsQuery,
 } from '../domain/schemas/metrics.schema';
@@ -19,6 +20,7 @@ import {
   MetricsKpiCatalogResponse,
   MetricsKpiResponse,
   MetricsKpiValuesResponse,
+  MetricsProductsResponse,
   MetricsPurchaseFrequencyResponse,
   MetricsSellerDetailResponse,
   MetricsSellersResponse,
@@ -35,6 +37,7 @@ import {
   SellerRow,
   findCoverage,
   findKpi,
+  findProductRanking,
   findPurchaseFrequencyBuckets,
   findSellerInactiveCustomers,
   findSellerPerformance,
@@ -64,6 +67,7 @@ import { GPS_RADIUS_METERS } from './visit.service';
  *      GET /api/v1/metrics/sellers/:id         -> getSellerDetail
  *      GET /api/v1/metrics/trends              -> getTrends
  *      GET /api/v1/metrics/coverage            -> getCoverage
+ *      GET /api/v1/metrics/products            -> getProductRanking
  *      GET /api/v1/metrics/purchase-frequency  -> getPurchaseFrequency
  * ============================================================================
  */
@@ -232,6 +236,26 @@ export const getCoverage = async (
     not_visited: rows.length - visited,
     without_location: rows.length - customers.length,
     customers,
+  };
+};
+
+/**
+ * Ranking "Productos más vendidos" (PCRM-172). `total_amount` covers every
+ * product with sales in the period, so the page of top N can be read as a
+ * share of the whole; it travels on each row and is the same on all of them.
+ */
+export const getProductRanking = async (
+  client: Client,
+  query: MetricsProductsQuery,
+  now: Date = new Date()
+): Promise<MetricsProductsResponse> => {
+  const { range, context } = buildContext(query, now);
+  const rows = await findProductRanking(client, range, query.limit);
+
+  return {
+    ...context,
+    products: rows.map(({ total_amount: _total, ...product }) => product),
+    total_amount: rows[0]?.total_amount ?? '0.00',
   };
 };
 

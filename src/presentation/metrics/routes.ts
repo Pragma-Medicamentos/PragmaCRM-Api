@@ -4,6 +4,7 @@ import { validateParams, validateQuery } from '../middleware/validate';
 import {
   metricsKpiParamsSchema,
   metricsKpiValuesQuerySchema,
+  metricsProductsQuerySchema,
   metricsRangeQuerySchema,
   metricsSellerParamsSchema,
   metricsTrendsQuerySchema,
@@ -36,6 +37,7 @@ export class MetricsRoutes {
     );
     router.get('/trends', validateQuery(metricsTrendsQuerySchema), controller.trends);
     router.get('/coverage', validateQuery(metricsRangeQuerySchema), controller.coverage);
+    router.get('/products', validateQuery(metricsProductsQuerySchema), controller.products);
     router.get(
       '/purchase-frequency',
       validateQuery(metricsRangeQuerySchema),
