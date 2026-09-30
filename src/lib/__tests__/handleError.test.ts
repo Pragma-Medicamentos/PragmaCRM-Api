@@ -10,6 +10,14 @@ describe('handleError', () => {
     });
   });
 
+  it('includes code in the result when CustomError has one', () => {
+    expect(handleError(CustomError.notFound('Not found', 'CUSTOMER_NOT_FOUND'))).toEqual({
+      statusCode: 404,
+      message: 'Not found',
+      code: 'CUSTOMER_NOT_FOUND',
+    });
+  });
+
   it('maps a ZodError to 400 listing every issue', () => {
     const schema = z.object({ nombre: z.string(), edad: z.number() });
     const result = schema.safeParse({ nombre: 1, edad: 'x' });
@@ -43,6 +51,11 @@ describe('handleError', () => {
       'P2028',
       504,
       'The import timed out while writing sales. Try a smaller file, or contact support if a single month fails.',
+    ],
+    [
+      'P2034',
+      409,
+      'A database deadlock occurred during import. Wait until any running import finishes, then retry.',
     ],
   ])('maps the Prisma code %s', (code, statusCode, message) => {
     expect(handleError({ code })).toEqual({ statusCode, message });

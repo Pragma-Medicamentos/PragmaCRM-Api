@@ -6,6 +6,7 @@ import {
   getCoverage,
   getKpi,
   getKpiValues,
+  getProductRanking,
   getPurchaseFrequency,
   getSellerDetail,
   listKpiCatalog,
@@ -260,7 +261,7 @@ describe('getSellerDetail', () => {
 
 describe('getCoverage', () => {
   it('keeps customers without a pin out of the map but in the counts', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([
+    const queryRaw = jest.fn().mockResolvedValueOnce([
       { customer_id: 'a', name: 'A', trade_name: null, lat: 13.7, lng: -89.2, visited: true, last_visit_at: null },
       { customer_id: 'b', name: 'B', trade_name: null, lat: 13.6, lng: -89.1, visited: false, last_visit_at: null },
       { customer_id: 'c', name: 'C', trade_name: null, lat: null, lng: null, visited: true, last_visit_at: null },
@@ -272,6 +273,64 @@ describe('getCoverage', () => {
     expect(result.not_visited).toBe(1);
     expect(result.without_location).toBe(1);
     expect(result.customers.map((c) => c.customer_id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('getProductRanking', () => {
+  const row = (position: number, product_id: number, amount: string) => ({
+    position,
+    product_id,
+    code: `COD-${product_id}`,
+    name: `Producto ${product_id}`,
+    amount,
+    units: '10.0000',
+    total_amount: '5000.00',
+  });
+
+  it('keeps the ranking order and lifts the period total out of the rows', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([row(1, 42, '1500.00'), row(2, 7, '900.00')]);
+
+    const result = await getProductRanking(
+      buildClient(queryRaw),
+      { ...SEPTEMBER, limit: 50 },
+      NOW
+    );
+
+    expect(result.period).toEqual(SEPTEMBER);
+    expect(result.total_amount).toBe('5000.00');
+    expect(result.products).toEqual([
+      { position: 1, product_id: 42, code: 'COD-42', name: 'Producto 42', amount: '1500.00', units: '10.0000' },
+      { position: 2, product_id: 7, code: 'COD-7', name: 'Producto 7', amount: '900.00', units: '10.0000' },
+    ]);
+  });
+
+  it('filters confirmed sales of the range and applies the limit', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([]);
+
+    const result = await getProductRanking(
+      buildClient(queryRaw),
+      { ...SEPTEMBER, limit: 10 },
+      NOW
+    );
+
+    const sql = sqlOf(queryRaw, 0);
+    expect(sql.sql).toContain('s.deleted_at IS NULL');
+    expect(sql.sql).toContain('s.erp_status =');
+    expect(sql.sql).toContain('d.product_id IS NOT NULL');
+    expect(sql.sql).toContain('p.deleted_at IS NULL');
+    // Each line's quantity is in its own unit of measure: normalise to the base unit.
+    expect(sql.sql).toContain('SUM(d.quantity * COALESCE(d.factor, 1))');
+    // Half-open [start, end) on the raw column, never `::date` in the WHERE.
+    expect(sql.sql).toContain('s.erp_created_at >=');
+    expect(sql.sql).toContain('s.erp_created_at <');
+    expect(sql.values).toContain(10);
+    expect(isoInstants(sql)).toEqual([
+      '2026-09-01T06:00:00.000Z',
+      '2026-10-01T06:00:00.000Z',
+    ]);
+    // No sales in the period is a zero total, not a null.
+    expect(result.total_amount).toBe('0.00');
+    expect(result.products).toEqual([]);
   });
 });
 

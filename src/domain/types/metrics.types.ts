@@ -202,6 +202,26 @@ export interface MetricsCoverageResponse extends MetricsContext {
   customers: CoverageCustomer[];
 }
 
+/** One product of the sales ranking (PCRM-172). */
+export interface ProductRanking {
+  /** 1-based rank by `amount` DESC, ties broken by `product_id` ASC. */
+  position: number;
+  /** `product.erp_product_id`, the ERP's natural key. */
+  product_id: number;
+  code: string | null;
+  name: string;
+  /** Sold amount in the period, VAT included. */
+  amount: Money;
+  /** Units sold in the product's base unit (`quantity × factor`), 4-decimal string. */
+  units: string;
+}
+
+export interface MetricsProductsResponse extends MetricsContext {
+  products: ProductRanking[];
+  /** Amount of every product with sales in the period, before `limit`. */
+  total_amount: Money;
+}
+
 export interface PurchaseFrequencyBucket {
   label: string;
   min_days: number;

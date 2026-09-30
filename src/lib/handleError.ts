@@ -11,10 +11,12 @@ import { ErrorHandlerInterface } from '../domain/errors/errorHandler.interface';
 export const handleError = (error: unknown): ErrorHandlerInterface => {
   let statusCode = 500;
   let message = 'Internal server error';
+  let code: string | undefined;
 
   if (error instanceof CustomError) {
     statusCode = error.statusCode;
     message = error.message;
+    code = error.code;
   } else if (error instanceof ZodError) {
     statusCode = 400;
     message = error.issues
@@ -55,8 +57,14 @@ export const handleError = (error: unknown): ErrorHandlerInterface => {
       statusCode = 504;
       message =
         'The import timed out while writing sales. Try a smaller file, or contact support if a single month fails.';
+    } else if (prismaCode === 'P2034') {
+      // Write conflict / deadlock (40P01). Two concurrent sales imports upsert
+      // the same products and customers in different orders (PCRM-169).
+      statusCode = 409;
+      message =
+        'A database deadlock occurred during import. Wait until any running import finishes, then retry.';
     }
   }
 
-  return { statusCode, message };
+  return code ? { statusCode, message, code } : { statusCode, message };
 };

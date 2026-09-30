@@ -49,6 +49,21 @@ export interface DailyRouteStop {
   municipality: string | null;
   phone: string | null;
   /**
+   * RF-12 communication style as a lowercase colour (`rojo`, `amarillo`,
+   * `verde`, `azul`). Free text in the database, so the client normalises it.
+   * Always null when `target_kind` is 'prospect': the table has no such column.
+   */
+  personality: string | null;
+  /** RF-12 buying potential (`alto`, `medio`, `bajo`). Null for prospects. */
+  potential: string | null;
+  /** Null for prospects. */
+  establishment_type: string | null;
+  /**
+   * `customer.credit_limit`, numeric(14,2) cast to a JS number: two decimals
+   * of a currency amount fit a double exactly. Null for prospects.
+   */
+  credit_limit: number | null;
+  /**
    * Null when the target has no GPS, which is an ordinary case and not an
    * error — the customer list even has a `without_gps` filter for it. The pin
    * count therefore differs from the stop count by design, and the card
@@ -93,4 +108,13 @@ export interface DailyRoute {
   routes: RouteRef[];
   /** Flat and already ordered. The client does not re-sort. */
   stops: DailyRouteStop[];
+}
+
+/**
+ * Result of PATCH /api/v1/me/route/stops/:id/location: the pin the seller just
+ * fixed on the stop's customer.
+ */
+export interface StopCustomerLocation {
+  customer_id: string;
+  location: GeoPoint;
 }

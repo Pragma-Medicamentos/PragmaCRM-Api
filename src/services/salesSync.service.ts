@@ -286,13 +286,16 @@ const upsertSale = async (
     select: { erp_created_at: true, last_payment_at: true, visit_id: true },
   });
 
-  // Timestamps come from the payload's `updated_at`, never the import time
-  // (CLAUDE.md 5.5 and 5.7). Already validated by efactsoftSaleSchema.
+  // Timestamps come from the payload, never the import time (CLAUDE.md 5.5
+  // and 5.7). Both already validated by efactsoftSaleSchema.
+  // `fecha_emision` is when the quotation became a sale, the date Efactsoft
+  // reports on; `updated_at` moves with every later payment or edit.
+  const issuedAt = parseErpTimestamp(venta.fecha_emision)!;
   const updatedAt = parseErpTimestamp(venta.updated_at)!;
   const balanceIsZero = isZeroBalance(venta.saldop);
 
   // erp_created_at and last_payment_at are stamped once and never overwritten.
-  const erpCreatedAt = existing?.erp_created_at ?? updatedAt;
+  const erpCreatedAt = existing?.erp_created_at ?? issuedAt;
   const lastPaymentAt = existing?.last_payment_at ?? (balanceIsZero ? updatedAt : null);
 
   // visit_id follows the same "stamp once" rule: once a sale is linked to a
@@ -440,6 +443,18 @@ export const syncStagedSalesChunk = async (
   }
 
   return { inserted, updated, sync_failed: failed, has_more };
+};
+
+/**
+ * Moves an upload from `staged` to `processing` before the sync loop begins,
+ * so the in-progress endpoint can report it while the request is still running
+ * (PCRM-169). The terminal status is still written by `finalizeUploadSync`.
+ */
+export const markUploadProcessing = async (client: Client, uploadId: string): Promise<void> => {
+  await client.upload.update({
+    where: { id: uploadId },
+    data: { status: 'processing', updated_at: new Date() },
+  });
 };
 
 /**

@@ -1,9 +1,11 @@
 import { importSalesFile } from '../importSalesFile.use-case';
 import { prisma } from '../../lib/prisma';
+import { tryAcquireImportLock } from '../../repositories/uploads.repository';
 import { stageSalesFile } from '../../services/salesStaging.service';
 import {
   SYNC_CHUNK_SIZE,
   finalizeUploadSync,
+  markUploadProcessing,
   syncStagedSalesChunk,
 } from '../../services/salesSync.service';
 import { deleteAuthUser } from '../../services/supabaseAdmin.service';
@@ -12,6 +14,10 @@ jest.mock('../../lib/prisma', () => ({
   prisma: {
     $transaction: jest.fn(),
   },
+}));
+
+jest.mock('../../repositories/uploads.repository', () => ({
+  tryAcquireImportLock: jest.fn(),
 }));
 
 jest.mock('../../services/salesStaging.service', () => ({
@@ -24,6 +30,7 @@ jest.mock('../../services/salesSync.service', () => {
     ...actual,
     syncStagedSalesChunk: jest.fn(),
     finalizeUploadSync: jest.fn(),
+    markUploadProcessing: jest.fn(),
   };
 });
 
@@ -36,9 +43,11 @@ jest.mock('../../lib/adapters/logger', () => ({
 }));
 
 const prismaTransaction = prisma.$transaction as jest.Mock;
+const tryLockMock = tryAcquireImportLock as jest.Mock;
 const stageSalesFileMock = stageSalesFile as jest.Mock;
 const syncChunkMock = syncStagedSalesChunk as jest.Mock;
 const finalizeMock = finalizeUploadSync as jest.Mock;
+const markProcessingMock = markUploadProcessing as jest.Mock;
 const deleteAuthUserMock = deleteAuthUser as jest.Mock;
 
 const stagingResult = {
@@ -59,9 +68,13 @@ const stagingResult = {
 describe('importSalesFile — chunked sync orchestration (PCRM-168)', () => {
   beforeEach(() => {
     prismaTransaction.mockReset();
+    tryLockMock.mockReset();
+    tryLockMock.mockResolvedValue(true);
     stageSalesFileMock.mockReset();
     syncChunkMock.mockReset();
     finalizeMock.mockReset();
+    markProcessingMock.mockReset();
+    markProcessingMock.mockResolvedValue(undefined);
     deleteAuthUserMock.mockReset();
     deleteAuthUserMock.mockResolvedValue(undefined);
 
@@ -83,8 +96,9 @@ describe('importSalesFile — chunked sync orchestration (PCRM-168)', () => {
 
     const result = await importSalesFile(Buffer.from('[]'), 'admin-1');
 
-    // 1 stage + 3 sync chunks + 1 finalize = 5 transactions.
-    expect(prismaTransaction).toHaveBeenCalledTimes(5);
+    // 1 lock + 1 stage + 1 mark-processing + 3 sync chunks + 1 finalize.
+    expect(prismaTransaction).toHaveBeenCalledTimes(7);
+    expect(markProcessingMock).toHaveBeenCalledWith(expect.anything(), 'upload-1');
     expect(stageSalesFileMock).toHaveBeenCalledTimes(1);
     expect(syncChunkMock).toHaveBeenCalledTimes(3);
     expect(syncChunkMock).toHaveBeenCalledWith(
@@ -122,8 +136,8 @@ describe('importSalesFile — chunked sync orchestration (PCRM-168)', () => {
 
     await importSalesFile(Buffer.from('[]'), 'admin-1');
 
-    // 1 stage + 1 sync + 1 finalize.
-    expect(prismaTransaction).toHaveBeenCalledTimes(3);
+    // 1 lock + 1 stage + 1 mark-processing + 1 sync + 1 finalize.
+    expect(prismaTransaction).toHaveBeenCalledTimes(5);
     expect(syncChunkMock).toHaveBeenCalledTimes(1);
     expect(finalizeMock).toHaveBeenCalledTimes(1);
   });
@@ -146,5 +160,40 @@ describe('importSalesFile — chunked sync orchestration (PCRM-168)', () => {
 
     expect(deleteAuthUserMock).toHaveBeenCalledWith('auth-orphan-1');
     expect(finalizeMock).not.toHaveBeenCalled();
+  });
+
+  describe('import advisory lock (PCRM-169)', () => {
+    it('takes the lock before staging anything', async () => {
+      stageSalesFileMock.mockResolvedValue({ ...stagingResult, accepted: 1, sales_received: 1 });
+      syncChunkMock.mockResolvedValue({
+        inserted: 1,
+        updated: 0,
+        sync_failed: 0,
+        has_more: false,
+      });
+      finalizeMock.mockResolvedValue(undefined);
+
+      await importSalesFile(Buffer.from('[]'), 'admin-1');
+
+      expect(tryLockMock).toHaveBeenCalledTimes(1);
+      expect(tryLockMock.mock.invocationCallOrder[0]).toBeLessThan(
+        stageSalesFileMock.mock.invocationCallOrder[0]
+      );
+    });
+
+    it('rejects with a 409 CustomError and stages nothing when the lock is taken', async () => {
+      tryLockMock.mockResolvedValue(false);
+
+      await expect(importSalesFile(Buffer.from('[]'), 'admin-1')).rejects.toMatchObject({
+        statusCode: 409,
+        message: 'An import is already in progress. Wait until it finishes before uploading again.',
+      });
+
+      expect(stageSalesFileMock).not.toHaveBeenCalled();
+      expect(syncChunkMock).not.toHaveBeenCalled();
+      expect(finalizeMock).not.toHaveBeenCalled();
+      // Only the lock transaction ran.
+      expect(prismaTransaction).toHaveBeenCalledTimes(1);
+    });
   });
 });
