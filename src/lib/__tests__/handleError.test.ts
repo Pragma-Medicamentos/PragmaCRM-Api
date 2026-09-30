@@ -52,6 +52,11 @@ describe('handleError', () => {
       504,
       'The import timed out while writing sales. Try a smaller file, or contact support if a single month fails.',
     ],
+    [
+      'P2034',
+      409,
+      'A database deadlock occurred during import. Wait until any running import finishes, then retry.',
+    ],
   ])('maps the Prisma code %s', (code, statusCode, message) => {
     expect(handleError({ code })).toEqual({ statusCode, message });
   });

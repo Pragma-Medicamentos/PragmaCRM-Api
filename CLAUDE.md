@@ -312,9 +312,10 @@ Una venta llega de Efactsoft sin ninguna referencia a rutas. Hay que atribuirla.
 Nombres reales entre paréntesis.
 
 - **`erp_status = 1` es cotización sin procesar. `erp_status = 2` es venta realizada.** Todo cálculo de venta, ticket promedio y efectividad **excluye el estado 1**. Es el filtro más repetido del sistema.
-- **`erp_created_at`** (el `fecha_creacion` del DER) se estampa la **primera vez** que la venta llega con estado 2, tomando el campo `updated_at` del payload de Efactsoft. **Nunca se sobrescribe.**
-- **`last_payment_at`** (`ultimo_pago_en`) se estampa la **primera vez** que llega con estado 2 **y** saldo pendiente en 0. **Nunca se sobrescribe.**
-- Ambos valores salen de `updated_at` del payload, **nunca de la hora de importación**.
+- **`erp_created_at`** (el `fecha_creacion` del DER) se estampa la **primera vez** que la venta llega con estado 2, tomando el campo **`fecha_emision`** del payload de Efactsoft. **Nunca se sobrescribe.** Es la fecha de todas las métricas de venta y la que empareja la venta con la visita del día (5.4).
+- **`last_payment_at`** (`ultimo_pago_en`) se estampa la **primera vez** que llega con estado 2 **y** saldo pendiente en 0, tomando **`updated_at`** del payload. **Nunca se sobrescribe.**
+- Ninguno de los dos sale **nunca de la hora de importación**.
+- **Por qué `fecha_emision` y no `updated_at` (decidido por el equipo el 29/09/2026).** El vendedor crea la cotización (estado 1, con su `created_at`) días antes, y solo la convierte a venta el día que se despacha: esa conversión es `fecha_emision`, la fecha con la que reporta Efactsoft. `updated_at` se mueve con cada abono o edición posterior, así que un crédito pagado semanas después se contaba en el mes del pago. Con la carga de septiembre de 2026 el CRM mostraba $128,686 contra $65,263.96 de Efactsoft; con `fecha_emision` cuadra exacto. Las ventas cargadas antes del cambio se corrigieron con un script manual en local y staging, releyendo `fecha_emision` desde `sale_staging.payload`; producción arranca ya con la regla nueva.
 - **`pending_balance`** (el `saldop` del ERP) **sí se sobrescribe** en cada carga. Por eso existe `balance_snapshot`, que conserva el histórico de saldos por corte.
 
 ### 5.6 Crédito y cobranza
@@ -416,9 +417,9 @@ El importador extrae y hace upsert de esas entidades desde ahí.
 | Campo | Uso |
 |---|---|
 | `id_venta` | PK natural → `sale.erp_sale_id` |
-| `updated_at` | Fuente de `erp_created_at` y `last_payment_at`. **Nunca la hora de importación** |
+| `fecha_emision` | Conversión de cotización a venta = fecha real de la factura. Fuente de `erp_created_at` (ver 5.5) |
+| `updated_at` | Última modificación. Fuente de `last_payment_at`. **Nunca la hora de importación** |
 | `estado` | 1 = cotización, 2 = venta realizada → `sale.erp_status` |
-| `fecha_emision` | Fecha real de la factura. Relevante para el backfill del histórico inicial |
 | `saldop` | Saldo pendiente → `sale.pending_balance`. Se sobrescribe en cada carga |
 | `pago`, `id_pago` | Texto libre → `sale.payment` / `sale.payment_id`. Base del criterio para identificar ventas de contado |
 | `id_cliente`, `id_usuario` | Vínculos con `customer.erp_customer_id` y `app_user.erp_user_id` |
@@ -1027,7 +1028,7 @@ Esto incluye los mensajes del envelope `ApiResponse` que llegan al navegador. Si
 
 Ninguno bloquea el desarrollo, pero todos afectan la calidad del resultado y deben resolverse antes del despliegue.
 
-**1. Carga histórica inicial y métrica de mora.** Las facturas antiguas llegan en el primer JSON ya con `estado = 2` y `saldop = 0`. Eso hace que `erp_created_at` y `last_payment_at` se estampen con el mismo `updated_at` y produzcan **mora cero**. Sin un backfill desde `fecha_emision` del payload, o sin excluir del cálculo las ventas anteriores a la primera carga, el indicador arrancará mostrando valores falsos durante los primeros meses de operación.
+**1. Carga histórica inicial y métrica de mora.** Las facturas antiguas llegan en el primer JSON ya con `estado = 2` y `saldop = 0`. **Parcialmente resuelto (29/09/2026):** `erp_created_at` ya sale de `fecha_emision` (ver 5.5), así que la mora deja de ser cero por construcción. Sigue abierto que `last_payment_at` de esas facturas es su `updated_at` en el momento de la primera carga, que puede ser posterior al pago real: la mora del histórico puede salir inflada.
 
 **2. Ventas sin ruta atribuible.** Ahora que la atribución pasa exclusivamente por `sale.visit_id` (ver 5.4), **toda venta sin visita asociada queda fuera del reporte de venta por ruta** aunque sí entre en venta total. Ocurre cuando el vendedor no marcó la parada, cuando el día no tenía ruta asignada, o cuando el `id_usuario` de Efactsoft no mapea contra `app_user.erp_user_id`. El importador debería dejar un conteo de control de los tres casos para que la diferencia entre reportes sea explicable.
 

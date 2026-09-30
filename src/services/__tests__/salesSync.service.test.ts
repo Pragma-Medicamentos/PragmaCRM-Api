@@ -190,15 +190,27 @@ describe('syncStagedSales — new sale', () => {
     expect(uploadUpdates[0]).toMatchObject({ inserted: 1, updated: 0, status: 'completed' });
   });
 
-  it('stamps erp_created_at and last_payment_at from updated_at, never the import time', async () => {
+  it('stamps erp_created_at from fecha_emision and last_payment_at from updated_at, never the import time', async () => {
     const { client, sales } = createClientMock();
     (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
 
     await syncStagedSales(client, 'upload-1');
 
     // saldop is '0.00' -> already paid on arrival, so last_payment_at stamps too.
-    expect((sales[0].erp_created_at as Date).toISOString()).toBe('2026-09-05T23:27:56.000Z');
+    expect((sales[0].erp_created_at as Date).toISOString()).toBe('2026-09-05T23:27:17.000Z');
     expect((sales[0].last_payment_at as Date).toISOString()).toBe('2026-09-05T23:27:56.000Z');
+  });
+
+  it('dates a credit sale paid days later by its issue date, not by the payment edit', async () => {
+    const { client, sales } = createClientMock();
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { fecha_emision: '2026-09-25 18:07:29', updated_at: '26/09/2026 10:11:36' } }),
+    ]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect((sales[0].erp_created_at as Date).toISOString()).toBe('2026-09-26T00:07:29.000Z');
+    expect((sales[0].last_payment_at as Date).toISOString()).toBe('2026-09-26T16:11:36.000Z');
   });
 
   it('leaves last_payment_at null when the sale still has a pending balance', async () => {
@@ -316,6 +328,26 @@ describe('syncStagedSales — new sale', () => {
     expect(spies.visit.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ customer_id: 'existing-customer-id', deleted_at: null }),
+      })
+    );
+  });
+
+  it('matches the visit on the Salvadoran day of fecha_emision, not of updated_at', async () => {
+    const { client, spies } = createClientMock({
+      existingCustomerId: 'existing-customer-id',
+      matchingVisitId: 'matching-visit-id',
+    });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { fecha_emision: '2026-09-25 18:07:29', updated_at: '26/09/2026 10:11:36' } }),
+    ]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect(spies.visit.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          started_at: { gte: new Date('2026-09-25T06:00:00.000Z'), lt: new Date('2026-09-26T06:00:00.000Z') },
+        }),
       })
     );
   });

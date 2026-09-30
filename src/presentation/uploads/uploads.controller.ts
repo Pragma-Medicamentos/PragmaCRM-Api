@@ -1,7 +1,9 @@
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
 import { logger } from '../../lib/adapters/logger';
+import { prisma } from '../../lib/prisma';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
+import { getImportInProgress } from '../../services/uploads.service';
 import { importSalesFile, ImportSalesResult } from '../../use-cases/importSalesFile.use-case';
 
 /** Date to `YYYY-MM-DD`, which is how the frontend expects a day range. */
@@ -75,6 +77,27 @@ export class UploadsController {
       res.status(201).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'UploadsController.importSales');
+    }
+  }
+
+  // GET /api/v1/uploads/sales/in-progress
+  // Lets the dashboard show a running import to an admin who closed the tab
+  // that started it (PCRM-169): the POST keeps writing regardless.
+  public async salesImportInProgress(_req: Request, res: Response) {
+    try {
+      const status = await getImportInProgress(prisma);
+
+      const response: ApiResponse = {
+        success: true,
+        message: status.in_progress
+          ? 'A sales import is in progress.'
+          : 'No sales import is in progress.',
+        data: status,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'UploadsController.salesImportInProgress');
     }
   }
 }
