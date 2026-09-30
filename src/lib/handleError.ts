@@ -55,6 +55,12 @@ export const handleError = (error: unknown): ErrorHandlerInterface => {
       statusCode = 504;
       message =
         'The import timed out while writing sales. Try a smaller file, or contact support if a single month fails.';
+    } else if (prismaCode === 'P2034') {
+      // Write conflict / deadlock (40P01). Two concurrent sales imports upsert
+      // the same products and customers in different orders (PCRM-169).
+      statusCode = 409;
+      message =
+        'A database deadlock occurred during import. Wait until any running import finishes, then retry.';
     }
   }
 

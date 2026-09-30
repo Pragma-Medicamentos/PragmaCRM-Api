@@ -1,11 +1,14 @@
+import { CustomError } from '../domain/errors/CustomError';
 import { StagingResult, SyncResult } from '../domain/types/sales-import.types';
 import { Client, prisma } from '../lib/prisma';
 import { logger } from '../lib/adapters/logger';
+import { tryAcquireImportLock } from '../repositories/uploads.repository';
 import { deleteAuthUser } from '../services/supabaseAdmin.service';
 import {
   SellerProvisioning,
   SYNC_CHUNK_SIZE,
   finalizeUploadSync,
+  markUploadProcessing,
   syncStagedSalesChunk,
 } from '../services/salesSync.service';
 import { stageSalesFile } from '../services/salesStaging.service';
@@ -31,6 +34,17 @@ const TRANSACTION_MAX_WAIT_MS = 10_000;
 
 const txOptions = { timeout: TRANSACTION_TIMEOUT_MS, maxWait: TRANSACTION_MAX_WAIT_MS };
 
+/**
+ * Headroom of the outer transaction that only holds the import advisory lock.
+ * It must outlive a whole month-sized import (staging plus every sync chunk),
+ * so it is far longer than the per-chunk budget above. The transaction sits
+ * idle the whole time: that is the point, the lock lives as long as it does.
+ */
+const LOCK_TRANSACTION_TIMEOUT_MS = 900_000; // 15 minutes
+
+const IMPORT_IN_PROGRESS_MESSAGE =
+  'An import is already in progress. Wait until it finishes before uploading again.';
+
 export const importSalesFile = async (
   fileBuffer: Buffer,
   uploadedBy: string
@@ -40,7 +54,7 @@ export const importSalesFile = async (
   const provisioning: SellerProvisioning = { created: [], unmapped: [], createdAuthUserIds: [] };
 
   try {
-    return await runImport(fileBuffer, uploadedBy, provisioning);
+    return await withImportLock(() => runImport(fileBuffer, uploadedBy, provisioning));
   } catch (error) {
     await Promise.all(
       provisioning.createdAuthUserIds.map((id) =>
@@ -56,6 +70,32 @@ export const importSalesFile = async (
   }
 };
 
+/**
+ * Runs `work` while holding the cluster-wide import advisory lock, so only one
+ * sales import writes at a time (PCRM-169). Concurrent imports deadlocked on
+ * `product` (40P01 / P2034) because they upsert the same rows in different
+ * orders, and closing the browser tab does not abort the first request.
+ *
+ * The lock is transaction-scoped: Postgres releases it when this outer
+ * transaction ends, whether `work` returns or throws, and a crashed replica
+ * releases it along with its connection. Nothing has to unlock explicitly.
+ *
+ * The outer transaction client is used for the lock only. `work` writes on the
+ * root `prisma` client, in its own short transactions, so the heavy import is
+ * not one giant transaction again (PCRM-168).
+ */
+const withImportLock = async <T>(work: () => Promise<T>): Promise<T> =>
+  prisma.$transaction(
+    async (lockTx: Client) => {
+      // Non-blocking on purpose: a second import gets 409, it does not queue.
+      const acquired = await tryAcquireImportLock(lockTx);
+      if (!acquired) throw CustomError.conflict(IMPORT_IN_PROGRESS_MESSAGE);
+
+      return work();
+    },
+    { timeout: LOCK_TRANSACTION_TIMEOUT_MS, maxWait: TRANSACTION_MAX_WAIT_MS }
+  );
+
 const runImport = async (
   fileBuffer: Buffer,
   uploadedBy: string,
@@ -64,6 +104,13 @@ const runImport = async (
   // STEP 1 — Intake: validate the file and queue it. PCRM-32 / PCRM-33.
   const result = await prisma.$transaction(
     async (tx: Client) => stageSalesFile(tx, fileBuffer, uploadedBy),
+    txOptions
+  );
+
+  // Publish that the batch left intake before the long sync loop starts: it is
+  // what GET /uploads/sales/in-progress reports to an admin who closed the tab.
+  await prisma.$transaction(
+    async (tx: Client) => markUploadProcessing(tx, result.upload_id),
     txOptions
   );
 
