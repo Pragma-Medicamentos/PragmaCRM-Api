@@ -227,6 +227,7 @@ Los buckets sin actividad llegan en cero, así que el gráfico no tiene huecos. 
 - `visited` / `not_visited` se cuentan sobre todos los clientes activos.
 - `customers` incluye solo los que tienen pin GPS.
 - En el mapa: pin lleno si `visited`, pin hueco si no.
+- `visited` **no** cuenta una visita que ejecuta una parada extra (PCRM-158): las paradas extra no son cobertura planificada/asignada.
 
 ### 6. `GET /purchase-frequency` — histograma (`1e`)
 

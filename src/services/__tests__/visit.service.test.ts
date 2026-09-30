@@ -18,6 +18,7 @@ const stop = (overrides: Record<string, unknown> = {}) => ({
   prospect_id: null,
   stop_type: 'visit',
   route_user_id: ROUTE_USER_ID,
+  is_extra: false,
   route_user: { user_id: SELLER_ID, route_id: 'route-1' },
   ...overrides,
 });
@@ -317,6 +318,19 @@ describe('confirmVisit', () => {
         input({ captured_at: new Date('2026-09-22T02:00:00.000Z') })
       )
     ).resolves.toBeDefined();
+  });
+
+  it('skips the route_customer lookup and inserts route_customer_id NULL for an extra stop', async () => {
+    const { client, mocks, queryRaw } = buildClient({
+      stop: stop({ is_extra: true }),
+      queries: [[], [{ distance: 5 }], [visitRow()]],
+    });
+
+    await confirmVisit(client, SELLER_ID, input());
+
+    expect(mocks.route_customer.findFirst).not.toHaveBeenCalled();
+    const insert = queryRaw.mock.calls[2][0];
+    expect(insert.values).toContain(null);
   });
 
   it('takes the lock before looking for an existing visit', async () => {

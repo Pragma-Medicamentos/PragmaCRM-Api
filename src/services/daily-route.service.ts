@@ -162,8 +162,14 @@ export const setStopCustomerLocation = async (
  * ============================================================================
  */
 
-/** Today in the business timezone, as `YYYY-MM-DD`. See BUSINESS_TIME_ZONE. */
-const todayInBusinessZone = (): string => {
+/**
+ * Today in the business timezone, as `YYYY-MM-DD`. See BUSINESS_TIME_ZONE.
+ *
+ * Exported for extra-stop.service.ts (PCRM-158): the "date cannot be in the
+ * past" rule has to compare against the same El Salvador today this module
+ * already resolves, not the server's.
+ */
+export const todayInBusinessZone = (): string => {
   const today = DateTime.now().setZone(BUSINESS_TIME_ZONE).toISODate();
 
   // setZone with a hardcoded, valid IANA name cannot yield an invalid
@@ -296,10 +302,14 @@ interface DailyRouteStopRow {
  *     dispatch from a collection at the same customer on the same day, which
  *     the wireframe draws as two separate cards.
  *
- *   - `is_extra` is derived, never stored: no live `route_customer` row for
- *     (this route, this customer) means the stop was added outside the route's
- *     planned composition. Prospect stops match nothing by construction —
- *     `sv.customer_id` is NULL for them — so they come out extra for free.
+ *   - `is_extra` is true either because `scheduled_visit.is_extra` was stamped
+ *     by an admin adding a one-off stop (PCRM-158), or because no live
+ *     `route_customer` row ties (this route, this customer) — the original
+ *     derivation, still needed for legacy rows and for prospects, which match
+ *     nothing by construction since `sv.customer_id` is NULL for them.
+ *     `sort_order` is forced to NULL on either kind of extra, even when the
+ *     customer happens to sit in the route's composition (an extra Cobro on a
+ *     planned customer): an extra stop is never part of the planned order.
  *
  *   - `zone` and `municipality` are read from `customer` only. `prospect` has
  *     no such columns, which is exactly the contract's "always null for
@@ -338,8 +348,8 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
          c.credit_limit::float8   AS credit_limit,
          extensions.st_y(COALESCE(c.location, p.location)::extensions.geometry)::float8 AS lat,
          extensions.st_x(COALESCE(c.location, p.location)::extensions.geometry)::float8 AS lng,
-         rc.sort_order::int       AS sort_order,
-         (rc.id IS NULL)          AS is_extra,
+         (CASE WHEN sv.is_extra THEN NULL ELSE rc.sort_order END)::int AS sort_order,
+         (sv.is_extra OR rc.id IS NULL) AS is_extra,
          sv.reason,
          v.started_at             AS completed_at
   FROM   route_user ru
@@ -381,7 +391,7 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
        A block comment, not a line comment: a line comment would swallow the
        rest of the query if anything ever collapsed the newlines. */
     AND  COALESCE(c.id, p.id) IS NOT NULL
-  ORDER  BY COALESCE(rc.sort_order, ${UNPLANNED_SORT_ORDER}) ASC,
+  ORDER  BY COALESCE(CASE WHEN sv.is_extra THEN NULL ELSE rc.sort_order END, ${UNPLANNED_SORT_ORDER}) ASC,
             lower(COALESCE(c.name, p.name)) ASC,
             sv.id ASC
 `;

@@ -798,6 +798,7 @@ model scheduled_visit {
   prospect_id   String?    @db.Uuid
   stop_type     String     @default("visit")
   reason        String?
+  is_extra      Boolean    @default(false)
   created_at    DateTime   @default(now()) @db.Timestamptz(6)
   updated_at    DateTime   @default(now()) @db.Timestamptz(6)
   deleted_at    DateTime?  @db.Timestamptz(6)
@@ -806,6 +807,7 @@ model scheduled_visit {
   route_user    route_user @relation(fields: [route_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   visit         visit?
 
+  @@unique([route_user_id, visit_date, customer_id, stop_type], map: "scheduled_visit_extra_uq", where: raw("(is_extra AND (deleted_at IS NULL))"))
   @@index([customer_id, visit_date], map: "scheduled_visit_customer_date_idx", where: raw("(deleted_at IS NULL)"))
   @@index([prospect_id], where: raw("((prospect_id IS NOT NULL) AND (deleted_at IS NULL))"))
   @@index([route_user_id, visit_date], map: "scheduled_visit_route_user_date_idx", where: raw("(deleted_at IS NULL)"))

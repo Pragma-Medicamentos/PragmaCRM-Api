@@ -512,12 +512,13 @@ BEGIN
 
   -- Stop F: customer #2 belongs to routes 2 and 3 only (see the route
   -- membership block above), never route 1 -> no live route_customer row
-  -- for (route 1, customer #2) -> is_extra = true. `reason` documents the
-  -- ad-hoc addition.
-  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, reason)
+  -- for (route 1, customer #2) -> is_extra = true regardless. Stamped
+  -- explicitly too (PCRM-158): this is the shape an admin-added extra stop
+  -- actually takes. `reason` documents the ad-hoc addition.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, reason, is_extra)
   VALUES (
     v_route_user_ids[1], v_today, v_customer_ids[2], 'visit',
-    'Cliente solicito visita extra por reclamo de producto'
+    'Cliente solicito visita extra por reclamo de producto', true
   );
 
   -- Soft-deleted stop: proves the deleted_at IS NULL predicate actually
