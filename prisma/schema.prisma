@@ -799,6 +799,7 @@ model scheduled_visit {
   stop_type     String     @default("visit")
   reason        String?
   is_extra      Boolean    @default(false)
+  sort_order    Int?       @db.SmallInt
   created_at    DateTime   @default(now()) @db.Timestamptz(6)
   updated_at    DateTime   @default(now()) @db.Timestamptz(6)
   deleted_at    DateTime?  @db.Timestamptz(6)
@@ -808,6 +809,7 @@ model scheduled_visit {
   visit         visit?
 
   @@unique([route_user_id, visit_date, customer_id, stop_type], map: "scheduled_visit_extra_uq", where: raw("(is_extra AND (deleted_at IS NULL))"))
+  @@unique([route_user_id, visit_date, customer_id], map: "scheduled_visit_planned_uq", where: raw("((NOT is_extra) AND (deleted_at IS NULL) AND (customer_id IS NOT NULL))"))
   @@index([customer_id, visit_date], map: "scheduled_visit_customer_date_idx", where: raw("(deleted_at IS NULL)"))
   @@index([prospect_id], where: raw("((prospect_id IS NOT NULL) AND (deleted_at IS NULL))"))
   @@index([route_user_id, visit_date], map: "scheduled_visit_route_user_date_idx", where: raw("(deleted_at IS NULL)"))

@@ -12,7 +12,7 @@
 -- Signs in as seller #1 of seed.sql, Rosa Alvarado
 -- (rosa.alvarado@pragma.test, shared seed password documented in seed.sql).
 -- Adds eight stops for TODAY (America/El_Salvador) on her "Zona Escalon"
--- assignment, on top of whatever seed.sql already scheduled:
+-- assignment, replacing seed.sql's planned stops for the same customers:
 --
 --   A  1001  visit       rojo / alto               GPS    full profile
 --   B  1011  dispatch    ' Amarillo ' / Medio      GPS    mixed case + spaces:
@@ -77,6 +77,20 @@ BEGIN
   DELETE FROM visit WHERE scheduled_visit_id = ANY(v_stop_ids);
   DELETE FROM scheduled_visit WHERE id = ANY(v_stop_ids);
 
+  -- scheduled_visit_planned_uq allows one planned stop per customer and day: replace seed.sql's.
+  DELETE FROM visit WHERE scheduled_visit_id IN (
+    SELECT sv.id
+    FROM scheduled_visit sv
+    JOIN customer c ON c.id = sv.customer_id
+    WHERE sv.route_user_id = v_route_user_id AND sv.visit_date = v_today AND NOT sv.is_extra
+      AND c.erp_customer_id IN (1001, 1011, 1041, 1020, 1040, 1021)
+  );
+  DELETE FROM scheduled_visit sv
+  USING customer c
+  WHERE c.id = sv.customer_id
+    AND sv.route_user_id = v_route_user_id AND sv.visit_date = v_today AND NOT sv.is_extra
+    AND c.erp_customer_id IN (1001, 1011, 1041, 1020, 1040, 1021);
+
   -- The "set location" flow only writes an EMPTY pin, so clear it again.
   UPDATE customer SET location = NULL, updated_at = now()
   WHERE erp_customer_id IN (1020, 1040);
@@ -98,17 +112,17 @@ BEGIN
   WHERE c.erp_customer_id = p.erp_id;
 
   -- Today's stops ------------------------------------------------------------
-  INSERT INTO scheduled_visit (id, route_user_id, visit_date, customer_id, stop_type, reason)
-  SELECT s.id, v_route_user_id, v_today, c.id, s.stop_type, s.reason
+  INSERT INTO scheduled_visit (id, route_user_id, visit_date, customer_id, stop_type, reason, is_extra)
+  SELECT s.id, v_route_user_id, v_today, c.id, s.stop_type, s.reason, s.is_extra
   FROM (VALUES
-    (v_stop_ids[1], 1001, 'visit',      NULL),
-    (v_stop_ids[2], 1011, 'dispatch',   NULL),
-    (v_stop_ids[3], 1041, 'collection', NULL),
-    (v_stop_ids[4], 1020, 'visit',      NULL),
-    (v_stop_ids[5], 1040, 'dispatch',   NULL),
-    (v_stop_ids[6], 1021, 'collection', NULL),
-    (v_stop_ids[7], 1016, 'visit',      'Pidió visita para revisar un pedido pendiente')
-  ) AS s(id, erp_id, stop_type, reason)
+    (v_stop_ids[1], 1001, 'visit',      NULL, false),
+    (v_stop_ids[2], 1011, 'dispatch',   NULL, false),
+    (v_stop_ids[3], 1041, 'collection', NULL, false),
+    (v_stop_ids[4], 1020, 'visit',      NULL, false),
+    (v_stop_ids[5], 1040, 'dispatch',   NULL, false),
+    (v_stop_ids[6], 1021, 'collection', NULL, false),
+    (v_stop_ids[7], 1016, 'visit',      'Pidió visita para revisar un pedido pendiente', true)
+  ) AS s(id, erp_id, stop_type, reason, is_extra)
   JOIN customer c ON c.erp_customer_id = s.erp_id;
 
   IF v_prospect_id IS NOT NULL THEN

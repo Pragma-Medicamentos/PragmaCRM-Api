@@ -260,10 +260,51 @@ describe('createExtraStop', () => {
 
     await createExtraStop(client, SELLER_ID, input());
 
-    expect(mocks.$executeRaw).toHaveBeenCalledTimes(1);
+    // Two $executeRaw calls now: the advisory lock, then ensureDailyStops'
+    // generation statement (PCRM-161) -- both still ahead of the duplicate
+    // check.
+    expect(mocks.$executeRaw).toHaveBeenCalledTimes(2);
     expect(mocks.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.scheduled_visit.findFirst.mock.invocationCallOrder[0]
     );
+    expect(mocks.$executeRaw.mock.invocationCallOrder[1]).toBeLessThan(
+      mocks.scheduled_visit.findFirst.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('generates the day\'s planned stops before the duplicate check (PCRM-161)', async () => {
+    const { client, mocks } = buildClient();
+
+    await createExtraStop(client, SELLER_ID, input());
+
+    const generationCall = mocks.$executeRaw.mock.calls.find(([statement]) =>
+      (statement as { sql?: string }).sql?.includes('INSERT INTO scheduled_visit')
+    );
+    expect(generationCall).toBeDefined();
+  });
+
+  it('accepts a seller with a weekly route that day and zero scheduled_visit rows (no SELLER_NO_ROUTE_ON_DATE)', async () => {
+    // route_user resolution (findActiveAssignments) reads the weekly
+    // assignment directly, never scheduled_visit -- so a seller with a route
+    // that day never gets SELLER_NO_ROUTE_ON_DATE just because nobody has
+    // opened the day yet. `duplicate: null` makes explicit that no
+    // scheduled_visit row exists ahead of this call.
+    const { client } = buildClient({ duplicate: null });
+
+    await expect(createExtraStop(client, SELLER_ID, input())).resolves.toMatchObject({
+      is_extra: true,
+    });
+  });
+
+  it('rejects with EXTRA_STOP_DUPLICATE when the extra collides with a stop the weekly route already generated', async () => {
+    // Simulates ensureDailyStops having already materialized a planned
+    // customer_id/stop_type match for that day.
+    const { client } = buildClient({ duplicate: { id: 'generated-planned-stop' } });
+
+    await expect(createExtraStop(client, SELLER_ID, input())).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'EXTRA_STOP_DUPLICATE',
+    });
   });
 
   it('ignores inactive routes when resolving assignments', async () => {
@@ -283,7 +324,7 @@ describe('createExtraStop', () => {
   });
 
 
-  it('rejects with ROUTE_NOT_ASSIGNED when all assignments are inactive', async () => {
+  it('rejects with SELLER_NO_ROUTE_ON_DATE when all assignments are inactive', async () => {
     const { client } = buildClient({ assignments: [] });
 
     await expect(createExtraStop(client, SELLER_ID, input())).rejects.toMatchObject({
