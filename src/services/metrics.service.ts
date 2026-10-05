@@ -290,7 +290,7 @@ export const getPurchaseFrequency = async (
  * inactivity threshold comes from the query when given, otherwise from the
  * environment, so it can be tuned without touching code.
  */
-const buildContext = (
+export const buildContext = (
   query: MetricsRangeQuery,
   now: Date
 ): { range: LocalDateRange; context: MetricsContext } => {
