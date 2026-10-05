@@ -4,6 +4,8 @@ Contrato de los endpoints que alimentan el **Resumen** (`1a`) y el **Panel de m�
 
 Código: `src/services/metrics.service.ts` (orquestación y mapeo), `src/repositories/metrics.repository.ts` + `src/repositories/metrics/*.sql.ts` (SQL), `src/presentation/metrics/`, `src/domain/types/metrics.types.ts` (tipos de respuesta, fuente de verdad de los campos).
 
+Las métricas de producto (endpoints 8 y 9) viven aparte, en `src/services/productMetrics.service.ts`, `src/repositories/productMetrics.repository.ts` y `src/domain/types/productMetrics.types.ts`, pero se montan bajo el mismo grupo `/api/v1/metrics` y comparten el query y el bloque de contexto.
+
 ---
 
 ## Convenciones
@@ -22,6 +24,8 @@ Código: `src/services/metrics.service.ts` (orquestación y mapeo), `src/reposit
 | `inactivity_days` | entero 1–365 | `INACTIVITY_THRESHOLD_DAYS` (30) | Sobrescribe el umbral solo para esa petición |
 | `names` | lista separada por coma | todas | **Solo en `/kpis/values`.** Ver endpoint 1 |
 | `limit` | entero 1–500 | `50` | **Solo en `/products`.** Filas del ranking. Ver endpoint 7 |
+
+`/products/:id` y `/products/no-movement` aceptan `from` / `to` igual que el resto del panel; `limit` y `names` no aplican.
 
 Errores de validación → `400` con `errors[].field` (`from` si `from > to`, `to` si el rango excede 366 días).
 
@@ -278,7 +282,100 @@ Productos ordenados por monto vendido en el período. Misma regla de venta confi
 - Se excluyen las líneas huérfanas (`sale_detail.product_id IS NULL`) y los productos con `deleted_at`, porque no tienen fila de catálogo con la que nombrarlos. Quedan fuera también de `total_amount`.
 - Sin ventas en el período: `products: []` y `total_amount: "0.00"`.
 
-**Fuera de alcance de PCRM-172** (no pedir todavía): ABC, participación, penetración, productos sin movimiento, detalle por producto, margen e inventario.
+**Fuera del alcance del ranking:** margen e inventario. ABC, participación, penetración, productos sin movimiento y detalle por producto se agregaron en PCRM-177 — endpoints 8 y 9.
+
+### 8. `GET /products/:id` — detalle de un producto (PCRM-177)
+
+Ficha de un producto dentro del período. `:id` es **`product.erp_product_id`**, la PK natural entera del ERP (CLAUDE.md 6.4), no un uuid; cualquier cosa que no sea un entero positivo es `400`.
+
+Misma definición de venta confirmada que el resto del panel (`sale.deleted_at IS NULL`, `erp_status = 2`, línea fechada por `sale.erp_created_at`). **El ranking no se reimplementa:** `productRankingSql` se embebe como CTE, así que `position` sale del mismo orden que el endpoint 7 (`amount` DESC, `product_id` ASC) y `period_total_amount` es el mismo total.
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "thresholds": { "inactivity_days": 30, "credit_term_days": 60, "gps_radius_meters": 80 },
+  "product": { "product_id": 42, "code": "ABC-1", "name": "Producto X", "product_group": "Analgésicos" },
+  "amount": "1500.00",
+  "units": "120.0000",
+  "position": 1,
+  "share_percent": 30,
+  "period_total_amount": "5000.00",
+  "invoices": 12,
+  "average_ticket": "125.00",
+  "customers": 9,
+  "portfolio_customers": 45,
+  "penetration_percent": 20,
+  "abc_class": "A",
+  "trend": {
+    "previous_period": { "from": "2026-08-02", "to": "2026-08-31" },
+    "previous_amount": "1200.00",
+    "change_percent": 25
+  },
+  "sellers": [
+    { "user_id": "1111...", "name": "Rosa Alvarado", "amount": "900.00", "units": "72.0000" }
+  ]
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `amount` | `SUM(sale_detail.total)` del producto en el período, IVA incluido. String de dos decimales |
+| `units` | `SUM(quantity × COALESCE(factor, 1))`, en la unidad base del producto. Nunca se suman unidades de medida distintas en crudo. String de hasta 4 decimales |
+| `position` | Posición en el ranking del período. **`null` si el producto no vendió** en el rango |
+| `share_percent` | Participación: `amount / period_total_amount × 100`, un decimal. **`0`** si el producto no vendió o si el período no tuvo ventas |
+| `period_total_amount` | Monto de todos los productos con venta en el período: el mismo `total_amount` del endpoint 7 |
+| `invoices` | Facturas (`sale`) distintas que incluyen el producto. **Es también su frecuencia de venta** |
+| `average_ticket` | `amount / invoices`. **`"0.00"` sin facturas**, no `null` y sin división por cero |
+| `customers` | Clientes distintos que lo compraron en el período |
+| `portfolio_customers` | **Cartera del período:** clientes con al menos una venta confirmada, a nivel empresa. No es la cartera de un vendedor |
+| `penetration_percent` | `customers / portfolio_customers × 100`, un decimal. `0` si nadie compró |
+| `abc_class` | `"A"`, `"B"`, `"C"` o **`null` si el producto no vendió** en el período. Ver los cortes abajo |
+| `trend.previous_period` | Período anterior de igual largo, contiguo al seleccionado (mismo cálculo que los deltas de las tarjetas) |
+| `trend.change_percent` | Variación % del monto contra ese período. **`null` si el período anterior no vendió** (no hay base contra la cual dividir) |
+| `sellers` | Vendedores que lo movieron, por monto descendente. Lista, no agregado |
+
+**Cortes ABC (Pareto por monto del período).** Se calculan entre los productos **con venta**, ordenados por el mismo ranking, sobre el porcentaje acumulado del monto: **A hasta 80 %, B hasta 95 %, C el resto**. Son los mismos cortes del "Reporte ABC" de `Contexto_KPIs_Pragma_CRM.md` §4 (80 % / siguiente 15 % / resto), aplicados a productos en vez de a clientes. Viven en `src/domain/constants/productMetrics.ts`.
+
+La clase se decide por lo que acumulan los productos **que están por encima**: un producto es A mientras los anteriores a él no lleguen al 80 %. Así el primero del ranking siempre es A, incluso cuando es el único con ventas. Un producto sin venta en el período no entra al Pareto: `abc_class: null`.
+
+**Producto sin ventas en el rango.** No es un error ni un 404: la ficha responde `200` con ceros (`amount: "0.00"`, `units: "0.0000"`, `invoices: 0`, `average_ticket: "0.00"`, `share_percent: 0`, `penetration_percent: 0`, `sellers: []`) y `position`, `abc_class` y `trend.change_percent` en `null`. **Solo un producto inexistente o con `deleted_at` da `404`.**
+
+> **Cero vs. `null` en este endpoint.** Es la excepción a la convención general del panel. Un producto que no vendió nada vendió exactamente cero: el cero es el resultado real, no un "no calculable". `null` queda para lo que de verdad no existe: un puesto en un ranking al que no se entró, una clase ABC sin monto que clasificar, y una variación contra un período que vendió `0` (dividir por cero).
+
+Las líneas de venta sin `user_id` (un `id_usuario` del ERP que nunca casó contra `app_user.erp_user_id`, CLAUDE.md Anexo A.2) no tienen vendedor al que atribuirse y quedan fuera de `sellers`, pero sí suman en `amount`: la suma de `sellers[].amount` puede ser menor que `amount`. Los vendedores deshabilitados o borrados sí aparecen — la venta ocurrió.
+
+### 9. `GET /products/no-movement` — catálogo sin movimiento (PCRM-177)
+
+Productos **activos** del catálogo que no registran ninguna venta confirmada dentro del período, más cuántos llevan 30, 60 y 90 días quietos.
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "thresholds": { "inactivity_days": 30, "credit_term_days": 60, "gps_radius_meters": 80 },
+  "active_products": 310,
+  "products": [
+    { "product_id": 7, "code": "Q-7", "name": "Producto quieto", "product_group": null,
+      "last_sold_at": "2026-05-10T18:00:00.000Z", "days_since_last_sale": 143 },
+    { "product_id": 9, "code": null, "name": "Nunca vendido", "product_group": null,
+      "last_sold_at": null, "days_since_last_sale": null }
+  ],
+  "without_movement": { "days_30": 120, "days_60": 80, "days_90": 55 }
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `active_products` | Tamaño del catálogo activo contra el que se leen los conteos |
+| `products` | Productos activos sin venta confirmada en `period`, del que dejó de venderse más recientemente al más antiguo; los que nunca vendieron van al final. Sin recorte: la lista la acota el catálogo |
+| `last_sold_at` | Última venta confirmada anterior al fin del período. `null` si el producto nunca vendió |
+| `days_since_last_sale` | Días entre esa venta y el **fin del período**, no "hasta hoy": así la cifra no se mueve con el reloj. `null` si nunca vendió |
+| `without_movement` | Conteos de productos activos sin venta confirmada en los últimos 30 / 60 / 90 días |
+
+**Qué es "activo".** `product.deleted_at IS NULL`. **El catálogo no tiene bandera de activo propia** (`prisma/schema.prisma`, modelo `product`): es un espejo de Efactsoft, sin `active` ni equivalente, así que la fila que sigue ahí es la que el ERP sigue enviando. `product.last_seen_at` registra cuándo se vio por última vez en una importación, no si es vendible, y por eso no se usa como filtro.
+
+**Cómo se calculan 30/60/90.** Las tres ventanas cuelgan del **final del período** (`to`), no de `from` ni de hoy: `[to + 1 día − N días, to + 1 día)`. Un producto cuenta en `days_N` cuando su última venta confirmada es anterior a ese corte, o cuando nunca vendió. Como El Salvador no tiene horario de verano (CLAUDE.md 5.7), un día son 86 400 000 ms exactos y el corte cae a la misma hora local.
+
+Consecuencia deliberada: **los tres conteos no dependen del largo del rango.** Un rango de una semana sigue respondiendo "y cuántos llevan tres meses quietos". Solo `products` sigue al período seleccionado.
 
 ---
 
@@ -303,6 +400,8 @@ Productos ordenados por monto vendido en el período. Misma regla de venta confi
 | Estado de venta válido | `erp_status = 2` | `businessRules.ts` | No |
 | Ventas de contado | `payment_id = 1`, excluidas de cobranza | `businessRules.ts` | No |
 | Radio GPS | 80 m | `src/services/visit.service.ts` | No |
+| Cortes ABC de producto | 80 % / 95 % acumulado | `src/domain/constants/productMetrics.ts` | No |
+| Ventanas "sin movimiento" | 30 / 60 / 90 días | `src/domain/constants/productMetrics.ts` | No |
 | Zona horaria | `America/El_Salvador` | `BUSINESS_TIMEZONE` en `src/config/envs.ts` | Sí, por entorno (validada al arrancar). Cambiarla mueve de día todo el histórico |
 
 ---
