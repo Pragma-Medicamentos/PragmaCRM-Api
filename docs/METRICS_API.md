@@ -288,7 +288,7 @@ Ranking de rutas y detalle de una ruta. Misma query común (`from`, `to`) que el
 
 **Identidad de la ruta.** `route_id` es `route.id`, el mismo uuid que expone la API de rutas (`/api/v1/routes`), así que la fila del ranking enlaza directo con la pantalla de configuración de la ruta. La venta no guarda ruta: llega a ella por `sale.visit_id → visit.route_user_id → route_user.route_id`. Por eso cada query une `route_user`, que es quien traduce la asignación al id de ruta. `route_user.deleted_at` **no** se filtra: una asignación reasignada después igual ejecutó las visitas de su período, y la KPI global también las cuenta.
 
-**Qué no trae.** `average_ticket` por ruta es PCRM-176 / issue #56, no está en estos endpoints. El denominador que esa issue necesita (facturas distintas) ya lo calcula `findRouteSalesTotals` en `src/repositories/routeMetrics.repository.ts`; #56 lo importa en lugar de reescribir el SQL.
+**Qué no trae.** Ni el ranking ni el detalle traen `average_ticket`: el ticket promedio por ruta es PCRM-176 / issue #56 y responde en su propio endpoint, `GET /routes/:id/ticket` (sección 9). Divide la misma fila de `findRouteSalesTotals` (`src/repositories/routeMetrics.repository.ts`) que leen estos dos endpoints, así que los tres no pueden discrepar sobre lo que vendió la ruta.
 
 #### `GET /routes` — ranking
 
@@ -369,6 +369,33 @@ Ranking de rutas y detalle de una ruta. Misma query común (`from`, `to`) que el
 | `top_products` | Hasta 10 productos por monto. Mismas reglas que `/products`: IVA incluido, líneas fechadas por su venta, unidades en la unidad base, sin líneas huérfanas ni productos borrados |
 | `sales_by_weekday` | Siempre 7 buckets, ceros incluidos. `weekday` es el `DOW` de Postgres sobre el **día local**: 0 domingo … 6 sábado |
 | `seller_performance` | Lista, no serie de gráfico. La venta se acredita a `sale.user_id`, el vendedor del ERP, igual que en `/sellers`. Solo aparecen vendedores con venta atribuida en la ruta |
+
+### 9. `GET /routes/:id/ticket` — ticket promedio por ruta (PCRM-176)
+
+Ticket promedio de una ruta: venta atribuida dividida entre las facturas que hay detrás. Misma query común (`from`, `to`) y misma auth de administrador que el resto del panel. `:id` es el `route.id`; si no existe o está borrada, `404` — nunca ceros para un id inexistente.
+
+La atribución es la de la sección 8, sin reescribir: el endpoint importa `findRouteSalesTotals`, la misma función que alimentan el ranking y el detalle. Solo la división es propia.
+
+```json
+{
+  "route_id": "22222222-2222-2222-2222-222222222201",
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "amount": "9170.00",
+  "invoices": 62,
+  "average_ticket": "147.90"
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `amount` | Venta atribuida a la ruta en el período, IVA incluido. El mismo número que `amount` en `/routes` y en `/routes/:id` |
+| `invoices` | Facturas distintas (`erp_sale_id`) confirmadas detrás de `amount`. El ranking y el detalle lo calculan pero no lo exponen |
+| `average_ticket` | `amount / invoices`, a dos decimales. **`null`** si `invoices` es 0: una ruta sin venta no tiene ticket, y un `"0.00"` se leería como una ruta que vendió y promedió cero |
+
+- Sin ventas en el período: `amount: "0.00"`, `invoices: 0`, `average_ticket: null`. Nunca una división por cero ni un 500.
+- No lleva `thresholds`: la respuesta son solo el período y las tres cifras.
+- Este ticket es **por ruta** y no se compara con la KPI global `average_ticket`, que divide toda la venta de la empresa (incluida la que no es de ruta) entre sus pedidos.
+
 ---
 
 ## Qué consume cada pantalla

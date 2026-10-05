@@ -6,9 +6,11 @@ import { MetricsRangeQuery } from '../../domain/schemas/metrics.schema';
 import { MetricsRouteParams } from '../../domain/schemas/routeMetrics.schema';
 import {
   MetricsRouteDetailResponse,
+  MetricsRouteTicketResponse,
   MetricsRoutesResponse,
 } from '../../domain/types/routeMetrics.types';
 import {
+  getRouteAverageTicket,
   getRouteMetricsDetail,
   listRouteMetrics,
 } from '../../services/routeMetrics.service';
@@ -47,6 +49,24 @@ export class RouteMetricsController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'RouteMetricsController.routeDetail');
+    }
+  }
+
+  /** Average ticket of the route: attributed sale over invoices (PCRM-176). */
+  public async routeTicket(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as MetricsRouteParams;
+      const query = req.query as unknown as MetricsRangeQuery;
+      const data = await getRouteAverageTicket(prisma, id, query);
+
+      const response: ApiResponse<MetricsRouteTicketResponse> = {
+        success: true,
+        message: 'Route average ticket retrieved successfully',
+        data,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'RouteMetricsController.routeTicket');
     }
   }
 }

@@ -57,6 +57,14 @@ export class MetricsRoutes {
       validateQuery(metricsRangeQuerySchema),
       routeController.routeDetail
     );
+    // Average ticket of the route (PCRM-176). Its own endpoint: neither the
+    // ranking nor the detail above carries `average_ticket`.
+    router.get(
+      '/routes/:id/ticket',
+      validateParams(metricsRouteParamsSchema),
+      validateQuery(metricsRangeQuerySchema),
+      routeController.routeTicket
+    );
 
     return router;
   }

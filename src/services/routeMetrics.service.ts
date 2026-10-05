@@ -1,3 +1,4 @@
+import { Prisma } from '../generated/prisma/client';
 import { Client } from '../lib/prisma';
 import { envs } from '../config/envs';
 import { CustomError } from '../domain/errors/CustomError';
@@ -7,6 +8,7 @@ import { ROUTE_TOP_LIMIT } from '../domain/schemas/routeMetrics.schema';
 import { MetricsContext } from '../domain/types/metrics.types';
 import {
   MetricsRouteDetailResponse,
+  MetricsRouteTicketResponse,
   MetricsRoutesResponse,
   RouteMetrics,
   RoutePortfolioCoverage,
@@ -23,13 +25,15 @@ import {
   findRouteTopProducts,
   findRouteWeekdaySales,
 } from '../repositories/routeMetrics.repository';
+import { getRouteById } from './route.service';
 import { GPS_RADIUS_METERS } from './visit.service';
 
 /*
  * Per-route metrics (PCRM-178), the route counterpart of the seller table:
  *
- *     GET /api/v1/metrics/routes      -> listRouteMetrics
- *     GET /api/v1/metrics/routes/:id  -> getRouteMetricsDetail
+ *     GET /api/v1/metrics/routes             -> listRouteMetrics
+ *     GET /api/v1/metrics/routes/:id         -> getRouteMetricsDetail
+ *     GET /api/v1/metrics/routes/:id/ticket  -> getRouteAverageTicket
  *
  * Every figure of sale comes from the attribution rule of CLAUDE.md 5.4,
  * written once in repositories/metrics/routeSales.sql.ts and shared with the
@@ -37,9 +41,10 @@ import { GPS_RADIUS_METERS } from './visit.service';
  * turns the rows into the response and does the divisions that need a
  * "no data" answer instead of a zero.
  *
- * Average ticket per route is PCRM-176, not this issue: the response carries
- * no `average_ticket`. The invoice count it divides by is already computed
- * by `findRouteSalesTotals`.
+ * Average ticket per route is PCRM-176: it answers on its own endpoint and
+ * neither the ranking nor the detail carries `average_ticket`. It divides
+ * the same `findRouteSalesTotals` row both of them already use, so the three
+ * endpoints can never disagree on what the route sold.
  */
 
 /** Ranking of routes by attributed sale. Routes with no activity come as zeros. */
@@ -111,6 +116,36 @@ export const getRouteMetricsDetail = async (
   };
 };
 
+/**
+ * Average ticket of a route: attributed sale divided by the invoices behind
+ * it (PCRM-176).
+ *
+ * The amount and the denominator come from `findRouteSalesTotals`, the same
+ * row the ranking and the detail read, so this endpoint cannot drift from
+ * them. Only the division is new.
+ */
+export const getRouteAverageTicket = async (
+  client: Client,
+  routeId: string,
+  query: MetricsRangeQuery,
+  now: Date = new Date()
+): Promise<MetricsRouteTicketResponse> => {
+  // A route that does not exist is a 404, like the detail: answering zeros
+  // would read as "this route sold nothing", which is a different fact.
+  await getRouteById(client, routeId);
+
+  const range = resolveRange(query.from, query.to, now);
+  const totals = await findRouteSalesTotals(client, range, routeId);
+
+  return {
+    route_id: routeId,
+    period: { from: range.from, to: range.to },
+    amount: totals.amount,
+    invoices: totals.invoices,
+    average_ticket: averageTicket(totals.amount, totals.invoices),
+  };
+};
+
 /*
  * ============================================================================
  * Helpers.
@@ -171,3 +206,11 @@ const portfolioCoverage = (row: RoutePortfolioCoverageRow): RoutePortfolioCovera
       ? null
       : Math.round((row.purchasing_customers / row.assigned_customers) * 1000) / 10,
 });
+
+/**
+ * `amount / invoices` with the two decimals of the rest of the panel. Null
+ * without invoices: a route with no sale has no ticket, and reporting
+ * "0.00" would pass for a route that sold and averaged zero.
+ */
+const averageTicket = (amount: string, invoices: number): string | null =>
+  invoices === 0 ? null : new Prisma.Decimal(amount).div(invoices).toFixed(2);

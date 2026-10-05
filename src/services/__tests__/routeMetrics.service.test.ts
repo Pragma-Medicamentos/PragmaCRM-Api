@@ -2,7 +2,11 @@ import { Prisma } from '../../generated/prisma/client';
 import { Client } from '../../lib/prisma';
 import { envs } from '../../config/envs';
 import { ROUTE_TOP_LIMIT } from '../../domain/schemas/routeMetrics.schema';
-import { getRouteMetricsDetail, listRouteMetrics } from '../routeMetrics.service';
+import {
+  getRouteAverageTicket,
+  getRouteMetricsDetail,
+  listRouteMetrics,
+} from '../routeMetrics.service';
 
 const NOW = new Date('2026-09-22T18:00:00Z');
 const ROUTE_ID = '22222222-2222-2222-2222-222222222201';
@@ -384,5 +388,92 @@ describe('getRouteMetricsDetail', () => {
     await expect(
       getRouteMetricsDetail(buildClient(queryRaw), ROUTE_ID, SEPTEMBER, NOW)
     ).rejects.toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe('getRouteAverageTicket', () => {
+  /*
+   * PCRM-176. Unlike the rest of the module this one also reads `route` with
+   * the typed API, for the existence check, so the fake client carries
+   * findFirst besides $queryRaw.
+   */
+  const buildTicketClient = (queryRaw: jest.Mock, findFirst: jest.Mock) =>
+    ({ $queryRaw: queryRaw, route: { findFirst } }) as unknown as Client;
+
+  const foundRoute = () => jest.fn().mockResolvedValue({ id: ROUTE_ID, name: 'Zona Escalón' });
+
+  it('divides the attributed sale by the invoices behind it', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([
+      { amount: '9170.00', units: '1240.0000', invoices: 62 },
+    ]);
+
+    const result = await getRouteAverageTicket(
+      buildTicketClient(queryRaw, foundRoute()),
+      ROUTE_ID,
+      SEPTEMBER,
+      NOW
+    );
+
+    expect(result).toEqual({
+      route_id: ROUTE_ID,
+      period: SEPTEMBER,
+      amount: '9170.00',
+      invoices: 62,
+      // 9170 / 62 = 147.9032…, two decimals like the rest of the panel.
+      average_ticket: '147.90',
+    });
+  });
+
+  it('asks the same attribution the ranking uses, for this route and period', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([
+      { amount: '9170.00', units: '1240.0000', invoices: 62 },
+    ]);
+
+    await getRouteAverageTicket(
+      buildTicketClient(queryRaw, foundRoute()),
+      ROUTE_ID,
+      SEPTEMBER,
+      NOW
+    );
+
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    const sql = sqlOf(queryRaw, 0);
+    // sale -> visit -> route_user (CLAUDE.md 5.4): the shared CTE, not a new one.
+    expect(sql.sql).toContain('v.id = s.visit_id');
+    expect(sql.sql).toContain('COUNT(DISTINCT a.erp_sale_id)');
+    expect(sql.values).toContain(ROUTE_ID);
+    expect(isoInstants(sql)).toEqual([
+      '2026-09-01T06:00:00.000Z',
+      '2026-10-01T06:00:00.000Z',
+    ]);
+  });
+
+  it('has no ticket when the route sold nothing, instead of dividing by zero', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([
+      { amount: '0.00', units: '0.0000', invoices: 0 },
+    ]);
+
+    const result = await getRouteAverageTicket(
+      buildTicketClient(queryRaw, foundRoute()),
+      ROUTE_ID,
+      SEPTEMBER,
+      NOW
+    );
+
+    expect(result.amount).toBe('0.00');
+    expect(result.invoices).toBe(0);
+    // No sale is not an average of zero: the figure does not exist.
+    expect(result.average_ticket).toBeNull();
+  });
+
+  it('throws 404 when the route does not exist', async () => {
+    const queryRaw = jest.fn();
+    const findFirst = jest.fn().mockResolvedValue(null);
+
+    await expect(
+      getRouteAverageTicket(buildTicketClient(queryRaw, findFirst), ROUTE_ID, SEPTEMBER, NOW)
+    ).rejects.toMatchObject({ statusCode: 404 });
+    // An id that does not exist never reaches the sale query.
+    expect(queryRaw).not.toHaveBeenCalled();
   });
 });

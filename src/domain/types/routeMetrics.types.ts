@@ -105,6 +105,22 @@ export interface RouteSalesTrend {
   change_rate: number | null;
 }
 
+/**
+ * Average ticket of one route (PCRM-176). It is its own response and not a
+ * field of the ranking or of the detail: those answer "how much did the
+ * route sell", this one "how big is an order of this route".
+ */
+export interface MetricsRouteTicketResponse {
+  route_id: string;
+  period: MetricsPeriod;
+  /** Sale attributed to the route in the period, VAT included. */
+  amount: Money;
+  /** Distinct confirmed invoices behind `amount`. */
+  invoices: number;
+  /** `amount / invoices`. Null without invoices: never a division by zero. */
+  average_ticket: Money | null;
+}
+
 export interface MetricsRouteDetailResponse extends MetricsContext {
   route: RouteMetrics;
   previous: RouteSalesTrend;
