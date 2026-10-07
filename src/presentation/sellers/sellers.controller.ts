@@ -16,8 +16,18 @@ import {
 } from '../../services/seller.service';
 import { createSeller } from '../../use-cases/create-seller.use-case';
 import { resendSellerOtp } from '../../use-cases/resend-seller-otp.use-case';
-import { updateSellerEverywhere } from '../../use-cases/update-seller.use-case';
+import {
+  AccessEmailStatus,
+  updateSellerEverywhere,
+} from '../../use-cases/update-seller.use-case';
 import { setSellerStatusEverywhere } from '../../use-cases/set-seller-status.use-case';
+
+const UPDATE_MESSAGES: Record<NonNullable<AccessEmailStatus> | 'none', string> = {
+  none: 'Vendedor actualizado correctamente',
+  sent: 'Vendedor actualizado y habilitado. Se envio un codigo de acceso al correo (expira en 10 minutos)',
+  failed:
+    'Vendedor actualizado, pero no se pudo enviar el correo de acceso. Reenvie el codigo desde el listado',
+};
 
 export class SellersController {
   public async list(req: Request, res: Response) {
@@ -73,12 +83,14 @@ export class SellersController {
     try {
       const { id } = req.params as unknown as SellerParams;
       const data = req.body as UpdateSellerInput;
-      const seller = await updateSellerEverywhere(prisma, id, data);
+      const { seller, accessEmail } = await updateSellerEverywhere(prisma, id, data);
 
-      const response: ApiResponse<SellerRecord> = {
+      // The email is saved even when the access email fails, so this stays a
+      // 200: `access_email` is what tells the dashboard to warn the admin.
+      const response: ApiResponse<SellerRecord & { access_email: AccessEmailStatus }> = {
         success: true,
-        message: 'Vendedor actualizado correctamente',
-        data: seller,
+        message: UPDATE_MESSAGES[accessEmail ?? 'none'],
+        data: { ...seller, access_email: accessEmail },
       };
       res.status(200).json(response);
     } catch (error) {
