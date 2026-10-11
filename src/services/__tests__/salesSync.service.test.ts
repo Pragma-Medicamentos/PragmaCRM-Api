@@ -1,7 +1,10 @@
 import { Client } from '../../lib/prisma';
+import { softDeleteSalesNotInUpload } from '../../repositories/sales.repository';
 import {
   SYNC_CHUNK_SIZE,
   finalizeUploadSync,
+  getRangeRemovalWindow,
+  removeSalesNotInUpload,
   syncStagedSales,
   syncStagedSalesChunk,
 } from '../salesSync.service';
@@ -9,6 +12,9 @@ import { createPendingSellerAuthUser } from '../supabaseAdmin.service';
 
 jest.mock('../supabaseAdmin.service', () => ({
   createPendingSellerAuthUser: jest.fn(),
+}));
+jest.mock('../../repositories/sales.repository', () => ({
+  softDeleteSalesNotInUpload: jest.fn(),
 }));
 jest.mock('../../lib/adapters/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
@@ -398,6 +404,31 @@ describe('syncStagedSales — re-processing an existing sale (idempotency)', () 
     expect(uploadUpdates[0]).toMatchObject({ inserted: 0, updated: 1 });
   });
 
+  it('stamps erp_quoted_at from venta.created_at', async () => {
+    const { client, sales } = createClientMock({ existingCustomerId: 'existing-customer-id' });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { created_at: '02/09/2026 08:00:00' } }),
+    ]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    // 08:00 in El Salvador (UTC-6).
+    expect(sales[0].erp_quoted_at).toEqual(new Date('2026-09-02T14:00:00.000Z'));
+  });
+
+  it('restores a sale an earlier import removed, when the file carries it again', async () => {
+    const firstStamp = new Date('2026-08-01T00:00:00.000Z');
+    const { client, sales } = createClientMock({
+      existingCustomerId: 'existing-customer-id',
+      existingSale: { erp_created_at: firstStamp, last_payment_at: firstStamp },
+    });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect(sales[0]).toHaveProperty('deleted_at', null);
+  });
+
   it('does not overwrite an already-linked visit_id, and does not query for a new match', async () => {
     const firstStamp = new Date('2026-08-01T00:00:00.000Z');
     const { client, sales, spies } = createClientMock({
@@ -554,5 +585,70 @@ describe('syncStagedSales — drains across multiple internal chunks', () => {
       updated: 0,
       status: 'completed',
     });
+  });
+});
+
+describe('getRangeRemovalWindow — batch range to instant bounds', () => {
+  it('covers both Salvadoran calendar days whole, as [start, end)', () => {
+    const window = getRangeRemovalWindow({
+      from: new Date(Date.UTC(2026, 8, 1)),
+      to: new Date(Date.UTC(2026, 8, 30)),
+    });
+
+    // America/El_Salvador is UTC-6: local midnight is 06:00 UTC.
+    expect(window).toEqual({
+      start: new Date('2026-09-01T06:00:00.000Z'),
+      end: new Date('2026-10-01T06:00:00.000Z'),
+    });
+  });
+
+  it('keeps a sale booked after 6 p.m. on the last day inside the window', () => {
+    const window = getRangeRemovalWindow({
+      from: new Date(Date.UTC(2026, 8, 30)),
+      to: new Date(Date.UTC(2026, 8, 30)),
+    })!;
+    // 30/09 19:30 local = 01/10 01:30 UTC.
+    const lateSale = new Date('2026-10-01T01:30:00.000Z');
+
+    expect(lateSale >= window.start && lateSale < window.end).toBe(true);
+  });
+
+  it('returns null when the batch has no range', () => {
+    expect(getRangeRemovalWindow({ from: null, to: null })).toBeNull();
+  });
+});
+
+describe('removeSalesNotInUpload — reconciliation with the file', () => {
+  const softDeleteMock = softDeleteSalesNotInUpload as jest.Mock;
+
+  beforeEach(() => softDeleteMock.mockReset());
+
+  it('passes the upload and its window, and splits the counters by reason', async () => {
+    softDeleteMock.mockResolvedValue([
+      { erp_sale_id: 1, annulled: true },
+      { erp_sale_id: 2, annulled: false },
+      { erp_sale_id: 3, annulled: false },
+    ]);
+    const client = {} as Client;
+
+    const result = await removeSalesNotInUpload(client, 'upload-1', {
+      from: new Date(Date.UTC(2026, 8, 1)),
+      to: new Date(Date.UTC(2026, 8, 30)),
+    });
+
+    expect(result).toEqual({ annulled: 1, missing: 2 });
+    expect(softDeleteMock).toHaveBeenCalledWith(client, 'upload-1', {
+      start: new Date('2026-09-01T06:00:00.000Z'),
+      end: new Date('2026-10-01T06:00:00.000Z'),
+    });
+  });
+
+  it('without a range only annulments apply: no window is passed', async () => {
+    softDeleteMock.mockResolvedValue([]);
+
+    const result = await removeSalesNotInUpload({} as Client, 'upload-1', { from: null, to: null });
+
+    expect(result).toEqual({ annulled: 0, missing: 0 });
+    expect(softDeleteMock).toHaveBeenCalledWith(expect.anything(), 'upload-1', null);
   });
 });
