@@ -14,6 +14,7 @@ import {
   TargetKind,
 } from '../domain/types/daily-route.types';
 import { GPS_RADIUS_METERS } from './visit.service';
+import { generateDailyStops } from '../repositories/daily-route.repository';
 
 // --- Business constants -----------------------------------------------------
 //
@@ -70,6 +71,8 @@ export const getDailyRoute = async (
   date?: string
 ): Promise<DailyRoute> => {
   const visitDate = date ?? todayInBusinessZone();
+
+  await ensureDailyStops(client, userId, visitDate);
 
   const rows = await client.$queryRaw<DailyRouteStopRow[]>(
     dailyRouteSql(userId, visitDate)
@@ -153,6 +156,31 @@ export const setStopCustomerLocation = async (
     location: { lat: input.latitude, lng: input.longitude },
   };
 };
+
+/**
+ * PCRM-161: generates the seller's planned stops for `date` from the weekly
+ * route composition, on demand rather than through a nightly job. Called by
+ * `getDailyRoute` before its SELECT, so both `/me/route` and the admin
+ * `sellers/:sellerId/daily-route` GET (which calls `getDailyRoute`
+ * internally, see extra-stop.service.ts) generate the same way.
+ *
+ * A date in the past is read as-is and never generated: there is nothing to
+ * plan for a day already gone, and generating one retroactively would
+ * fabricate a plan that never existed. Today or a future date always runs
+ * the statement — see generate-stops.sql.ts for why running it twice, or
+ * concurrently, is safe.
+ */
+export const ensureDailyStops = async (
+  client: Client,
+  sellerId: string,
+  date: string
+): Promise<number> => {
+  if (date < todayInBusinessZone()) return 0;
+
+  const isoWeekday = DateTime.fromISO(date, { zone: BUSINESS_TIME_ZONE }).weekday;
+  return generateDailyStops(client, sellerId, date, isoWeekday);
+};
+
 
 /*
  * ============================================================================
@@ -287,11 +315,11 @@ interface DailyRouteStopRow {
  * `scheduled_visit` and joining upwards gives the planner nothing to seek on
  * and degrades to a sequential scan.
  *
- * All seven tables it touches carry their own `deleted_at IS NULL` —
- * `route_user`, `route`, `scheduled_visit`, `customer`, `prospect`,
- * `route_customer` and `visit`. On the LEFT JOINs the predicate sits in the ON
- * clause: moved to the WHERE it would turn them into inner joins and drop the
- * very stops it was meant to keep.
+ * All six tables it touches carry their own `deleted_at IS NULL` —
+ * `route_user`, `route`, `scheduled_visit`, `customer`, `prospect` and
+ * `visit`. On the LEFT JOINs the predicate sits in the ON clause: moved to
+ * the WHERE it would turn them into inner joins and drop the very stops it
+ * was meant to keep.
  *
  * Four things worth reading twice:
  *
@@ -302,14 +330,17 @@ interface DailyRouteStopRow {
  *     dispatch from a collection at the same customer on the same day, which
  *     the wireframe draws as two separate cards.
  *
- *   - `is_extra` is true either because `scheduled_visit.is_extra` was stamped
- *     by an admin adding a one-off stop (PCRM-158), or because no live
- *     `route_customer` row ties (this route, this customer) — the original
- *     derivation, still needed for legacy rows and for prospects, which match
- *     nothing by construction since `sv.customer_id` is NULL for them.
- *     `sort_order` is forced to NULL on either kind of extra, even when the
- *     customer happens to sit in the route's composition (an extra Cobro on a
- *     planned customer): an extra stop is never part of the planned order.
+ *   - `is_extra` and `sort_order` come only from `scheduled_visit` — there is
+ *     no `route_customer` join here (PCRM-161). `is_extra` is
+ *     `sv.is_extra OR sv.prospect_id IS NOT NULL`: the stamped flag (an
+ *     admin's PCRM-158 one-off, or an ordinary generated stop) ORed with "is
+ *     this a prospect", which is extra by definition since prospects have no
+ *     route membership at all. `sort_order` is the frozen copy the PCRM-161
+ *     generation statement stamped onto the row at insert time — reading the
+ *     live `route_customer.sort_order` instead would let a later reorder of
+ *     the route change a day already handed out to the seller. It is forced
+ *     to NULL on any extra, even an admin Cobro added on a customer who *is*
+ *     a route member: an extra stop is never part of the planned order.
  *
  *   - `zone` and `municipality` are read from `customer` only. `prospect` has
  *     no such columns, which is exactly the contract's "always null for
@@ -348,8 +379,8 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
          c.credit_limit::float8   AS credit_limit,
          extensions.st_y(COALESCE(c.location, p.location)::extensions.geometry)::float8 AS lat,
          extensions.st_x(COALESCE(c.location, p.location)::extensions.geometry)::float8 AS lng,
-         (CASE WHEN sv.is_extra THEN NULL ELSE rc.sort_order END)::int AS sort_order,
-         (sv.is_extra OR rc.id IS NULL) AS is_extra,
+         (CASE WHEN sv.is_extra OR sv.prospect_id IS NOT NULL THEN NULL ELSE sv.sort_order END)::int AS sort_order,
+         (sv.is_extra OR sv.prospect_id IS NOT NULL) AS is_extra,
          sv.reason,
          v.started_at             AS completed_at
   FROM   route_user ru
@@ -371,9 +402,6 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
                         AND c.deleted_at IS NULL
   LEFT   JOIN prospect p ON p.id = sv.prospect_id
                         AND p.deleted_at IS NULL
-  LEFT   JOIN route_customer rc ON rc.route_id = ru.route_id
-                               AND rc.customer_id = sv.customer_id
-                               AND rc.deleted_at IS NULL
   LEFT   JOIN visit v ON v.scheduled_visit_id = sv.id
                      AND v.deleted_at IS NULL
   WHERE  ru.user_id = ${userId}::uuid
@@ -391,7 +419,7 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
        A block comment, not a line comment: a line comment would swallow the
        rest of the query if anything ever collapsed the newlines. */
     AND  COALESCE(c.id, p.id) IS NOT NULL
-  ORDER  BY COALESCE(CASE WHEN sv.is_extra THEN NULL ELSE rc.sort_order END, ${UNPLANNED_SORT_ORDER}) ASC,
+  ORDER  BY COALESCE(CASE WHEN sv.is_extra OR sv.prospect_id IS NOT NULL THEN NULL ELSE sv.sort_order END, ${UNPLANNED_SORT_ORDER}) ASC,
             lower(COALESCE(c.name, p.name)) ASC,
             sv.id ASC
 `;
