@@ -2,13 +2,19 @@ import { DateTime } from 'luxon';
 import { Prisma } from '../generated/prisma/client';
 import { Client } from '../lib/prisma';
 import { CustomError } from '../domain/errors/CustomError';
-import { StopType } from '../domain/schemas/daily-route.schema';
+import {
+  SetStopLocationInput,
+  StopType,
+} from '../domain/schemas/daily-route.schema';
 import {
   DailyRoute,
   DailyRouteStop,
   RouteRef,
+  StopCustomerLocation,
   TargetKind,
 } from '../domain/types/daily-route.types';
+import { GPS_RADIUS_METERS } from './visit.service';
+import { generateDailyStops } from '../repositories/daily-route.repository';
 
 // --- Business constants -----------------------------------------------------
 //
@@ -40,7 +46,8 @@ const UNPLANNED_SORT_ORDER = 32767;
  * ============================================================================
  * 1. MAIN METHODS — called directly by the me controller:
  *
- *      GET /api/v1/me/route -> getDailyRoute
+ *      GET   /api/v1/me/route                     -> getDailyRoute
+ *      PATCH /api/v1/me/route/stops/:id/location  -> setStopCustomerLocation
  * ============================================================================
  */
 
@@ -65,6 +72,8 @@ export const getDailyRoute = async (
 ): Promise<DailyRoute> => {
   const visitDate = date ?? todayInBusinessZone();
 
+  await ensureDailyStops(client, userId, visitDate);
+
   const rows = await client.$queryRaw<DailyRouteStopRow[]>(
     dailyRouteSql(userId, visitDate)
   );
@@ -76,6 +85,103 @@ export const getDailyRoute = async (
   };
 };
 
+/**
+ * PCRM-160: the seller fixes the GPS pin of a stop's customer while standing
+ * at it, so a customer nobody ever located can be visited and validated.
+ *
+ * Deliberately narrower than the admin's PATCH /customers/:id/location
+ * (RF-02): it only fills an EMPTY pin. Moving an existing one stays an admin
+ * action, because every past and future visit to that customer is validated
+ * against it. The `location IS NULL` guard lives in the UPDATE itself rather
+ * than in a prior read, so two concurrent requests cannot both write — the
+ * loser simply matches no row and gets the 409.
+ *
+ * Keyed by the stop, not the customer: the seller's app only knows stops, and
+ * going through `scheduled_visit -> route_user` is what proves the customer is
+ * on this seller's agenda. Any date is accepted, like confirmVisit: the stop
+ * being assigned to the seller is the authorisation.
+ */
+export const setStopCustomerLocation = async (
+  client: Client,
+  sellerId: string,
+  stopId: string,
+  input: SetStopLocationInput
+): Promise<StopCustomerLocation> => {
+  // Coarser than the validation radius and the pin could sit outside the
+  // circle the seller must later stand in to confirm a visit. The app refuses
+  // the same readings; this is the authoritative copy of that rule.
+  if (input.accuracy_meters > GPS_RADIUS_METERS) {
+    throw CustomError.unprocessable(
+      `GPS accuracy must be ${GPS_RADIUS_METERS} m or better to set a location`
+    );
+  }
+
+  const stop = await client.scheduled_visit.findFirst({
+    where: { id: stopId, deleted_at: null },
+    select: {
+      customer_id: true,
+      route_user: { select: { user_id: true, deleted_at: true } },
+    },
+  });
+  if (!stop || stop.route_user.deleted_at !== null) {
+    throw CustomError.notFound('Scheduled visit not found');
+  }
+
+  if (stop.route_user.user_id !== sellerId) {
+    throw CustomError.forbidden('This stop is not assigned to you');
+  }
+
+  // `prospect.location` exists, but prospects are registered with their pin
+  // (PCRM-62) and a visit cannot be executed on one anyway.
+  if (!stop.customer_id) {
+    throw CustomError.unprocessable(
+      'Locations can only be set on customer stops'
+    );
+  }
+
+  const updated = await client.$executeRaw(
+    setEmptyCustomerLocationSql(
+      stop.customer_id,
+      input.latitude,
+      input.longitude
+    )
+  );
+
+  if (updated === 0) {
+    throw CustomError.conflict('This customer already has a location');
+  }
+
+  return {
+    customer_id: stop.customer_id,
+    location: { lat: input.latitude, lng: input.longitude },
+  };
+};
+
+/**
+ * PCRM-161: generates the seller's planned stops for `date` from the weekly
+ * route composition, on demand rather than through a nightly job. Called by
+ * `getDailyRoute` before its SELECT, so both `/me/route` and the admin
+ * `sellers/:sellerId/daily-route` GET (which calls `getDailyRoute`
+ * internally, see extra-stop.service.ts) generate the same way.
+ *
+ * A date in the past is read as-is and never generated: there is nothing to
+ * plan for a day already gone, and generating one retroactively would
+ * fabricate a plan that never existed. Today or a future date always runs
+ * the statement — see generate-stops.sql.ts for why running it twice, or
+ * concurrently, is safe.
+ */
+export const ensureDailyStops = async (
+  client: Client,
+  sellerId: string,
+  date: string
+): Promise<number> => {
+  if (date < todayInBusinessZone()) return 0;
+
+  const isoWeekday = DateTime.fromISO(date, { zone: BUSINESS_TIME_ZONE }).weekday;
+  return generateDailyStops(client, sellerId, date, isoWeekday);
+};
+
+
 /*
  * ============================================================================
  * 2. OTHER METHODS — the date default and the row→DTO mappers. Private: the
@@ -84,8 +190,14 @@ export const getDailyRoute = async (
  * ============================================================================
  */
 
-/** Today in the business timezone, as `YYYY-MM-DD`. See BUSINESS_TIME_ZONE. */
-const todayInBusinessZone = (): string => {
+/**
+ * Today in the business timezone, as `YYYY-MM-DD`. See BUSINESS_TIME_ZONE.
+ *
+ * Exported for extra-stop.service.ts (PCRM-158): the "date cannot be in the
+ * past" rule has to compare against the same El Salvador today this module
+ * already resolves, not the server's.
+ */
+export const todayInBusinessZone = (): string => {
   const today = DateTime.now().setZone(BUSINESS_TIME_ZONE).toISODate();
 
   // setZone with a hardcoded, valid IANA name cannot yield an invalid
@@ -182,6 +294,10 @@ interface DailyRouteStopRow {
   zone: string | null;
   municipality: string | null;
   phone: string | null;
+  personality: string | null;
+  potential: string | null;
+  establishment_type: string | null;
+  credit_limit: number | null;
   lat: number | null;
   lng: number | null;
   sort_order: number | null;
@@ -199,11 +315,11 @@ interface DailyRouteStopRow {
  * `scheduled_visit` and joining upwards gives the planner nothing to seek on
  * and degrades to a sequential scan.
  *
- * All seven tables it touches carry their own `deleted_at IS NULL` —
- * `route_user`, `route`, `scheduled_visit`, `customer`, `prospect`,
- * `route_customer` and `visit`. On the LEFT JOINs the predicate sits in the ON
- * clause: moved to the WHERE it would turn them into inner joins and drop the
- * very stops it was meant to keep.
+ * All six tables it touches carry their own `deleted_at IS NULL` —
+ * `route_user`, `route`, `scheduled_visit`, `customer`, `prospect` and
+ * `visit`. On the LEFT JOINs the predicate sits in the ON clause: moved to
+ * the WHERE it would turn them into inner joins and drop the very stops it
+ * was meant to keep.
  *
  * Four things worth reading twice:
  *
@@ -214,10 +330,17 @@ interface DailyRouteStopRow {
  *     dispatch from a collection at the same customer on the same day, which
  *     the wireframe draws as two separate cards.
  *
- *   - `is_extra` is derived, never stored: no live `route_customer` row for
- *     (this route, this customer) means the stop was added outside the route's
- *     planned composition. Prospect stops match nothing by construction —
- *     `sv.customer_id` is NULL for them — so they come out extra for free.
+ *   - `is_extra` and `sort_order` come only from `scheduled_visit` — there is
+ *     no `route_customer` join here (PCRM-161). `is_extra` is
+ *     `sv.is_extra OR sv.prospect_id IS NOT NULL`: the stamped flag (an
+ *     admin's PCRM-158 one-off, or an ordinary generated stop) ORed with "is
+ *     this a prospect", which is extra by definition since prospects have no
+ *     route membership at all. `sort_order` is the frozen copy the PCRM-161
+ *     generation statement stamped onto the row at insert time — reading the
+ *     live `route_customer.sort_order` instead would let a later reorder of
+ *     the route change a day already handed out to the seller. It is forced
+ *     to NULL on any extra, even an admin Cobro added on a customer who *is*
+ *     a route member: an extra stop is never part of the planned order.
  *
  *   - `zone` and `municipality` are read from `customer` only. `prospect` has
  *     no such columns, which is exactly the contract's "always null for
@@ -250,10 +373,14 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
          c.zone                   AS zone,
          c.municipality           AS municipality,
          COALESCE(c.phone, p.phone)           AS phone,
+         c.personality            AS personality,
+         c.potential              AS potential,
+         c.establishment_type     AS establishment_type,
+         c.credit_limit::float8   AS credit_limit,
          extensions.st_y(COALESCE(c.location, p.location)::extensions.geometry)::float8 AS lat,
          extensions.st_x(COALESCE(c.location, p.location)::extensions.geometry)::float8 AS lng,
-         rc.sort_order::int       AS sort_order,
-         (rc.id IS NULL)          AS is_extra,
+         (CASE WHEN sv.is_extra OR sv.prospect_id IS NOT NULL THEN NULL ELSE sv.sort_order END)::int AS sort_order,
+         (sv.is_extra OR sv.prospect_id IS NOT NULL) AS is_extra,
          sv.reason,
          v.started_at             AS completed_at
   FROM   route_user ru
@@ -275,9 +402,6 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
                         AND c.deleted_at IS NULL
   LEFT   JOIN prospect p ON p.id = sv.prospect_id
                         AND p.deleted_at IS NULL
-  LEFT   JOIN route_customer rc ON rc.route_id = ru.route_id
-                               AND rc.customer_id = sv.customer_id
-                               AND rc.deleted_at IS NULL
   LEFT   JOIN visit v ON v.scheduled_visit_id = sv.id
                      AND v.deleted_at IS NULL
   WHERE  ru.user_id = ${userId}::uuid
@@ -295,7 +419,31 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
        A block comment, not a line comment: a line comment would swallow the
        rest of the query if anything ever collapsed the newlines. */
     AND  COALESCE(c.id, p.id) IS NOT NULL
-  ORDER  BY COALESCE(rc.sort_order, ${UNPLANNED_SORT_ORDER}) ASC,
+  ORDER  BY COALESCE(CASE WHEN sv.is_extra OR sv.prospect_id IS NOT NULL THEN NULL ELSE sv.sort_order END, ${UNPLANNED_SORT_ORDER}) ASC,
             lower(COALESCE(c.name, p.name)) ASC,
             sv.id ASC
+`;
+
+/**
+ * SQL for setStopCustomerLocation. Writes only when the pin is still empty:
+ * the affected-row count (0 or 1) is how the service tells a fresh write from
+ * a customer that already had a location.
+ *
+ * Same point construction as the admin's setCustomerLocationSql — longitude
+ * first, as ST_MakePoint expects.
+ */
+const setEmptyCustomerLocationSql = (
+  customerId: string,
+  latitude: number,
+  longitude: number
+): Prisma.Sql => Prisma.sql`
+  UPDATE customer
+  SET    location = extensions.ST_SetSRID(
+           extensions.ST_MakePoint(${longitude}, ${latitude}),
+           4326
+         )::extensions.geography,
+         updated_at = now()
+  WHERE  id = ${customerId}::uuid
+    AND  deleted_at IS NULL
+    AND  location IS NULL
 `;

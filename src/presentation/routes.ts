@@ -11,6 +11,7 @@ import { RoutesRoutes } from './routes/routes';
 import { VisitsRoutes } from './visits/routes';
 import { MetricsRoutes } from './metrics/routes';
 import { ProspectsRoutes } from './prospects/routes';
+import { SellerDailyRouteRoutes } from './seller-daily-route/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
@@ -54,6 +55,17 @@ export class AppRoutes {
 
     // Public: sends OTP for accounts provisioned by the API (sellers/admins).
     router.use('/api/v1/auth', AuthRoutes.routes);
+
+    // PCRM-158: a seller's daily route and its extra stops, from the admin
+    // side. Must be mounted before '/api/v1/sellers' below: Express matches
+    // path segments in mount order, and '/api/v1/sellers/:id' (SellersRoutes)
+    // would otherwise shadow '/api/v1/sellers/:sellerId/daily-route'.
+    router.use(
+      '/api/v1/sellers/:sellerId/daily-route',
+      requireAuth,
+      requireRole(ROLES.ADMIN),
+      SellerDailyRouteRoutes.routes
+    );
 
     // RF-01: alta, edicion y habilitacion/deshabilitacion de vendedores.
     router.use(

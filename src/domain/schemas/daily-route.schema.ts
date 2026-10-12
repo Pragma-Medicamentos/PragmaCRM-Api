@@ -26,3 +26,23 @@ export const dailyRouteQuerySchema = z.object({
   date: z.iso.date().optional(),
 });
 export type DailyRouteQuery = z.infer<typeof dailyRouteQuerySchema>;
+
+/** Path params of PATCH /api/v1/me/route/stops/:id/location. */
+export const stopParamsSchema = z.object({
+  id: z.string().uuid('Invalid scheduled visit id'),
+});
+export type StopParams = z.infer<typeof stopParamsSchema>;
+
+/**
+ * Body of PATCH /api/v1/me/route/stops/:id/location (PCRM-160).
+ *
+ * `accuracy_meters` is required, not optional: the pin is written once and the
+ * seller cannot correct it afterwards, so the server has to be able to refuse
+ * a reading too coarse to validate visits against (see the service).
+ */
+export const setStopLocationSchema = z.object({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  accuracy_meters: z.number().nonnegative(),
+});
+export type SetStopLocationInput = z.infer<typeof setStopLocationSchema>;

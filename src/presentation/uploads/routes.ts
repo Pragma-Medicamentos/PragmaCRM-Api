@@ -12,6 +12,10 @@ export class UploadsRoutes {
     // validation happens sale by sale inside the service.
     router.post('/sales', uploadJsonFile, controller.importSales);
 
+    // Read-only status of the running import (PCRM-169). No file middleware:
+    // it takes no body.
+    router.get('/sales/in-progress', controller.salesImportInProgress);
+
     return router;
   }
 }

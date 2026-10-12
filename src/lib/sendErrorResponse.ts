@@ -12,7 +12,7 @@ export const sendErrorResponse = (
   error: unknown,
   context?: string
 ): void => {
-  const { statusCode, message } = handleError(error);
+  const { statusCode, message, code } = handleError(error);
 
   if (statusCode === 500) {
     logger.error(`Unexpected error${context ? ` in ${context}` : ''}`, {
@@ -22,5 +22,5 @@ export const sendErrorResponse = (
 
   res
     .status(statusCode)
-    .json({ success: false, message } satisfies ApiResponse);
+    .json({ success: false, message, ...(code ? { code } : {}) } satisfies ApiResponse);
 };

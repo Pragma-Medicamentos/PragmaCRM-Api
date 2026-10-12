@@ -470,20 +470,28 @@ BEGIN
 
   -- Stop A: plain visit. Customer #1 is already on route 1
   -- (route_customer.sort_order = 1, from the customer loop above) ->
-  -- is_extra = false.
-  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type)
-  VALUES (v_route_user_ids[1], v_today, v_customer_ids[1], 'visit');
+  -- is_extra = false. sort_order is copied from route_customer, same as the
+  -- PCRM-161 generation statement would stamp it, so the seeded day renders
+  -- in the same order a real generation would produce.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, sort_order)
+  SELECT v_route_user_ids[1], v_today, v_customer_ids[1], 'visit', rc.sort_order
+  FROM   route_customer rc
+  WHERE  rc.route_id = v_routes[1] AND rc.customer_id = v_customer_ids[1] AND rc.deleted_at IS NULL;
 
   -- Stop B: dispatch. Customer #11 is also a route-1 member.
-  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type)
-  VALUES (v_route_user_ids[1], v_today, v_customer_ids[11], 'dispatch');
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, sort_order)
+  SELECT v_route_user_ids[1], v_today, v_customer_ids[11], 'dispatch', rc.sort_order
+  FROM   route_customer rc
+  WHERE  rc.route_id = v_routes[1] AND rc.customer_id = v_customer_ids[11] AND rc.deleted_at IS NULL;
 
   -- Stop C: collection, already executed this morning. Customer #21 is a
   -- route-1 member; the visit row below links back via scheduled_visit_id
   -- (not a heuristic on customer/date), which is what makes this stop
   -- render as the completed/greyed card with a time.
-  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type)
-  VALUES (v_route_user_ids[1], v_today, v_customer_ids[21], 'collection')
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, sort_order)
+  SELECT v_route_user_ids[1], v_today, v_customer_ids[21], 'collection', rc.sort_order
+  FROM   route_customer rc
+  WHERE  rc.route_id = v_routes[1] AND rc.customer_id = v_customer_ids[21] AND rc.deleted_at IS NULL
   RETURNING id INTO v_sv_completed_id;
 
   v_completed_started_at :=
@@ -502,8 +510,10 @@ BEGIN
   -- is false for i = 10) -> the card must degrade to no pin / no distance.
   -- Still a genuine route-1 member (the "b" route_customer slot), so
   -- is_extra = false here too.
-  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type)
-  VALUES (v_route_user_ids[1], v_today, v_customer_ids[10], 'visit');
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, sort_order)
+  SELECT v_route_user_ids[1], v_today, v_customer_ids[10], 'visit', rc.sort_order
+  FROM   route_customer rc
+  WHERE  rc.route_id = v_routes[1] AND rc.customer_id = v_customer_ids[10] AND rc.deleted_at IS NULL;
 
   -- Stop E: the prospect. target_kind = 'prospect'; is_extra = true because
   -- prospects never have a route_customer row to match against.
@@ -512,12 +522,13 @@ BEGIN
 
   -- Stop F: customer #2 belongs to routes 2 and 3 only (see the route
   -- membership block above), never route 1 -> no live route_customer row
-  -- for (route 1, customer #2) -> is_extra = true. `reason` documents the
-  -- ad-hoc addition.
-  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, reason)
+  -- for (route 1, customer #2) -> is_extra = true regardless. Stamped
+  -- explicitly too (PCRM-158): this is the shape an admin-added extra stop
+  -- actually takes. `reason` documents the ad-hoc addition.
+  INSERT INTO scheduled_visit (route_user_id, visit_date, customer_id, stop_type, reason, is_extra)
   VALUES (
     v_route_user_ids[1], v_today, v_customer_ids[2], 'visit',
-    'Cliente solicito visita extra por reclamo de producto'
+    'Cliente solicito visita extra por reclamo de producto', true
   );
 
   -- Soft-deleted stop: proves the deleted_at IS NULL predicate actually

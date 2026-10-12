@@ -1,11 +1,21 @@
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
 import { CustomError } from '../../domain/errors/CustomError';
-import { DailyRoute } from '../../domain/types/daily-route.types';
-import { DailyRouteQuery } from '../../domain/schemas/daily-route.schema';
+import {
+  DailyRoute,
+  StopCustomerLocation,
+} from '../../domain/types/daily-route.types';
+import {
+  DailyRouteQuery,
+  SetStopLocationInput,
+  StopParams,
+} from '../../domain/schemas/daily-route.schema';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
-import { getDailyRoute } from '../../services/daily-route.service';
+import {
+  getDailyRoute,
+  setStopCustomerLocation,
+} from '../../services/daily-route.service';
 
 export class DailyRouteController {
   public async get(req: Request, res: Response) {
@@ -29,6 +39,33 @@ export class DailyRouteController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'DailyRouteController.get');
+    }
+  }
+
+  /** PCRM-160: fix the empty GPS pin of a stop's customer. */
+  public async setLocation(req: Request, res: Response) {
+    try {
+      if (!req.authUser) throw CustomError.unauthorized();
+
+      const { id } = req.params as unknown as StopParams;
+      const input = req.body as SetStopLocationInput;
+
+      const location = await setStopCustomerLocation(
+        prisma,
+        req.authUser.id,
+        id,
+        input
+      );
+
+      const response: ApiResponse<StopCustomerLocation> = {
+        success: true,
+        message: 'Ubicación del cliente establecida correctamente',
+        data: location,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'DailyRouteController.setLocation');
     }
   }
 }

@@ -1,9 +1,20 @@
 import { Client } from '../../lib/prisma';
-import { syncStagedSales } from '../salesSync.service';
+import { softDeleteSalesNotInUpload } from '../../repositories/sales.repository';
+import {
+  SYNC_CHUNK_SIZE,
+  finalizeUploadSync,
+  getRangeRemovalWindow,
+  removeSalesNotInUpload,
+  syncStagedSales,
+  syncStagedSalesChunk,
+} from '../salesSync.service';
 import { createPendingSellerAuthUser } from '../supabaseAdmin.service';
 
 jest.mock('../supabaseAdmin.service', () => ({
   createPendingSellerAuthUser: jest.fn(),
+}));
+jest.mock('../../repositories/sales.repository', () => ({
+  softDeleteSalesNotInUpload: jest.fn(),
 }));
 jest.mock('../../lib/adapters/logger', () => ({
   logger: { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
@@ -185,15 +196,27 @@ describe('syncStagedSales — new sale', () => {
     expect(uploadUpdates[0]).toMatchObject({ inserted: 1, updated: 0, status: 'completed' });
   });
 
-  it('stamps erp_created_at and last_payment_at from updated_at, never the import time', async () => {
+  it('stamps erp_created_at from fecha_emision and last_payment_at from updated_at, never the import time', async () => {
     const { client, sales } = createClientMock();
     (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
 
     await syncStagedSales(client, 'upload-1');
 
     // saldop is '0.00' -> already paid on arrival, so last_payment_at stamps too.
-    expect((sales[0].erp_created_at as Date).toISOString()).toBe('2026-09-05T23:27:56.000Z');
+    expect((sales[0].erp_created_at as Date).toISOString()).toBe('2026-09-05T23:27:17.000Z');
     expect((sales[0].last_payment_at as Date).toISOString()).toBe('2026-09-05T23:27:56.000Z');
+  });
+
+  it('dates a credit sale paid days later by its issue date, not by the payment edit', async () => {
+    const { client, sales } = createClientMock();
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { fecha_emision: '2026-09-25 18:07:29', updated_at: '26/09/2026 10:11:36' } }),
+    ]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect((sales[0].erp_created_at as Date).toISOString()).toBe('2026-09-26T00:07:29.000Z');
+    expect((sales[0].last_payment_at as Date).toISOString()).toBe('2026-09-26T16:11:36.000Z');
   });
 
   it('leaves last_payment_at null when the sale still has a pending balance', async () => {
@@ -315,6 +338,26 @@ describe('syncStagedSales — new sale', () => {
     );
   });
 
+  it('matches the visit on the Salvadoran day of fecha_emision, not of updated_at', async () => {
+    const { client, spies } = createClientMock({
+      existingCustomerId: 'existing-customer-id',
+      matchingVisitId: 'matching-visit-id',
+    });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { fecha_emision: '2026-09-25 18:07:29', updated_at: '26/09/2026 10:11:36' } }),
+    ]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect(spies.visit.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          started_at: { gte: new Date('2026-09-25T06:00:00.000Z'), lt: new Date('2026-09-26T06:00:00.000Z') },
+        }),
+      })
+    );
+  });
+
   it('leaves visit_id null when no visit matches, without failing the import', async () => {
     const { client, sales } = createClientMock({
       existingCustomerId: 'existing-customer-id',
@@ -359,6 +402,31 @@ describe('syncStagedSales — re-processing an existing sale (idempotency)', () 
     // pending_balance is the one field always overwritten (CLAUDE.md 5.5).
     expect(sales[0].pending_balance).toBe('10.00');
     expect(uploadUpdates[0]).toMatchObject({ inserted: 0, updated: 1 });
+  });
+
+  it('stamps erp_quoted_at from venta.created_at', async () => {
+    const { client, sales } = createClientMock({ existingCustomerId: 'existing-customer-id' });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([
+      stagingRow(1, { venta: { created_at: '02/09/2026 08:00:00' } }),
+    ]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    // 08:00 in El Salvador (UTC-6).
+    expect(sales[0].erp_quoted_at).toEqual(new Date('2026-09-02T14:00:00.000Z'));
+  });
+
+  it('restores a sale an earlier import removed, when the file carries it again', async () => {
+    const firstStamp = new Date('2026-08-01T00:00:00.000Z');
+    const { client, sales } = createClientMock({
+      existingCustomerId: 'existing-customer-id',
+      existingSale: { erp_created_at: firstStamp, last_payment_at: firstStamp },
+    });
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
+
+    await syncStagedSales(client, 'upload-1');
+
+    expect(sales[0]).toHaveProperty('deleted_at', null);
   });
 
   it('does not overwrite an already-linked visit_id, and does not query for a new match', async () => {
@@ -408,7 +476,179 @@ describe('syncStagedSales — every processed row is marked', () => {
     await syncStagedSales(client, 'upload-1');
 
     expect(spies.sale_staging.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { upload_id: 'upload-1', status: 'pending' } })
+      expect.objectContaining({
+        where: { upload_id: 'upload-1', status: 'pending' },
+        orderBy: { id: 'asc' },
+        take: SYNC_CHUNK_SIZE + 1,
+      })
     );
+  });
+});
+
+describe('syncStagedSalesChunk — limited drain without finalizing upload', () => {
+  it('processes only up to the limit and reports has_more when more pending remain', async () => {
+    const { client, stagingUpdates, uploadUpdates, sales } = createClientMock();
+    const rows = [stagingRow(1), stagingRow(2), stagingRow(3)];
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue(rows);
+
+    const chunk = await syncStagedSalesChunk(client, 'upload-1', {
+      created: [],
+      unmapped: [],
+      createdAuthUserIds: [],
+    }, 2);
+
+    expect(chunk).toEqual({ inserted: 2, updated: 0, sync_failed: 0, has_more: true });
+    expect(sales).toHaveLength(2);
+    expect(stagingUpdates).toHaveLength(2);
+    // Intermediate chunks must not touch upload status.
+    expect(uploadUpdates).toHaveLength(0);
+    expect(client.sale_staging.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 3 })
+    );
+  });
+
+  it('reports has_more false when the fetch fits in the limit', async () => {
+    const { client, uploadUpdates } = createClientMock();
+    (client.sale_staging.findMany as jest.Mock).mockResolvedValue([stagingRow(1)]);
+
+    const chunk = await syncStagedSalesChunk(client, 'upload-1', {
+      created: [],
+      unmapped: [],
+      createdAuthUserIds: [],
+    }, 2);
+
+    expect(chunk.has_more).toBe(false);
+    expect(chunk.inserted).toBe(1);
+    expect(uploadUpdates).toHaveLength(0);
+  });
+});
+
+describe('finalizeUploadSync', () => {
+  it('writes aggregated counters and completed status', async () => {
+    const { client, uploadUpdates } = createClientMock();
+
+    await finalizeUploadSync(client, 'upload-1', {
+      inserted: 10,
+      updated: 5,
+      sync_failed: 0,
+    });
+
+    expect(uploadUpdates[0]).toMatchObject({
+      inserted: 10,
+      updated: 5,
+      status: 'completed',
+    });
+  });
+
+  it('marks upload failed when every row in sync failed', async () => {
+    const { client, uploadUpdates } = createClientMock();
+
+    await finalizeUploadSync(client, 'upload-1', {
+      inserted: 0,
+      updated: 0,
+      sync_failed: 3,
+    });
+
+    expect(uploadUpdates[0]).toMatchObject({
+      status: 'failed',
+      failed: { increment: 3 },
+    });
+  });
+});
+
+describe('syncStagedSales — drains across multiple internal chunks', () => {
+  it('issues multiple findMany calls when pending rows exceed SYNC_CHUNK_SIZE', async () => {
+    const { client, uploadUpdates, stagingUpdates } = createClientMock();
+
+    // First fetch: full chunk + one peek row => has_more.
+    // Second fetch: the remaining row only => done.
+    const firstBatch = Array.from({ length: SYNC_CHUNK_SIZE + 1 }, (_, i) => stagingRow(i + 1));
+    const secondBatch = [stagingRow(SYNC_CHUNK_SIZE + 1)];
+    (client.sale_staging.findMany as jest.Mock)
+      .mockResolvedValueOnce(firstBatch)
+      .mockResolvedValueOnce(secondBatch);
+
+    const result = await syncStagedSales(client, 'upload-1');
+
+    expect(client.sale_staging.findMany).toHaveBeenCalledTimes(2);
+    expect(stagingUpdates).toHaveLength(SYNC_CHUNK_SIZE + 1);
+    expect(result).toMatchObject({
+      processed: SYNC_CHUNK_SIZE + 1,
+      inserted: SYNC_CHUNK_SIZE + 1,
+      updated: 0,
+      sync_failed: 0,
+    });
+    // Finalize once after all chunks.
+    expect(uploadUpdates).toHaveLength(1);
+    expect(uploadUpdates[0]).toMatchObject({
+      inserted: SYNC_CHUNK_SIZE + 1,
+      updated: 0,
+      status: 'completed',
+    });
+  });
+});
+
+describe('getRangeRemovalWindow — batch range to instant bounds', () => {
+  it('covers both Salvadoran calendar days whole, as [start, end)', () => {
+    const window = getRangeRemovalWindow({
+      from: new Date(Date.UTC(2026, 8, 1)),
+      to: new Date(Date.UTC(2026, 8, 30)),
+    });
+
+    // America/El_Salvador is UTC-6: local midnight is 06:00 UTC.
+    expect(window).toEqual({
+      start: new Date('2026-09-01T06:00:00.000Z'),
+      end: new Date('2026-10-01T06:00:00.000Z'),
+    });
+  });
+
+  it('keeps a sale booked after 6 p.m. on the last day inside the window', () => {
+    const window = getRangeRemovalWindow({
+      from: new Date(Date.UTC(2026, 8, 30)),
+      to: new Date(Date.UTC(2026, 8, 30)),
+    })!;
+    // 30/09 19:30 local = 01/10 01:30 UTC.
+    const lateSale = new Date('2026-10-01T01:30:00.000Z');
+
+    expect(lateSale >= window.start && lateSale < window.end).toBe(true);
+  });
+
+  it('returns null when the batch has no range', () => {
+    expect(getRangeRemovalWindow({ from: null, to: null })).toBeNull();
+  });
+});
+
+describe('removeSalesNotInUpload — reconciliation with the file', () => {
+  const softDeleteMock = softDeleteSalesNotInUpload as jest.Mock;
+
+  beforeEach(() => softDeleteMock.mockReset());
+
+  it('passes the upload and its window, and splits the counters by reason', async () => {
+    softDeleteMock.mockResolvedValue([
+      { erp_sale_id: 1, annulled: true },
+      { erp_sale_id: 2, annulled: false },
+      { erp_sale_id: 3, annulled: false },
+    ]);
+    const client = {} as Client;
+
+    const result = await removeSalesNotInUpload(client, 'upload-1', {
+      from: new Date(Date.UTC(2026, 8, 1)),
+      to: new Date(Date.UTC(2026, 8, 30)),
+    });
+
+    expect(result).toEqual({ annulled: 1, missing: 2 });
+    expect(softDeleteMock).toHaveBeenCalledWith(client, 'upload-1', {
+      start: new Date('2026-09-01T06:00:00.000Z'),
+      end: new Date('2026-10-01T06:00:00.000Z'),
+    });
+  });
+
+  it('without a range only annulments apply: no window is passed', async () => {
+    softDeleteMock.mockResolvedValue([]);
+
+    const result = await removeSalesNotInUpload({} as Client, 'upload-1', { from: null, to: null });
+
+    expect(result).toEqual({ annulled: 0, missing: 0 });
+    expect(softDeleteMock).toHaveBeenCalledWith(expect.anything(), 'upload-1', null);
   });
 });

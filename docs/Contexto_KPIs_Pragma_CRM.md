@@ -251,9 +251,9 @@ GROUP  BY v.cliente_id;
 
 - Devuelve `NULL` si el cliente no tiene ninguna factura de crédito liquidada en la ventana → se pinta `—` y el cliente cae en "Sin categorizar" si se aplica la regla de datos mínimos.
 - **No confundir con "Días promedio de mora"**, que es esta misma cifra menos 60. Son dos indicadores distintos con nombres parecidos; la mora solo tiene sentido restando el plazo.
-- Semántica de los timestamps (no reescribir nunca): `fecha_creacion` se estampa la primera vez que la venta llega con `estado = 2`; `ultimo_pago_en` la primera vez que llega con `estado = 2` **y** `saldop = 0`. Ambos se toman del campo `updated_at` del payload de Efactsoft, **nunca** de la hora de importación.
+- Semántica de los timestamps (no reescribir nunca): `fecha_creacion` se estampa la primera vez que la venta llega con `estado = 2`; `ultimo_pago_en` la primera vez que llega con `estado = 2` **y** `saldop = 0`. `fecha_creacion` se toma de `fecha_emision` del payload de Efactsoft (la conversión de cotización a venta, decisión del 29/09/2026) y `ultimo_pago_en` de `updated_at`; **nunca** de la hora de importación.
 
-> **Advertencia crítica para la clasificación.** Las facturas antiguas llegan en el primer JSON ya con `estado = 2` y `saldop = 0`. Ambos timestamps se estampan con el mismo `updated_at`, y el resultado es **0 días de pago** para todo el histórico. Sin un backfill desde `fecha_emision` del payload, o sin excluir las ventas anteriores a la primera carga, **todos los clientes heredados aparecerán como pagadores perfectos** y el insumo 3 quedará inutilizable durante los primeros meses. Esto no es un detalle de un indicador opcional: corrompe directamente el tercio de la fórmula de categoría.
+> **Advertencia para la clasificación (parcialmente resuelta el 29/09/2026).** Las facturas antiguas llegan en el primer JSON ya con `estado = 2` y `saldop = 0`. Cuando ambos timestamps salían de `updated_at`, el resultado era **0 días de pago** para todo el histórico. Con `fecha_creacion` desde `fecha_emision` eso ya no ocurre, pero `ultimo_pago_en` de esas facturas es su `updated_at` en la primera carga, que puede ser posterior al pago real: los clientes heredados pueden aparecer como **peores** pagadores de lo que son.
 
 ### 5.3 El algoritmo de clasificación no está definido
 

@@ -8,13 +8,17 @@ import {
 } from '../domain/schemas/efactsoft-sale.schema';
 import { ROLES } from '../domain/types/auth.types';
 import {
+  RemovedSalesResult,
   SellerCreated,
   SellerUnmapped,
   SyncResult,
+  UploadRange,
 } from '../domain/types/sales-import.types';
 import { logger } from '../lib/adapters/logger';
 import { ERP_TIMEZONE, parseErpTimestamp } from '../lib/parseErpDate';
 import { Client } from '../lib/prisma';
+import { softDeleteSalesNotInUpload } from '../repositories/sales.repository';
+import { SaleRemovalWindow } from '../repositories/sales/sales.sql';
 import { createPendingSellerAuthUser } from './supabaseAdmin.service';
 
 /**
@@ -47,13 +51,21 @@ import { createPendingSellerAuthUser } from './supabaseAdmin.service';
  * (CLAUDE.md 9.2). `product.erp_product_id` and `sale.erp_sale_id` are plain
  * primary keys, so `upsert` uses Postgres' `ON CONFLICT` directly for those.
  *
- * No `SAVEPOINT` is used inside the batch: this runs inside the same
- * transaction as `stageSalesFile` (see `importSalesFile.use-case.ts`), and a
- * database-level failure (e.g. an unexpected FK violation) aborts the whole
- * transaction rather than just the offending row. In practice this should be
- * rare, because every row already passed the intake schema
+ * No `SAVEPOINT` is used inside a chunk: a database-level failure (e.g. an
+ * unexpected FK violation) aborts that chunk's transaction. Earlier committed
+ * chunks stay applied; upserts on ERP natural keys make a retry safe
+ * (see `importSalesFile.use-case.ts`). In practice mid-chunk failures should
+ * be rare, because every row already passed the intake schema
  * (`efactsoftSaleSchema`) before reaching `sale_staging`.
  */
+
+/**
+ * How many pending staging rows one sync transaction processes.
+ * ~50 × ~14 sequential awaits stays well under Prisma's 120 s TX timeout;
+ * a full month (~350–400 sales) therefore needs several chunk transactions
+ * instead of one monolithic sync (PCRM-168).
+ */
+export const SYNC_CHUNK_SIZE = 50;
 
 const toDecimalInput = (value: string | number | null | undefined): string | null => {
   if (value === null || value === undefined) return null;
@@ -275,16 +287,19 @@ const upsertSale = async (
 ): Promise<{ wasInsert: boolean }> => {
   const existing = await client.sale.findUnique({
     where: { erp_sale_id: venta.id_venta },
-    select: { erp_created_at: true, last_payment_at: true, visit_id: true },
+    select: { erp_created_at: true, last_payment_at: true, visit_id: true, erp_quoted_at: true },
   });
 
-  // Timestamps come from the payload's `updated_at`, never the import time
-  // (CLAUDE.md 5.5 and 5.7). Already validated by efactsoftSaleSchema.
+  // Timestamps come from the payload, never the import time (CLAUDE.md 5.5
+  // and 5.7). Both already validated by efactsoftSaleSchema.
+  // `fecha_emision` is when the quotation became a sale, the date Efactsoft
+  // reports on; `updated_at` moves with every later payment or edit.
+  const issuedAt = parseErpTimestamp(venta.fecha_emision)!;
   const updatedAt = parseErpTimestamp(venta.updated_at)!;
   const balanceIsZero = isZeroBalance(venta.saldop);
 
   // erp_created_at and last_payment_at are stamped once and never overwritten.
-  const erpCreatedAt = existing?.erp_created_at ?? updatedAt;
+  const erpCreatedAt = existing?.erp_created_at ?? issuedAt;
   const lastPaymentAt = existing?.last_payment_at ?? (balanceIsZero ? updatedAt : null);
 
   // visit_id follows the same "stamp once" rule: once a sale is linked to a
@@ -300,6 +315,9 @@ const upsertSale = async (
     visit_id: visitId,
     erp_created_at: erpCreatedAt,
     last_payment_at: lastPaymentAt,
+    // The date Efactsoft filters its export on; only scopes the import
+    // reconciliation. A payload without it keeps what was stored.
+    erp_quoted_at: parseErpTimestamp(venta.created_at) ?? existing?.erp_quoted_at ?? null,
     total: toDecimalInput(venta.total),
     net_total: toDecimalInput(venta.total_neto ?? null),
     vat: toDecimalInput(venta.iva ?? null),
@@ -311,6 +329,9 @@ const upsertSale = async (
     erp_status: venta.estado,
     document: venta.documento ?? null,
     remarks: venta.observaciones ?? null,
+    // A sale removed by an earlier import (annulled or missing from its file)
+    // comes back if a later file carries it again: the file is the truth.
+    deleted_at: null,
     updated_at: new Date(),
   };
 
@@ -349,21 +370,38 @@ const upsertSaleDetail = async (
   });
 };
 
+/** Counts produced by one sync chunk (before upload finalization). */
+export interface SyncChunkResult {
+  inserted: number;
+  updated: number;
+  sync_failed: number;
+  /** True when more `pending` rows remain for this upload_id. */
+  has_more: boolean;
+}
+
 /**
- * Drains every `pending` row of one upload into the live tables.
+ * Processes up to `limit` pending staging rows for one upload.
  *
- * Takes `Client` so it can run inside the same `$transaction` as
- * `stageSalesFile` (CLAUDE.md 8.1).
+ * Does **not** finalize `upload` status — the orchestrator aggregates chunk
+ * counts and calls `finalizeUploadSync` once nothing is left pending.
+ * Takes `Client` so each chunk can run inside its own `$transaction`.
  */
-export const syncStagedSales = async (
+export const syncStagedSalesChunk = async (
   client: Client,
   uploadId: string,
-  provisioning: SellerProvisioning = { created: [], unmapped: [], createdAuthUserIds: [] }
-): Promise<SyncResult> => {
-  const pendingRows = await client.sale_staging.findMany({
+  provisioning: SellerProvisioning,
+  limit: number = SYNC_CHUNK_SIZE
+): Promise<SyncChunkResult> => {
+  // Fetch one extra row so we know whether another chunk is needed without a
+  // separate COUNT round-trip.
+  const fetched = await client.sale_staging.findMany({
     where: { upload_id: uploadId, status: 'pending' },
     orderBy: { id: 'asc' },
+    take: limit + 1,
   });
+
+  const has_more = fetched.length > limit;
+  const pendingRows = has_more ? fetched.slice(0, limit) : fetched;
 
   let inserted = 0;
   let updated = 0;
@@ -414,6 +452,32 @@ export const syncStagedSales = async (
     else updated += 1;
   }
 
+  return { inserted, updated, sync_failed: failed, has_more };
+};
+
+/**
+ * Moves an upload from `staged` to `processing` before the sync loop begins,
+ * so the in-progress endpoint can report it while the request is still running
+ * (PCRM-169). The terminal status is still written by `finalizeUploadSync`.
+ */
+export const markUploadProcessing = async (client: Client, uploadId: string): Promise<void> => {
+  await client.upload.update({
+    where: { id: uploadId },
+    data: { status: 'processing', updated_at: new Date() },
+  });
+};
+
+/**
+ * Writes aggregated sync counters onto `upload` and sets its terminal status.
+ * Same rules as the former end of `syncStagedSales` (CLAUDE.md 8.1).
+ */
+export const finalizeUploadSync = async (
+  client: Client,
+  uploadId: string,
+  totals: { inserted: number; updated: number; sync_failed: number }
+): Promise<void> => {
+  const { inserted, updated, sync_failed: failed } = totals;
+
   await client.upload.update({
     where: { id: uploadId },
     data: {
@@ -425,6 +489,87 @@ export const syncStagedSales = async (
       status: failed > 0 && inserted + updated === 0 ? 'failed' : 'completed',
       updated_at: new Date(),
     },
+  });
+};
+
+/**
+ * Turns an import range — UTC-midnight `date` values holding Salvadoran
+ * calendar days (see `parseErpDateOnly`) — into instant bounds `[start, end)`
+ * that cover both days whole, so a sale booked after 6 p.m. on the last day
+ * still falls inside (CLAUDE.md 5.7). Null when the range is empty.
+ */
+export const getRangeRemovalWindow = (range: UploadRange): SaleRemovalWindow | null => {
+  if (!range.from || !range.to) return null;
+
+  const dayStart = (day: Date) =>
+    DateTime.fromObject(
+      { year: day.getUTCFullYear(), month: day.getUTCMonth() + 1, day: day.getUTCDate() },
+      { zone: ERP_TIMEZONE }
+    ).startOf('day');
+
+  return {
+    start: dayStart(range.from).toJSDate(),
+    end: dayStart(range.to).plus({ days: 1 }).toJSDate(),
+  };
+};
+
+/**
+ * Leaves the CRM matching the imported file: soft-deletes the sales the file
+ * annulled (`estado = 3`) and those inside its export range that it no
+ * longer carries. Limited to the range on purpose, so a partial export never
+ * wipes the history outside it.
+ *
+ * `exportRange` is the `created_at` range (`StagingResult.export_range`),
+ * compared against `sale.erp_quoted_at`: Efactsoft filters its export on
+ * that date, not on `fecha_emision`, which lags it by days.
+ *
+ * Must run after every chunk committed and in the same transaction as
+ * `finalizeUploadSync`: if any step of the import throws first, nothing is
+ * removed. Soft delete, like the rest of the model (CLAUDE.md 5.9); every
+ * read of `sale` already filters `deleted_at IS NULL`.
+ */
+export const removeSalesNotInUpload = async (
+  client: Client,
+  uploadId: string,
+  exportRange: UploadRange
+): Promise<RemovedSalesResult> => {
+  const removed = await softDeleteSalesNotInUpload(
+    client,
+    uploadId,
+    getRangeRemovalWindow(exportRange)
+  );
+
+  const annulled = removed.filter((row) => row.annulled).length;
+  return { annulled, missing: removed.length - annulled };
+};
+
+/**
+ * Drains every `pending` row of one upload into the live tables on a single
+ * `Client` (one transaction when the caller wraps it). Large imports should
+ * prefer the chunked orchestration in `importSalesFile` instead.
+ */
+export const syncStagedSales = async (
+  client: Client,
+  uploadId: string,
+  provisioning: SellerProvisioning = { created: [], unmapped: [], createdAuthUserIds: [] }
+): Promise<SyncResult> => {
+  let inserted = 0;
+  let updated = 0;
+  let failed = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const chunk = await syncStagedSalesChunk(client, uploadId, provisioning, SYNC_CHUNK_SIZE);
+    inserted += chunk.inserted;
+    updated += chunk.updated;
+    failed += chunk.sync_failed;
+    hasMore = chunk.has_more;
+  }
+
+  await finalizeUploadSync(client, uploadId, {
+    inserted,
+    updated,
+    sync_failed: failed,
   });
 
   return {

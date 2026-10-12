@@ -115,6 +115,22 @@ export const metricsKpiParamsSchema = z.object({
 });
 export type MetricsKpiParams = z.infer<typeof metricsKpiParamsSchema>;
 
+/** Rows the product ranking returns when `limit` is omitted (PCRM-172). */
+export const PRODUCT_RANKING_DEFAULT_LIMIT = 50;
+export const PRODUCT_RANKING_MAX_LIMIT = 500;
+
+const productsFields = rangeFields.extend({
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(PRODUCT_RANKING_MAX_LIMIT)
+    .default(PRODUCT_RANKING_DEFAULT_LIMIT),
+});
+
+export const metricsProductsQuerySchema = withRangeChecks(productsFields);
+export type MetricsProductsQuery = z.infer<typeof productsFields>;
+
 export const TREND_GRANULARITIES = ['week', 'month'] as const;
 export type TrendGranularity = (typeof TREND_GRANULARITIES)[number];
 

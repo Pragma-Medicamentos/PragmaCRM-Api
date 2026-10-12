@@ -79,9 +79,9 @@ export const efactsoftSaleHeaderSchema = z
     // 1 = quotation, 2 = completed sale (CLAUDE.md 5.5)
     estado: z.number({ message: 'the sale has no status' }).int(),
 
-    // Source of erp_created_at and last_payment_at. NEVER the import time.
+    // Source of last_payment_at. NEVER the import time.
     updated_at: erpTimestamp,
-    // Actual invoice date, used for the batch range.
+    // Quotation-to-sale conversion: source of erp_created_at and the batch range.
     fecha_emision: erpTimestamp,
     created_at: erpTimestamp.optional(),
 

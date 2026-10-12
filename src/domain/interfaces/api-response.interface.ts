@@ -21,4 +21,5 @@ export interface ApiResponse<T = unknown> {
   message: string;
   data?: T;
   errors?: ValidationError[];
+  code?: string; // Stable machine-readable error code for client to translate
 }

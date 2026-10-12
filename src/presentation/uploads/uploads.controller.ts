@@ -1,7 +1,9 @@
 import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
 import { logger } from '../../lib/adapters/logger';
+import { prisma } from '../../lib/prisma';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
+import { getImportInProgress } from '../../services/uploads.service';
 import { importSalesFile, ImportSalesResult } from '../../use-cases/importSalesFile.use-case';
 
 /** Date to `YYYY-MM-DD`, which is how the frontend expects a day range. */
@@ -20,7 +22,12 @@ const buildMessage = (result: ImportSalesResult): string => {
     created_count > 0
       ? ` ${created_count} new ${created_count === 1 ? 'seller' : 'sellers'} created (disabled, pending admin activation).`
       : '';
-  return `${base}, ${rejectedPart}. ${syncPart}.${sellersPart}`;
+  const removedCount = result.removed.annulled + result.removed.missing;
+  const removedPart =
+    removedCount > 0
+      ? ` ${removedCount} ${removedCount === 1 ? 'sale' : 'sales'} removed (${result.removed.annulled} annulled, ${result.removed.missing} no longer in the ERP).`
+      : '';
+  return `${base}, ${rejectedPart}. ${syncPart}.${removedPart}${sellersPart}`;
 };
 
 export class UploadsController {
@@ -45,6 +52,8 @@ export class UploadsController {
         inserted: result.inserted,
         updated: result.updated,
         sync_failed: result.sync_failed,
+        removed_annulled: result.removed.annulled,
+        removed_missing: result.removed.missing,
         sellers_created: result.sellers.created_count,
         sellers_unmapped: result.sellers.unmapped.length,
         request_id: res.getHeader('X-Request-ID'),
@@ -61,10 +70,15 @@ export class UploadsController {
           inserted: result.inserted,
           updated: result.updated,
           sync_failed: result.sync_failed,
+          removed: result.removed,
           sellers: result.sellers,
           range: {
             from: toIsoDate(result.range.from),
             to: toIsoDate(result.range.to),
+          },
+          export_range: {
+            from: toIsoDate(result.export_range.from),
+            to: toIsoDate(result.export_range.to),
           },
           rejections: result.rejections,
           rejections_truncated: result.rejections_truncated,
@@ -75,6 +89,27 @@ export class UploadsController {
       res.status(201).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'UploadsController.importSales');
+    }
+  }
+
+  // GET /api/v1/uploads/sales/in-progress
+  // Lets the dashboard show a running import to an admin who closed the tab
+  // that started it (PCRM-169): the POST keeps writing regardless.
+  public async salesImportInProgress(_req: Request, res: Response) {
+    try {
+      const status = await getImportInProgress(prisma);
+
+      const response: ApiResponse = {
+        success: true,
+        message: status.in_progress
+          ? 'A sales import is in progress.'
+          : 'No sales import is in progress.',
+        data: status,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'UploadsController.salesImportInProgress');
     }
   }
 }
