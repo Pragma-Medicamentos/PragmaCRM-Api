@@ -21,6 +21,7 @@ Código: `src/services/metrics.service.ts` (orquestación y mapeo), `src/reposit
 | `to` | `YYYY-MM-DD` | último día del mes de `from` | Inclusivo. Máximo 366 días de rango |
 | `inactivity_days` | entero 1–365 | `INACTIVITY_THRESHOLD_DAYS` (30) | Sobrescribe el umbral solo para esa petición |
 | `names` | lista separada por coma | todas | **Solo en `/kpis/values`.** Ver endpoint 1 |
+| `limit` | entero 1–500 | `50` | **Solo en `/products`.** Filas del ranking. Ver endpoint 7 |
 
 Errores de validación → `400` con `errors[].field` (`from` si `from > to`, `to` si el rango excede 366 días).
 
@@ -247,6 +248,37 @@ Los buckets sin actividad llegan en cero, así que el gráfico no tiene huecos. 
 ```
 
 `insufficient_data`: clientes que compraron en el período pero no tienen una compra anterior con la cual comparar.
+
+### 7. `GET /products` — ranking "Productos más vendidos" (PCRM-172)
+
+Productos ordenados por monto vendido en el período. Misma regla de venta confirmada que el resto del panel: `sale.deleted_at IS NULL`, `sale.erp_status = 2` y la línea se fecha por `sale.erp_created_at` (CLAUDE.md 5.5), no por la fecha de la línea.
+
+```json
+{
+  "period": { "...": "..." }, "thresholds": { "...": "..." },
+  "products": [
+    { "position": 1, "product_id": 42, "code": "ABC-1", "name": "Producto X",
+      "amount": "1500.00", "units": "120.0000" }
+  ],
+  "total_amount": "5000.00"
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `position` | 1 en adelante, por `amount` descendente; los empates se rompen por `product_id` ascendente, así que el orden es estable entre peticiones |
+| `product_id` | `product.erp_product_id`, la PK natural del ERP (entero) |
+| `code` | `product.code`. Puede ser `null` |
+| `amount` | `SUM(sale_detail.total)` del producto en el período, IVA incluido (decisión D-1). String de dos decimales, como todo el dinero |
+| `units` | `SUM(sale_detail.quantity × COALESCE(sale_detail.factor, 1))`, en la unidad base del producto (la de factor 1). `quantity` viene en la unidad de medida de cada línea: el mismo producto se vende por UNIDAD y por DOCENA (factor 12). String con hasta 4 decimales |
+| `total_amount` | Monto de **todos** los productos con venta en el período, **antes** de aplicar `limit`. Permite mostrar "top 50 de un total de $X" |
+
+- `limit` recorta las filas devueltas, nunca `total_amount`.
+- Solo aparecen productos con al menos una línea de venta confirmada en el rango: no hay filas en cero.
+- Se excluyen las líneas huérfanas (`sale_detail.product_id IS NULL`) y los productos con `deleted_at`, porque no tienen fila de catálogo con la que nombrarlos. Quedan fuera también de `total_amount`.
+- Sin ventas en el período: `products: []` y `total_amount: "0.00"`.
+
+**Fuera de alcance de PCRM-172** (no pedir todavía): ABC, participación, penetración, productos sin movimiento, detalle por producto, margen e inventario.
 
 ---
 

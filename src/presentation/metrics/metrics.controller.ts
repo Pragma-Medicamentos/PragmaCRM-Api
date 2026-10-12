@@ -5,6 +5,7 @@ import { prisma } from '../../lib/prisma';
 import {
   MetricsKpiParams,
   MetricsKpiValuesQuery,
+  MetricsProductsQuery,
   MetricsRangeQuery,
   MetricsSellerParams,
   MetricsTrendsQuery,
@@ -14,6 +15,7 @@ import {
   MetricsKpiCatalogResponse,
   MetricsKpiResponse,
   MetricsKpiValuesResponse,
+  MetricsProductsResponse,
   MetricsPurchaseFrequencyResponse,
   MetricsSellerDetailResponse,
   MetricsSellersResponse,
@@ -23,6 +25,7 @@ import {
   getKpi,
   getKpiValues,
   getCoverage,
+  getProductRanking,
   getPurchaseFrequency,
   getSellerDetail,
   getTrends,
@@ -146,6 +149,23 @@ export class MetricsController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'MetricsController.coverage');
+    }
+  }
+
+  /** Product sales ranking (PCRM-172). */
+  public async products(req: Request, res: Response) {
+    try {
+      const query = req.query as unknown as MetricsProductsQuery;
+      const data = await getProductRanking(prisma, query);
+
+      const response: ApiResponse<MetricsProductsResponse> = {
+        success: true,
+        message: 'Product sales ranking retrieved successfully',
+        data,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'MetricsController.products');
     }
   }
 

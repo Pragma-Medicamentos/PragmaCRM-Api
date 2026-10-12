@@ -85,13 +85,20 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
       accepted: 0,
       rejected: 0,
       range: { from: null, to: null },
+      export_range: { from: null, to: null },
       rejections: [],
       rejections_truncated: 0,
-      warnings: { sales_without_customer: 0, sales_without_user: 0, quotations_skipped: 0 },
+      warnings: {
+        sales_without_customer: 0,
+        sales_without_user: 0,
+        quotations_skipped: 0,
+        annulled_sales: 0,
+      },
       processed: 0,
       inserted: 0,
       updated: 0,
       sync_failed: 0,
+      removed: { annulled: 0, missing: 0 },
       sellers: { created_count: 0, created: [], unmapped: [] },
     });
     const small = Buffer.from(JSON.stringify([]), 'utf-8');
