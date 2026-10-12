@@ -97,8 +97,9 @@ export class Server {
     //* (EADDRINUSE, for instance), so the caller decides what to do instead of
     //* the failure surfacing as an uncaught 'error' event.
     await new Promise<void>((resolve, reject) => {
-      const listener = this.app.listen(this.port, () => {
-        logger.info(`Server running on port ${this.port}`);
+      // Explicit IPv4 wildcard: Fly's proxy reaches the machine over its IPv4 interface.
+      const listener = this.app.listen(this.port, '0.0.0.0', () => {
+        logger.info(`Server running on 0.0.0.0:${this.port}`);
         resolve();
       });
 
