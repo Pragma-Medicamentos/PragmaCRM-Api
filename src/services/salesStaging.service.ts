@@ -1,3 +1,4 @@
+import { ERP_STATUS_ANNULLED } from '../domain/constants/businessRules';
 import { CustomError } from '../domain/errors/CustomError';
 import { efactsoftSaleSchema, formatZodIssues } from '../domain/schemas/efactsoft-sale.schema';
 import {
@@ -42,15 +43,29 @@ interface StagingRow {
   error: string | null;
 }
 
-/** Reads `venta.id_venta` from an entry without trusting its shape. */
-const readErpSaleId = (item: unknown): number | null => {
+/** Reads an integer field of `venta` from an entry without trusting its shape. */
+const readVentaInt = (item: unknown, field: 'id_venta' | 'estado'): number | null => {
   if (typeof item !== 'object' || item === null) return null;
 
   const venta = (item as { venta?: unknown }).venta;
   if (typeof venta !== 'object' || venta === null) return null;
 
-  const id = (venta as { id_venta?: unknown }).id_venta;
-  return typeof id === 'number' && Number.isInteger(id) ? id : null;
+  const value = (venta as Record<string, unknown>)[field];
+  return typeof value === 'number' && Number.isInteger(value) ? value : null;
+};
+
+const readErpSaleId = (item: unknown): number | null => readVentaInt(item, 'id_venta');
+
+/** Reads `venta.created_at` without trusting its shape. */
+const readCreatedAt = (item: unknown): unknown =>
+  typeof item === 'object' && item !== null
+    ? ((item as { venta?: { created_at?: unknown } }).venta ?? {}).created_at
+    : undefined;
+
+const widen = (range: UploadRange, day: Date | null): void => {
+  if (!day) return;
+  if (!range.from || day < range.from) range.from = day;
+  if (!range.to || day > range.to) range.to = day;
 };
 
 /** Turns the uploaded buffer into the array of sales, or fails explaining why. */
@@ -95,11 +110,17 @@ const buildStagingRows = (items: unknown[]) => {
   let salesWithoutCustomer = 0;
   let salesWithoutUser = 0;
   let quotationsSkipped = 0;
+  let annulledSales = 0;
   let rangeFrom: Date | null = null;
   let rangeTo: Date | null = null;
+  const exportRange: UploadRange = { from: null, to: null };
 
   items.forEach((item, index) => {
     const erpSaleId = readErpSaleId(item);
+
+    // Every entry counts, whatever happens to it below: all of them passed
+    // the export filter, which is on created_at.
+    widen(exportRange, parseErpDateOnly(readCreatedAt(item)));
 
     const reject = (reason: string) => {
       rejections.push({ index, erp_sale_id: erpSaleId, reason });
@@ -113,6 +134,23 @@ const buildStagingRows = (items: unknown[]) => {
         error: reason,
       });
     };
+
+    // Annulled sales (estado 3) are recognized before the full schema runs:
+    // only the id is needed to remove them, and an annulled document must not
+    // survive in the CRM just because the ERP left it with incomplete data.
+    // Its fecha_emision does NOT widen `range`: that range describes the
+    // invoices loaded. Its created_at already widened `export_range` above.
+    if (erpSaleId !== null && readVentaInt(item, 'estado') === ERP_STATUS_ANNULLED) {
+      if (seenSaleIds.has(erpSaleId)) {
+        reject(`venta.id_venta: ${erpSaleId} appears more than once in the file`);
+        return;
+      }
+      seenSaleIds.add(erpSaleId);
+
+      annulledSales += 1;
+      rows.push({ erp_sale_id: erpSaleId, payload: item as object, status: 'annulled', error: null });
+      return;
+    }
 
     const result = efactsoftSaleSchema.safeParse(item);
     if (!result.success) {
@@ -164,9 +202,11 @@ const buildStagingRows = (items: unknown[]) => {
     rejections,
     accepted,
     range,
+    exportRange,
     salesWithoutCustomer,
     salesWithoutUser,
     quotationsSkipped,
+    annulledSales,
   };
 };
 
@@ -183,13 +223,23 @@ export const stageSalesFile = async (
 ): Promise<StagingResult> => {
   const items = parseFile(fileBuffer);
 
-  const { rows, rejections, accepted, range, salesWithoutCustomer, salesWithoutUser, quotationsSkipped } =
-    buildStagingRows(items);
+  const {
+    rows,
+    rejections,
+    accepted,
+    range,
+    exportRange,
+    salesWithoutCustomer,
+    salesWithoutUser,
+    quotationsSkipped,
+    annulledSales,
+  } = buildStagingRows(items);
 
   // If not a single sale survived, the file is most likely not the sales
   // export. Bail out without creating the `upload` so the load history does
-  // not fill up with empty batches.
-  if (accepted === 0) {
+  // not fill up with empty batches. A file of annulments only is still a
+  // valid batch: it has sales to remove.
+  if (accepted === 0 && annulledSales === 0) {
     if (quotationsSkipped > 0 && rejections.length === 0) {
       throw CustomError.unprocessable(
         'The file only contains quotations (estado 1); there are no confirmed sales to import.'
@@ -229,12 +279,14 @@ export const stageSalesFile = async (
     accepted,
     rejected: rejections.length,
     range,
+    export_range: exportRange,
     rejections: rejections.slice(0, MAX_REJECTIONS_IN_RESPONSE),
     rejections_truncated: Math.max(0, rejections.length - MAX_REJECTIONS_IN_RESPONSE),
     warnings: {
       sales_without_customer: salesWithoutCustomer,
       sales_without_user: salesWithoutUser,
       quotations_skipped: quotationsSkipped,
+      annulled_sales: annulledSales,
     },
   };
 };

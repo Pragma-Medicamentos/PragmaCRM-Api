@@ -14,6 +14,12 @@
 export const ERP_STATUS_SALE = 2;
 
 /**
+ * An annulled sale. It is removed from the CRM on import (soft delete), even
+ * when it falls outside the batch range: the ERP says it no longer exists.
+ */
+export const ERP_STATUS_ANNULLED = 3;
+
+/**
  * Cash sales, excluded from collections and from the payment-days input:
  * they are born with a zero balance and would read as instant payers.
  *

@@ -317,6 +317,7 @@ Nombres reales entre paréntesis.
 - Ninguno de los dos sale **nunca de la hora de importación**.
 - **Por qué `fecha_emision` y no `updated_at` (decidido por el equipo el 29/09/2026).** El vendedor crea la cotización (estado 1, con su `created_at`) días antes, y solo la convierte a venta el día que se despacha: esa conversión es `fecha_emision`, la fecha con la que reporta Efactsoft. `updated_at` se mueve con cada abono o edición posterior, así que un crédito pagado semanas después se contaba en el mes del pago. Con la carga de septiembre de 2026 el CRM mostraba $128,686 contra $65,263.96 de Efactsoft; con `fecha_emision` cuadra exacto. Las ventas cargadas antes del cambio se corrigieron con un script manual en local y staging, releyendo `fecha_emision` desde `sale_staging.payload`; producción arranca ya con la regla nueva.
 - **`pending_balance`** (el `saldop` del ERP) **sí se sobrescribe** en cada carga. Por eso existe `balance_snapshot`, que conserva el histórico de saldos por corte.
+- **Reconciliación al importar (11/10/2026).** Las ventas que están en el CRM y no vienen en el JSON se eliminan (soft delete), **limitado al rango de `venta.created_at` del archivo**, porque Efactsoft filtra su exportación por esa fecha y no por `fecha_emision`. La comparación usa **`sale.erp_quoted_at`** (el `created_at` del payload), columna agregada para esto y **ausente del DER**. Las ventas con **`estado = 3` (anuladas)** se eliminan por ID, sin importar su fecha. Todo ocurre en la última transacción de la importación: si algo falla antes, no se borra nada. Una venta eliminada que reaparece en un JSON posterior se reactiva. `erp_quoted_at` **no se usa para métricas**.
 
 ### 5.6 Crédito y cobranza
 
@@ -419,7 +420,8 @@ El importador extrae y hace upsert de esas entidades desde ahí.
 | `id_venta` | PK natural → `sale.erp_sale_id` |
 | `fecha_emision` | Conversión de cotización a venta = fecha real de la factura. Fuente de `erp_created_at` (ver 5.5) |
 | `updated_at` | Última modificación. Fuente de `last_payment_at`. **Nunca la hora de importación** |
-| `estado` | 1 = cotización, 2 = venta realizada → `sale.erp_status` |
+| `created_at` | Creación de la cotización. Fuente de `erp_quoted_at` y del rango de reconciliación (ver 5.5) |
+| `estado` | 1 = cotización, 2 = venta realizada, 3 = anulada (se elimina del CRM) → `sale.erp_status` |
 | `saldop` | Saldo pendiente → `sale.pending_balance`. Se sobrescribe en cada carga |
 | `pago`, `id_pago` | Texto libre → `sale.payment` / `sale.payment_id`. Base del criterio para identificar ventas de contado |
 | `id_cliente`, `id_usuario` | Vínculos con `customer.erp_customer_id` y `app_user.erp_user_id` |
@@ -609,6 +611,7 @@ sale
   FK  visit_id         uuid -> visit.id   -- única vía de atribución a ruta (ver 5.4)
       erp_created_at   timestamptz        -- ver 5.5
       last_payment_at  timestamptz        -- ver 5.5
+      erp_quoted_at    timestamptz        -- venta.created_at; solo para la reconciliación (5.5). No está en el DER
       total / net_total / vat  numeric(14,2)
       pending_balance  numeric(14,2)      -- se sobrescribe en cada carga
       payment          text

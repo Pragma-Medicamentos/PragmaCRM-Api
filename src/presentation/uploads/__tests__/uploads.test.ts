@@ -50,13 +50,23 @@ const stagingResult = (overrides: Partial<ImportSalesResult> = {}): ImportSalesR
   accepted: 2,
   rejected: 0,
   range: { from: new Date('2026-08-08T00:00:00.000Z'), to: new Date('2026-09-05T00:00:00.000Z') },
+  export_range: {
+    from: new Date('2026-08-04T00:00:00.000Z'),
+    to: new Date('2026-09-05T00:00:00.000Z'),
+  },
   rejections: [],
   rejections_truncated: 0,
-  warnings: { sales_without_customer: 0, sales_without_user: 0, quotations_skipped: 0 },
+  warnings: {
+    sales_without_customer: 0,
+    sales_without_user: 0,
+    quotations_skipped: 0,
+    annulled_sales: 0,
+  },
   processed: 2,
   inserted: 2,
   updated: 0,
   sync_failed: 0,
+  removed: { annulled: 0, missing: 0 },
   sellers: { created_count: 0, created: [], unmapped: [] },
   ...overrides,
 });
@@ -79,6 +89,7 @@ describe('POST /api/v1/uploads/sales', () => {
         accepted: 2,
         rejected: 0,
         range: { from: '2026-08-08', to: '2026-09-05' },
+        export_range: { from: '2026-08-04', to: '2026-09-05' },
         warnings: { sales_without_customer: 0, sales_without_user: 0 },
       },
     });
@@ -114,6 +125,17 @@ describe('POST /api/v1/uploads/sales', () => {
     expect(res.body.data.rejections).toEqual([
       { index: 1, erp_sale_id: 4790, reason: 'venta.id_venta: required' },
     ]);
+  });
+
+  it('reports the sales removed by the import', async () => {
+    importSalesFileMock.mockResolvedValue(stagingResult({ removed: { annulled: 1, missing: 2 } }));
+
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('file', validFile, 'sales.json');
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.removed).toEqual({ annulled: 1, missing: 2 });
+    expect(res.body.message).toContain('3 sales removed (1 annulled, 2 no longer in the ERP)');
   });
 
   it('returns a null range when there are no dates', async () => {

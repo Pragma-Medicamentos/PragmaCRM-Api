@@ -1,5 +1,9 @@
 import { CustomError } from '../domain/errors/CustomError';
-import { StagingResult, SyncResult } from '../domain/types/sales-import.types';
+import {
+  RemovedSalesResult,
+  StagingResult,
+  SyncResult,
+} from '../domain/types/sales-import.types';
 import { Client, prisma } from '../lib/prisma';
 import { logger } from '../lib/adapters/logger';
 import { tryAcquireImportLock } from '../repositories/uploads.repository';
@@ -9,6 +13,7 @@ import {
   SYNC_CHUNK_SIZE,
   finalizeUploadSync,
   markUploadProcessing,
+  removeSalesNotInUpload,
   syncStagedSalesChunk,
 } from '../services/salesSync.service';
 import { stageSalesFile } from '../services/salesStaging.service';
@@ -22,7 +27,7 @@ import { stageSalesFile } from '../services/salesStaging.service';
  * file (~350–400 sales) cannot hit Prisma's 120 s timeout (PCRM-168).
  */
 
-export type ImportSalesResult = StagingResult & SyncResult;
+export type ImportSalesResult = StagingResult & SyncResult & { removed: RemovedSalesResult };
 
 /**
  * Transaction headroom per stage / sync-chunk TX. Prisma defaults to 5 s.
@@ -137,12 +142,14 @@ const runImport = async (
     hasMore = chunk.has_more;
   }
 
-  // Finalize upload status once nothing is left pending.
-  await prisma.$transaction(
-    async (tx: Client) =>
-      finalizeUploadSync(tx, result.upload_id, { inserted, updated, sync_failed }),
-    txOptions
-  );
+  // STEP 3 — Remove what the file no longer carries, and finalize, in one
+  // transaction. Removal runs last on purpose: if staging or any chunk threw,
+  // the import never gets here and nothing is deleted.
+  const removed = await prisma.$transaction(async (tx: Client) => {
+    const removedSales = await removeSalesNotInUpload(tx, result.upload_id, result.export_range);
+    await finalizeUploadSync(tx, result.upload_id, { inserted, updated, sync_failed });
+    return removedSales;
+  }, txOptions);
 
   return {
     ...result,
@@ -150,6 +157,7 @@ const runImport = async (
     inserted,
     updated,
     sync_failed,
+    removed,
     sellers: {
       created_count: provisioning.created.length,
       created: provisioning.created,

@@ -425,3 +425,115 @@ describe('sellers found in the payload', () => {
     expect(linked.user_id).toBe(existing.id);
   });
 });
+
+describe('reconciliation: the CRM mirrors the file within its range', () => {
+  // Each test uses its own day in 2027 so the range of one upload never
+  // reaches the sales of another test.
+  // `day` is yyyy-MM-dd; created_at travels as dd/MM/yyyy, like the real export.
+  const erpDay = (day: string) => day.split('-').reverse().join('/');
+
+  /** Created and emitted the same day unless `emittedOn` says otherwise. */
+  const onDay = (
+    id: number,
+    day: string,
+    overrides: Record<string, unknown> = {},
+    emittedOn: string = day
+  ) =>
+    sale(id, {
+      created_at: `${erpDay(day)} 09:00:00`,
+      fecha_emision: `${emittedOn} 10:00:00`,
+      ...overrides,
+    });
+
+  const isLive = async (erpSaleId: number) =>
+    (await prisma.sale.findUniqueOrThrow({ where: { erp_sale_id: erpSaleId } })).deleted_at === null;
+
+  it('soft-deletes a sale in the range that the new file no longer carries, without duplicating the rest', async () => {
+    const day = '2027-01-15';
+    await upload(toBuffer([onDay(900_101, day), onDay(900_102, day), onDay(900_103, day)]));
+
+    const res = await upload(toBuffer([onDay(900_101, day), onDay(900_103, day)]));
+
+    expect(res.status).toBe(201);
+    expect(res.body.data).toMatchObject({ inserted: 0, updated: 2, removed: { annulled: 0, missing: 1 } });
+    expect(await isLive(900_101)).toBe(true);
+    expect(await isLive(900_102)).toBe(false);
+    expect(await isLive(900_103)).toBe(true);
+    expect(await prisma.sale.count({ where: { erp_sale_id: { in: [900_101, 900_103] } } })).toBe(2);
+  });
+
+  it('does not touch sales outside the range of the file', async () => {
+    await upload(toBuffer([onDay(900_111, '2027-01-10')]));
+
+    const res = await upload(toBuffer([onDay(900_112, '2027-01-20')]));
+
+    expect(res.body.data.removed).toEqual({ annulled: 0, missing: 0 });
+    expect(await isLive(900_111)).toBe(true);
+  });
+
+  it('keeps a sale whose entry was rejected at intake: a dirty record is not an absence', async () => {
+    const day = '2027-01-22';
+    await upload(toBuffer([onDay(900_121, day), onDay(900_122, day)]));
+
+    const dirty = { venta: { id_venta: 900_122 }, detalle: [] };
+    const res = await upload(toBuffer([onDay(900_121, day), dirty]));
+
+    expect(res.body.data).toMatchObject({ rejected: 1, removed: { annulled: 0, missing: 0 } });
+    expect(await isLive(900_122)).toBe(true);
+  });
+
+  it('soft-deletes an annulled sale (estado 3), even outside the range', async () => {
+    await upload(toBuffer([onDay(900_131, '2027-01-05')]));
+
+    // No dates on the annulment: it is removed by id, so it does not need to
+    // fall in the export range (and it does not widen it).
+    const annulled = { venta: { id_venta: 900_131, estado: 3 }, detalle: [] };
+    const res = await upload(toBuffer([onDay(900_132, '2027-01-25'), annulled]));
+
+    expect(res.body.data).toMatchObject({
+      accepted: 1,
+      warnings: { annulled_sales: 1 },
+      removed: { annulled: 1, missing: 0 },
+    });
+    expect(await isLive(900_131)).toBe(false);
+
+    const staged = await prisma.sale_staging.findFirstOrThrow({
+      where: { upload_id: res.body.data.upload_id as string, erp_sale_id: 900_131 },
+    });
+    expect(staged.status).toBe('annulled');
+  });
+
+  it('scopes the range by created_at: a sale created before the export but emitted inside it stays', async () => {
+    // Quoted on 27/02, emitted on 02/03: the March export (by created_at)
+    // does not carry it, though its fecha_emision falls in March.
+    await upload(toBuffer([onDay(900_151, '2027-02-27', {}, '2027-03-02')]));
+
+    const res = await upload(toBuffer([onDay(900_152, '2027-03-01', {}, '2027-03-02')]));
+
+    expect(res.body.data.export_range).toEqual({ from: '2027-03-01', to: '2027-03-01' });
+    expect(res.body.data.removed).toEqual({ annulled: 0, missing: 0 });
+    expect(await isLive(900_151)).toBe(true);
+  });
+
+  it('removes nothing as missing when the file carries no created_at', async () => {
+    const day = '2027-02-10';
+    await upload(toBuffer([onDay(900_161, day), onDay(900_162, day)]));
+
+    const res = await upload(toBuffer([sale(900_161, { fecha_emision: `${day} 10:00:00` })]));
+
+    expect(res.body.data.removed).toEqual({ annulled: 0, missing: 0 });
+    expect(await isLive(900_162)).toBe(true);
+  });
+
+  it('restores a removed sale when a later file carries it again', async () => {
+    const day = '2027-01-28';
+    await upload(toBuffer([onDay(900_141, day), onDay(900_142, day)]));
+    await upload(toBuffer([onDay(900_141, day)]));
+    expect(await isLive(900_142)).toBe(false);
+
+    const res = await upload(toBuffer([onDay(900_141, day), onDay(900_142, day)]));
+
+    expect(res.body.data).toMatchObject({ inserted: 0, updated: 2 });
+    expect(await isLive(900_142)).toBe(true);
+  });
+});
