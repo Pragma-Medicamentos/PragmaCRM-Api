@@ -13,6 +13,7 @@ import { MetricsRoutes } from './metrics/routes';
 import { ProspectsRoutes } from './prospects/routes';
 import { ReportsRoutes } from './reports/routes';
 import { SellerDailyRouteRoutes } from './seller-daily-route/routes';
+import { ExecutedRoutesRoutes } from './executed-routes/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
 import { ROLES } from '../domain/types/auth.types';
@@ -100,6 +101,15 @@ export class AppRoutes {
       requireAuth,
       requireRole(ROLES.ADMIN),
       RoutesRoutes.routes
+    );
+
+    // HU-08: history of executed routes (check-in GPS + note per stop),
+    // filtered by date and seller. Admin only: it supervises the whole team.
+    router.use(
+      '/api/v1/executed-routes',
+      requireAuth,
+      requireRole(ROLES.ADMIN),
+      ExecutedRoutesRoutes.routes
     );
 
     // RF-06: stop confirmation with GPS. Only the Vendedor executes stops.
