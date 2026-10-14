@@ -57,6 +57,8 @@ export class Server {
       cors({
         origin: corsOrigins(),
         credentials: true,
+        // Lets the dashboard read the file name of a report download.
+        exposedHeaders: ['Content-Disposition'],
       })
     );
     this.app.use(express.json({ limit: '1mb' }));

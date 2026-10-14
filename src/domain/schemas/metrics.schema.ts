@@ -21,7 +21,7 @@ const localDay = z.iso.date('Expected a date in YYYY-MM-DD format');
  * the default can be changed without a deploy; the value actually used is
  * echoed back in `thresholds`.
  */
-const rangeFields = z.object({
+export const rangeFields = z.object({
   from: localDay.optional(),
   to: localDay.optional(),
   inactivity_days: z.coerce.number().int().min(1).max(365).optional(),
@@ -29,7 +29,7 @@ const rangeFields = z.object({
 
 type RangeShape = { from?: string; to?: string };
 
-const withRangeChecks = <T extends z.ZodType<RangeShape>>(schema: T) =>
+export const withRangeChecks = <T extends z.ZodType<RangeShape>>(schema: T) =>
   schema
     // ISO dates compare correctly as strings.
     .refine((data) => !data.from || !data.to || data.from <= data.to, {
@@ -100,7 +100,7 @@ const kpiSelection = z
       .min(1, 'Select at least one KPI')
   );
 
-const kpiValuesFields = rangeFields.extend({
+export const kpiValuesFields = rangeFields.extend({
   names: kpiSelection.optional(),
 });
 
@@ -120,7 +120,7 @@ export type MetricsKpiParams = z.infer<typeof metricsKpiParamsSchema>;
 export const PRODUCT_RANKING_DEFAULT_LIMIT = 50;
 export const PRODUCT_RANKING_MAX_LIMIT = 500;
 
-const productsFields = rangeFields.extend({
+export const productsFields = rangeFields.extend({
   limit: z.coerce
     .number()
     .int()
@@ -141,7 +141,7 @@ export type MetricsProductCustomersQuery = z.infer<typeof productCustomersFields
 export const TREND_GRANULARITIES = ['week', 'month'] as const;
 export type TrendGranularity = (typeof TREND_GRANULARITIES)[number];
 
-const trendsFields = rangeFields.extend({
+export const trendsFields = rangeFields.extend({
   granularity: z.enum(TREND_GRANULARITIES).default('week'),
 });
 
