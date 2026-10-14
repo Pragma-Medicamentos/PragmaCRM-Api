@@ -21,7 +21,7 @@ import {
   getTrends,
   listSellerPerformance,
 } from '../metrics.service';
-import { buildKpisReport } from '../reports/kpis.report';
+import { KPI_LABELS, buildKpisReport } from '../reports/kpis.report';
 import { RenderedReport } from '../../domain/types/report.types';
 
 // The metrics service is the report's only data source; it has its own
@@ -223,11 +223,11 @@ describe('buildKpisReport', () => {
     const definition = buildKpisReport(kpiValues as never, NOW);
     const money = definition.tables.find((table) => table.key === 'KPIs de venta')!;
 
-    const sales = money.rows.find((row) => row.name === 'total_sales')!;
+    const sales = money.rows.find((row) => row.kpi === KPI_LABELS.total_sales)!;
     expect(sales.current).toBe(65263.96);
     expect(sales.change).toBe(8.8);
     // Snapshot KPI: no previous period, so no change either.
-    expect(money.rows.find((row) => row.name === 'overdue_portfolio')!.change).toBeNull();
+    expect(money.rows.find((row) => row.kpi === KPI_LABELS.overdue_portfolio)!.change).toBeNull();
     expect(definition.tables.map((table) => table.key)).toEqual([
       'KPIs de venta',
       'KPIs de conteo',
@@ -242,7 +242,7 @@ describe('buildKpisReport', () => {
 
     expect(definition.notes.some((note) => note.includes('Clientes recuperados'))).toBe(true);
     expect(
-      definition.tables.flatMap((table) => table.rows).some((row) => row.name === 'recovered_customers')
+      definition.tables.flatMap((table) => table.rows).some((row) => row.kpi === KPI_LABELS.recovered_customers)
     ).toBe(false);
   });
 

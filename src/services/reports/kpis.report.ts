@@ -130,7 +130,6 @@ export const buildKpisReport = (
         const previous = has_previous_period ? toNumber(kpi.previous_value, unit) : null;
         return {
           kpi: KPI_LABELS[name],
-          name,
           current,
           previous,
           change: changePercent(current, previous),
@@ -143,7 +142,6 @@ export const buildKpisReport = (
       title: group.title,
       columns: [
         { key: 'kpi', header: 'KPI', type: 'text', width: 42 },
-        { key: 'name', header: 'Clave', type: 'text', width: 26, pdf: false },
         { key: 'current', header: 'Periodo actual', type: group.type, width: 16 },
         { key: 'previous', header: 'Periodo anterior', type: group.type, width: 16 },
         { key: 'change', header: 'Variación', type: 'percent', width: 12 },
