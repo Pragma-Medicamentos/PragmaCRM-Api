@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { paginationQuerySchema } from './pagination.schema';
 
 /** Longest range the panel accepts: one year, leap day included. */
 export const MAX_RANGE_DAYS = 366;
@@ -130,6 +131,12 @@ const productsFields = rangeFields.extend({
 
 export const metricsProductsQuerySchema = withRangeChecks(productsFields);
 export type MetricsProductsQuery = z.infer<typeof productsFields>;
+
+/** GET /products/:id/customers (PCRM-177): the panel's range plus the API's paging. */
+const productCustomersFields = rangeFields.extend(paginationQuerySchema.shape);
+
+export const metricsProductCustomersQuerySchema = withRangeChecks(productCustomersFields);
+export type MetricsProductCustomersQuery = z.infer<typeof productCustomersFields>;
 
 export const TREND_GRANULARITIES = ['week', 'month'] as const;
 export type TrendGranularity = (typeof TREND_GRANULARITIES)[number];

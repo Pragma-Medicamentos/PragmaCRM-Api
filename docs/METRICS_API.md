@@ -4,6 +4,8 @@ Contrato de los endpoints que alimentan el **Resumen** (`1a`) y el **Panel de m�
 
 Código: `src/services/metrics.service.ts` (orquestación y mapeo), `src/repositories/metrics.repository.ts` + `src/repositories/metrics/*.sql.ts` (SQL), `src/presentation/metrics/`, `src/domain/types/metrics.types.ts` (tipos de respuesta, fuente de verdad de los campos).
 
+Las métricas de producto (endpoints 8 a 10) viven aparte, en `src/services/productMetrics.service.ts`, `src/repositories/productMetrics.repository.ts` y `src/domain/types/productMetrics.types.ts`, pero se montan bajo el mismo grupo `/api/v1/metrics` y comparten el query y el bloque de contexto.
+
 ---
 
 ## Convenciones
@@ -22,6 +24,8 @@ Código: `src/services/metrics.service.ts` (orquestación y mapeo), `src/reposit
 | `inactivity_days` | entero 1–365 | `INACTIVITY_THRESHOLD_DAYS` (30) | Sobrescribe el umbral solo para esa petición |
 | `names` | lista separada por coma | todas | **Solo en `/kpis/values`.** Ver endpoint 1 |
 | `limit` | entero 1–500 | `50` | **Solo en `/products`.** Filas del ranking. Ver endpoint 7 |
+
+`/products/:id` y `/products/no-movement` aceptan `from` / `to` igual que el resto del panel; `limit` y `names` no aplican. `/products/:id/customers` acepta además `page` (desde 1) y `limit` (1–100, por defecto 20), la paginación estándar de la API.
 
 Errores de validación → `400` con `errors[].field` (`from` si `from > to`, `to` si el rango excede 366 días).
 
@@ -146,7 +150,7 @@ Cada KPI viene como `{ value, previous_value }`. `previous_value` es la misma KP
 | `orders_count` | "Número de pedidos" | `COUNT(sale)` |
 | `average_ticket` | "Ticket promedio" | `total_sales / orders_count` |
 | `average_monthly_sales` | "Venta prom. mensual" | `total_sales /` meses calendario que toca el rango |
-| `route_effectiveness` | "Efectividad de ruta" | Venta atribuida a ruta (`sale.visit_id → visit.route_user_id`) ÷ jornadas ejecutadas (par ruta-asignada + día local con al menos una visita) |
+| `route_effectiveness` | "Efectividad de ruta" | Venta atribuida a ruta (`sale.visit_id → visit.scheduled_visit_id → scheduled_visit.route_user_id`, la misma regla del endpoint 11) ÷ jornadas ejecutadas (par asignación que generó la parada + día local con al menos una parada ejecutada) |
 | `goal_compliance` | "Cumplimiento de meta" | Venta de los vendedores con meta ÷ suma de sus metas de los meses tocados × 100 |
 | `customers_without_visit` | "Clientes sin visita" | Clientes activos sin visita en los `inactivity_days` previos al fin del rango (o a hoy, si el rango llega al futuro) |
 | `recovered_customers` | "Clientes recuperados" | Clientes con una compra en el rango precedida de un hueco de más de `inactivity_days` sin comprar. La primera compra histórica no cuenta (clientes nuevos está retirado) |
@@ -278,7 +282,185 @@ Productos ordenados por monto vendido en el período. Misma regla de venta confi
 - Se excluyen las líneas huérfanas (`sale_detail.product_id IS NULL`) y los productos con `deleted_at`, porque no tienen fila de catálogo con la que nombrarlos. Quedan fuera también de `total_amount`.
 - Sin ventas en el período: `products: []` y `total_amount: "0.00"`.
 
-**Fuera de alcance de PCRM-172** (no pedir todavía): ABC, participación, penetración, productos sin movimiento, detalle por producto, margen e inventario.
+**Fuera del alcance del ranking:** margen e inventario. Productos sin movimiento, detalle por producto y sus compradores se agregaron en PCRM-177 — endpoints 8 a 10.
+
+### 8. `GET /products/:id` — detalle de un producto (PCRM-177)
+
+Ficha de un producto dentro del período. `:id` es **`product.erp_product_id`**, la PK natural entera del ERP (CLAUDE.md 6.4), no un uuid; cualquier cosa que no sea un entero positivo es `400`.
+
+Misma definición de venta confirmada que el resto del panel (`sale.deleted_at IS NULL`, `erp_status = 2`, línea fechada por `sale.erp_created_at`).
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "thresholds": { "inactivity_days": 30, "credit_term_days": 60, "gps_radius_meters": 80 },
+  "product": { "product_id": 42, "code": "ABC-1", "name": "Producto X", "product_group": "Analgésicos" },
+  "amount": "1500.00",
+  "units": "120.0000",
+  "average_ticket": "125.00",
+  "sellers": [
+    { "user_id": "1111...", "name": "Rosa Alvarado", "amount": "900.00", "units": "72.0000" }
+  ]
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `amount` | `SUM(sale_detail.total)` del producto en el período, IVA incluido. String de dos decimales |
+| `units` | `SUM(quantity × COALESCE(factor, 1))`, en la unidad base del producto. Nunca se suman unidades de medida distintas en crudo. String de hasta 4 decimales |
+| `average_ticket` | `amount` entre las facturas (`sale`) distintas que incluyen el producto. **`"0.00"` sin facturas**, no `null` y sin división por cero |
+| `sellers` | Vendedores que lo movieron, por monto descendente. Lista, no agregado |
+
+**Producto sin ventas en el rango.** No es un error ni un 404: la ficha responde `200` con ceros (`amount: "0.00"`, `units: "0.0000"`, `average_ticket: "0.00"`, `sellers: []`). **Solo un producto inexistente o con `deleted_at` da `404`.**
+
+Las líneas de venta sin `user_id` (un `id_usuario` del ERP que nunca casó contra `app_user.erp_user_id`, CLAUDE.md Anexo A.2) no tienen vendedor al que atribuirse y quedan fuera de `sellers`, pero sí suman en `amount`: la suma de `sellers[].amount` puede ser menor que `amount`. Los vendedores deshabilitados o borrados sí aparecen — la venta ocurrió.
+
+**Retirado de la ficha (decisión del PO, 13/10/2026).** La primera versión de PCRM-177 devolvía además posición en el ranking, participación, facturas, clientes, penetración, cartera del período, clase ABC y variación contra el período anterior. Se quitaron por no aportar a la decisión que se toma desde la ficha: la posición y la participación ya se leen en el ranking (endpoint 7), y la cuenta de clientes se reemplazó por la lista del endpoint 10. No reintroducir sin conversación.
+
+### 9. `GET /products/no-movement` — catálogo sin movimiento (PCRM-177)
+
+Productos **activos** del catálogo que no registran ninguna venta confirmada dentro del período, más cuántos llevan 30, 60 y 90 días quietos.
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "thresholds": { "inactivity_days": 30, "credit_term_days": 60, "gps_radius_meters": 80 },
+  "active_products": 310,
+  "products": [
+    { "product_id": 7, "code": "Q-7", "name": "Producto quieto", "product_group": null,
+      "last_sold_at": "2026-05-10T18:00:00.000Z", "days_since_last_sale": 143 },
+    { "product_id": 9, "code": null, "name": "Nunca vendido", "product_group": null,
+      "last_sold_at": null, "days_since_last_sale": null }
+  ],
+  "without_movement": { "days_30": 120, "days_60": 80, "days_90": 55 }
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `active_products` | Tamaño del catálogo activo contra el que se leen los conteos |
+| `products` | Productos activos sin venta confirmada en `period`, del que dejó de venderse más recientemente al más antiguo; los que nunca vendieron van al final. Sin recorte: la lista la acota el catálogo |
+| `last_sold_at` | Última venta confirmada anterior al fin del período. `null` si el producto nunca vendió |
+| `days_since_last_sale` | Días entre esa venta y el **fin del período**, no "hasta hoy": así la cifra no se mueve con el reloj. `null` si nunca vendió |
+| `without_movement` | Conteos de productos activos sin venta confirmada en los últimos 30 / 60 / 90 días |
+
+**Qué es "activo".** `product.deleted_at IS NULL`. **El catálogo no tiene bandera de activo propia** (`prisma/schema.prisma`, modelo `product`): es un espejo de Efactsoft, sin `active` ni equivalente, así que la fila que sigue ahí es la que el ERP sigue enviando. `product.last_seen_at` registra cuándo se vio por última vez en una importación, no si es vendible, y por eso no se usa como filtro.
+
+**Cómo se calculan 30/60/90.** Las tres ventanas cuelgan del **final del período** (`to`), no de `from` ni de hoy: `[to + 1 día − N días, to + 1 día)`. Un producto cuenta en `days_N` cuando su última venta confirmada es anterior a ese corte, o cuando nunca vendió. Como El Salvador no tiene horario de verano (CLAUDE.md 5.7), un día son 86 400 000 ms exactos y el corte cae a la misma hora local.
+
+Consecuencia deliberada: **los tres conteos no dependen del largo del rango.** Un rango de una semana sigue respondiendo "y cuántos llevan tres meses quietos". Solo `products` sigue al período seleccionado.
+
+### 10. `GET /products/:id/customers` — compradores de un producto (PCRM-177)
+
+Clientes que compraron el producto en el período, **del que más compró (por monto) al que menos**, paginados. Mismo `:id`, misma regla de venta confirmada y mismo `404` que el endpoint 8; un producto que existe pero no vendió responde `200` con `items: []` y `total: 0`.
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "thresholds": { "inactivity_days": 30, "credit_term_days": 60, "gps_radius_meters": 80 },
+  "items": [
+    { "customer_id": "2222...", "name": "Farmacia Central", "trade_name": "Central",
+      "amount": "800.00", "units": "64.0000", "invoices": 5,
+      "last_purchase_at": "2026-09-20T16:00:00.000Z" }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 45,
+  "total_pages": 3
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `amount` / `units` | Lo que ese cliente compró del producto en el período, con las mismas reglas del endpoint 8 |
+| `invoices` | Facturas distintas del período que incluyen el producto |
+| `last_purchase_at` | `erp_created_at` de la más reciente de esas facturas |
+| `total` | Clientes distintos que lo compraron. Una página más allá del final devuelve `items: []` con el `total` real |
+
+Orden: `amount` DESC, después `name` y `id`, para que la paginación sea estable. Las ventas sin `customer_id` no tienen a quién listarse y quedan fuera (sí suman en el `amount` del endpoint 8); los clientes con `deleted_at` sí aparecen.
+
+### 11. `GET /routes` y `GET /routes/:id` — métricas por ruta (PCRM-178)
+
+Cards de rutas y detalle de una ruta. Misma query común (`from`, `to`) que el resto del panel.
+
+**Atribución de la venta.** El historial de una ruta es su agenda: cada parada es un `scheduled_visit` que cuelga de la asignación (`route_user`) que la generó, y cada visita que registra la app apunta a la parada que ejecutó. Una venta confirmada (`deleted_at IS NULL`, `erp_status = 2`, fechada por `erp_created_at`) es de la ruta de la que salió la parada de su visita:
+
+```
+sale.visit_id → visit.scheduled_visit_id → scheduled_visit.route_user_id → route_user.route_id
+```
+
+La cadena no se mueve con cambios posteriores: reasignar el día (`route_user` borrado) o cambiar los clientes de la ruta (`route_customer`) no reubica ventas ya hechas. Una venta sin visita, o con una visita sin parada detrás, no es venta de ruta (CLAUDE.md Anexo A.2). La regla vive una sola vez en `src/repositories/metrics/routeSales.sql.ts`.
+
+**Identidad de la ruta.** `route_id` es `route.id`, el mismo uuid que expone la API de rutas (`/api/v1/routes`).
+
+**Qué no trae.** `average_ticket` por ruta es PCRM-176: lo calcula aparte con `findRouteSalesTotals` (`amount` / `invoices`) de `src/repositories/routeMetrics.repository.ts`, sin reescribir la atribución.
+
+#### `GET /routes` — cards
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" }, "thresholds": { "...": "..." },
+  "previous_period": { "from": "2026-08-02", "to": "2026-08-31" },
+  "routes": [
+    {
+      "route_id": "…", "name": "Zona Escalón", "municipality": "San Salvador", "zone": "Escalón", "active": true,
+      "amount": "9170.00", "previous_amount": "8100.00", "change_rate": 13.2,
+      "visit_coverage_rate": 90.0,
+      "sellers": [{ "user_id": "…", "name": "Carlos Martínez" }]
+    }
+  ],
+  "total_amount": "12000.00"
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `amount` | Venta atribuida a la ruta en el período, IVA incluido |
+| `previous_amount` / `change_rate` | Lo mismo en `previous_period` (igual largo, contiguo) y su variación %. `change_rate` es **`null`** si el período anterior vendió cero |
+| `visit_coverage_rate` | De los clientes en la agenda de la ruta en el período (`scheduled_visit`, sin prospectos), qué % tuvo su parada ejecutada. **`null`** sin agenda. No pasa de 100 %: toda visita sale de una parada |
+| `sellers` | Los asignados hoy, más quien ejecutó alguna parada de la ruta en el período (una reasignación a mitad de período no borra a quien hizo el trabajo) |
+| `total_amount` | Venta atribuida de **todas** las rutas. **No cuadra con `total_sales` del panel, y es correcto**: `total_sales` incluye la venta sin visita. `total_amount ≤ total_sales` siempre |
+
+- Ordenado por `amount` descendente, empates por nombre.
+- Aparecen todas las rutas no borradas, incluidas las que no tuvieron actividad: llegan en ceros, con `change_rate` y `visit_coverage_rate` en `null` y `sellers: []`.
+
+#### `GET /routes/:id` — detalle
+
+`:id` es el `route.id`. Si no existe o está borrada, `404`.
+
+```json
+{
+  "period": { "...": "..." }, "thresholds": { "...": "..." },
+  "previous_period": { "from": "2026-08-02", "to": "2026-08-31" },
+  "route": { "...misma forma que una card de /routes..." },
+  "portfolio_coverage": { "scheduled_customers": 20, "purchasing_customers": 14, "rate": 70.0 },
+  "top_customers": [
+    { "position": 1, "customer_id": "…", "name": "Farmacia San José", "trade_name": null,
+      "amount": "2100.00", "orders_count": 9 }
+  ],
+  "top_products": [
+    { "position": 1, "product_id": 42, "code": "ABC-1", "name": "Producto X",
+      "amount": "1500.00", "units": "120.0000" }
+  ],
+  "sales_by_weekday": [
+    { "weekday": 0, "amount": "0.00", "orders_count": 0 },
+    { "weekday": 1, "amount": "9170.00", "orders_count": 72 }
+  ],
+  "seller_performance": [
+    { "user_id": "…", "name": "Carlos Martínez", "amount": "9170.00", "orders_count": 72 }
+  ]
+}
+```
+
+| Bloque | Notas |
+|---|---|
+| `portfolio_coverage` | De los clientes en la agenda de la ruta en el período, cuántos compraron. Sale de la agenda y no del `route_customer` de hoy, para que un cliente movido después de ruta cuente donde estaba planificado. **Distinta de `visit_coverage_rate`**: aquí cuenta cualquier venta confirmada del cliente, con visita o sin ella. `rate` es `null` sin agenda |
+| `top_customers` | Hasta 10 clientes por monto atribuido. Las ventas sin cliente quedan fuera de la lista pero dentro del total de la ruta |
+| `top_products` | Hasta 10 productos por monto, con sus unidades en la unidad base. Mismas reglas que `/products` |
+| `sales_by_weekday` | Siempre 7 buckets, ceros incluidos. `weekday` es el `DOW` de Postgres sobre el **día local**: 0 domingo … 6 sábado |
+| `seller_performance` | Monto y pedidos acreditados a `sale.user_id`, igual que en `/sellers`. Solo vendedores con venta atribuida en la ruta |
+
+**Retirado (decisión del PO, 13/10/2026).** La primera versión de PCRM-178 devolvía además unidades de la ruta, posiciones por monto y por unidades, venta por día-ruta (efectividad), clientes visitados / planificados y paradas ejecutadas / planificadas. Las unidades de una ruta suman productos distintos y no se pueden comparar; el resto no aportaba a la vista de cards. Las unidades siguen por producto en `top_products`. No reintroducir sin conversación.
 
 ---
 
@@ -303,6 +485,7 @@ Productos ordenados por monto vendido en el período. Misma regla de venta confi
 | Estado de venta válido | `erp_status = 2` | `businessRules.ts` | No |
 | Ventas de contado | `payment_id = 1`, excluidas de cobranza | `businessRules.ts` | No |
 | Radio GPS | 80 m | `src/services/visit.service.ts` | No |
+| Ventanas "sin movimiento" | 30 / 60 / 90 días | `src/domain/constants/productMetrics.ts` | No |
 | Zona horaria | `America/El_Salvador` | `BUSINESS_TIMEZONE` en `src/config/envs.ts` | Sí, por entorno (validada al arrancar). Cambiarla mueve de día todo el histórico |
 
 ---

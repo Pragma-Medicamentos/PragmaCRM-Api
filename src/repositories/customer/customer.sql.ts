@@ -108,7 +108,8 @@ export const customerListSql = (
   FROM   customer c
   JOIN   metrics m ON m.id = c.id
   WHERE  ${where}
-  ORDER  BY c.name ASC
+  -- The id breaks ties between namesakes so OFFSET pages never skip or repeat a row.
+  ORDER  BY c.name ASC, c.id ASC
   LIMIT  ${limit}
   OFFSET ${offset}
 `;

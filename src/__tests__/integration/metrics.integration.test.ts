@@ -95,12 +95,27 @@ beforeAll(async () => {
     })
   ).id;
 
-  // Monday 2 March: one route day with a visit and a dispatch.
+  // Monday 2 March: one route day with a visit and a dispatch, each executing
+  // a stop of the agenda, as the app records them.
+  const [stopA, stopB] = await Promise.all(
+    [customerA, customerB].map((customerId, i) =>
+      prisma.scheduled_visit.create({
+        data: {
+          route_user_id: routeUserId,
+          customer_id: customerId,
+          visit_date: new Date('2020-03-02'),
+          stop_type: i === 0 ? 'visit' : 'dispatch',
+          sort_order: i + 1,
+        },
+      })
+    )
+  );
   const routeVisit = await prisma.visit.create({
     data: {
       customer_id: customerA,
       user_id: sellerId,
       route_user_id: routeUserId,
+      scheduled_visit_id: stopA.id,
       visit_type: 'visit',
       successful: true,
       started_at: local('2020-03-02T10:00:00'),
@@ -112,6 +127,7 @@ beforeAll(async () => {
       customer_id: customerB,
       user_id: sellerId,
       route_user_id: routeUserId,
+      scheduled_visit_id: stopB.id,
       visit_type: 'dispatch',
       successful: false,
       started_at: local('2020-03-02T11:00:00'),
@@ -187,6 +203,7 @@ afterAll(async () => {
   await prisma.$executeRaw`delete from visit where user_id in (${users[0]}::uuid, ${users[1]}::uuid)`;
   await prisma.$executeRaw`delete from prospect where user_id = ${sellerId}::uuid`;
   await prisma.$executeRaw`delete from goal where user_id = ${sellerId}::uuid`;
+  await prisma.$executeRaw`delete from scheduled_visit where route_user_id = ${routeUserId}::uuid`;
   await prisma.$executeRaw`delete from route_user where id = ${routeUserId}::uuid`;
   await prisma.$executeRaw`delete from route_customer where route_id = ${routeId}::uuid`;
   await prisma.$executeRaw`delete from route where id = ${routeId}::uuid`;
