@@ -5,6 +5,7 @@ import {
   getCreditStatus,
   getCustomerRoutes,
   getRecentVisitNotes,
+  listCustomers,
   listCustomerSales,
   updateCustomerContact,
   updateCustomerLocation,
@@ -38,6 +39,19 @@ const buildClient = (overrides: Record<string, unknown> = {}) =>
   }) as unknown as Client;
 
 const pagination = { page: 1, limit: 20 };
+
+describe('listCustomers', () => {
+  it('orders by name with the id as tie-break, so pages never skip a namesake', async () => {
+    const client = buildClient();
+    (client.$queryRaw as jest.Mock).mockResolvedValue([]);
+
+    await listCustomers(client, { page: 2, limit: 100 });
+
+    const sql = (client.$queryRaw as jest.Mock).mock.calls[0][0] as Prisma.Sql;
+    expect(sql.sql).toMatch(/ORDER\s+BY c\.name ASC, c\.id ASC/);
+    expect(sql.values.slice(-2)).toEqual([100, 100]);
+  });
+});
 
 describe('listCustomerSales', () => {
   it('devuelve solo ventas liquidadas: estado 2, saldo 0 y no borradas', async () => {
