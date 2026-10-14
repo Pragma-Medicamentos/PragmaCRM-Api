@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { MetricsController } from './metrics.controller';
+import { RouteMetricsController } from './routeMetrics.controller';
 import { validateParams, validateQuery } from '../middleware/validate';
 import {
   metricsKpiParamsSchema,
@@ -11,6 +12,7 @@ import {
   metricsTrendsQuerySchema,
 } from '../../domain/schemas/metrics.schema';
 import { metricsProductParamsSchema } from '../../domain/schemas/productMetrics.schema';
+import { metricsRouteParamsSchema } from '../../domain/schemas/routeMetrics.schema';
 import { ProductMetricsController } from './productMetrics.controller';
 
 export class MetricsRoutes {
@@ -18,6 +20,7 @@ export class MetricsRoutes {
     const router = Router();
     const controller = new MetricsController();
     const productController = new ProductMetricsController();
+    const routeController = new RouteMetricsController();
 
     // requireAuth + requireRole(ADMIN) are applied when the group is mounted
     // in presentation/routes.ts, not here (convention in CLAUDE.md 8.1).
@@ -67,6 +70,17 @@ export class MetricsRoutes {
       validateParams(metricsProductParamsSchema),
       validateQuery(metricsProductCustomersQuerySchema),
       productController.customers
+    );
+
+    // Per-route metrics (PCRM-178). Registered last so they do not shadow any
+    // of the paths above; '/routes/:id' is a route.id, the same uuid the
+    // routes API uses.
+    router.get('/routes', validateQuery(metricsRangeQuerySchema), routeController.routes);
+    router.get(
+      '/routes/:id',
+      validateParams(metricsRouteParamsSchema),
+      validateQuery(metricsRangeQuerySchema),
+      routeController.routeDetail
     );
 
     return router;

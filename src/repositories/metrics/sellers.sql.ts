@@ -31,10 +31,14 @@ export const sellerPerformanceSql = (
              COUNT(*) FILTER (WHERE v.visit_type = 'dispatch')   AS stops_dispatch,
              COUNT(*) FILTER (WHERE v.visit_type = 'collection') AS stops_collection,
              COUNT(DISTINCT v.customer_id)                       AS visited_customers,
-             COUNT(DISTINCT (v.route_user_id,
+             -- Route-days and route sale follow the per-route rule
+             -- (routeSales.sql.ts): the stop the visit executed decides the route.
+             COUNT(DISTINCT (sv.route_user_id,
                              (v.started_at AT TIME ZONE ${TZ})::date))
-               FILTER (WHERE v.route_user_id IS NOT NULL)        AS route_days
+               FILTER (WHERE sv.id IS NOT NULL)                  AS route_days
       FROM   visit v
+      LEFT   JOIN scheduled_visit sv
+             ON sv.id = v.scheduled_visit_id
       WHERE  v.deleted_at IS NULL
         AND  ${inRange(VISIT_AT, range)}
       GROUP  BY v.user_id
@@ -49,7 +53,7 @@ export const sellerPerformanceSql = (
       LEFT   JOIN visit v
              ON v.id = s.visit_id
             AND v.deleted_at IS NULL
-            AND v.route_user_id IS NOT NULL
+            AND v.scheduled_visit_id IS NOT NULL
       WHERE  s.deleted_at IS NULL
         AND  s.erp_status = ${ERP_STATUS_SALE}
         AND  ${inRange(SALE_AT, range)}
