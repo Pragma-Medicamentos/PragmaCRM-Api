@@ -2,18 +2,15 @@ import { Prisma } from '../../generated/prisma/client';
 import { Client } from '../../lib/prisma';
 import { ERP_STATUS_SALE } from '../../domain/constants/businessRules';
 import {
-  ABC_CLASS_A_MAX_SHARE,
-  ABC_CLASS_B_MAX_SHARE,
-} from '../../domain/constants/productMetrics';
-import {
+  getProductCustomers,
   getProductDetail,
   getProductsWithoutMovement,
 } from '../productMetrics.service';
 
 const NOW = new Date('2026-09-22T18:00:00Z');
 const SEPTEMBER = { from: '2026-09-01', to: '2026-09-30' };
-/** The 30 days right before September: what previousRange() builds from it. */
-const AUGUST_TAIL = { from: '2026-08-02', to: '2026-08-31' };
+/** September's [start, end) instants in America/El_Salvador. */
+const SEPTEMBER_BOUNDS = ['2026-09-01T06:00:00.000Z', '2026-10-01T06:00:00.000Z'];
 const PRODUCT_ID = 42;
 
 const buildClient = (queryRaw: jest.Mock) => ({ $queryRaw: queryRaw }) as unknown as Client;
@@ -32,36 +29,17 @@ const detailRow = {
   code: 'ABC-1',
   name: 'Producto X',
   product_group: 'Analgésicos',
-  position: 1,
   amount: '1500.00',
   units: '120.0000',
-  period_total_amount: '5000.00',
-  share_percent: 30,
-  invoices: 12,
   average_ticket: '125.00',
-  customers: 9,
-  portfolio_customers: 45,
-  penetration_percent: 20,
-  abc_class: 'A' as const,
-  previous_amount: '1200.00',
-  change_percent: 25,
 };
 
 /** Same product in a period where it sold nothing. */
 const emptyDetailRow = {
   ...detailRow,
-  position: null,
   amount: '0.00',
   units: '0.0000',
-  period_total_amount: '5000.00',
-  share_percent: 0,
-  invoices: 0,
   average_ticket: '0.00',
-  customers: 0,
-  penetration_percent: 0,
-  abc_class: null,
-  previous_amount: '0.00',
-  change_percent: null,
 };
 
 const sellerRows = [
@@ -70,7 +48,7 @@ const sellerRows = [
 ];
 
 describe('getProductDetail', () => {
-  it('returns the product sheet with its ranking, penetration and trend', async () => {
+  it('returns the product sheet with its sellers', async () => {
     const queryRaw = jest
       .fn()
       .mockResolvedValueOnce([detailRow])
@@ -78,67 +56,31 @@ describe('getProductDetail', () => {
 
     const result = await getProductDetail(buildClient(queryRaw), PRODUCT_ID, SEPTEMBER, NOW);
 
-    expect(result.period).toEqual(SEPTEMBER);
-    expect(result.product).toEqual({
-      product_id: PRODUCT_ID,
-      code: 'ABC-1',
-      name: 'Producto X',
-      product_group: 'Analgésicos',
-    });
-    expect(result.amount).toBe('1500.00');
-    expect(result.units).toBe('120.0000');
-    expect(result.position).toBe(1);
-    expect(result.invoices).toBe(12);
-    expect(result.average_ticket).toBe('125.00');
-    expect(result.customers).toBe(9);
-    expect(result.portfolio_customers).toBe(45);
-    expect(result.penetration_percent).toBe(20);
-    expect(result.abc_class).toBe('A');
-    expect(result.sellers).toEqual(sellerRows);
-    expect(result.trend).toEqual({
-      previous_period: AUGUST_TAIL,
-      previous_amount: '1200.00',
-      change_percent: 25,
+    expect(result).toEqual({
+      period: SEPTEMBER,
+      thresholds: expect.any(Object),
+      product: {
+        product_id: PRODUCT_ID,
+        code: 'ABC-1',
+        name: 'Producto X',
+        product_group: 'Analgésicos',
+      },
+      amount: '1500.00',
+      units: '120.0000',
+      average_ticket: '125.00',
+      sellers: sellerRows,
     });
   });
 
-  it('reports the share against the same total the ranking returns', async () => {
-    const queryRaw = jest.fn().mockResolvedValueOnce([detailRow]).mockResolvedValueOnce([]);
-
-    const result = await getProductDetail(buildClient(queryRaw), PRODUCT_ID, SEPTEMBER, NOW);
-
-    expect(result.period_total_amount).toBe('5000.00');
-    expect(result.share_percent).toBe(
-      Number(((Number(result.amount) * 100) / Number(result.period_total_amount)).toFixed(1))
-    );
-  });
-
-  it('answers zeros, not a 500, for a product with no sales in the range', async () => {
+  it('answers zeros, not a 404, for a product with no sales in the range', async () => {
     const queryRaw = jest.fn().mockResolvedValueOnce([emptyDetailRow]).mockResolvedValueOnce([]);
 
     const result = await getProductDetail(buildClient(queryRaw), PRODUCT_ID, SEPTEMBER, NOW);
 
     expect(result.amount).toBe('0.00');
     expect(result.units).toBe('0.0000');
-    expect(result.invoices).toBe(0);
     expect(result.average_ticket).toBe('0.00');
-    expect(result.share_percent).toBe(0);
-    expect(result.penetration_percent).toBe(0);
-    expect(result.position).toBeNull();
-    expect(result.abc_class).toBeNull();
     expect(result.sellers).toEqual([]);
-  });
-
-  it('leaves the trend null when the previous period sold nothing', async () => {
-    const queryRaw = jest.fn().mockResolvedValueOnce([emptyDetailRow]).mockResolvedValueOnce([]);
-
-    const result = await getProductDetail(buildClient(queryRaw), PRODUCT_ID, SEPTEMBER, NOW);
-
-    expect(result.trend).toEqual({
-      previous_period: AUGUST_TAIL,
-      previous_amount: '0.00',
-      change_percent: null,
-    });
   });
 
   it('404s when the product does not exist or is deleted', async () => {
@@ -149,39 +91,90 @@ describe('getProductDetail', () => {
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 
-  it('reuses the ranking query instead of restating it, and its ABC cuts', async () => {
+  it('reads only confirmed sales of the selected period', async () => {
     const queryRaw = jest.fn().mockResolvedValueOnce([detailRow]).mockResolvedValueOnce([]);
 
     await getProductDetail(buildClient(queryRaw), PRODUCT_ID, SEPTEMBER, NOW);
 
-    const detailSql = sqlOf(queryRaw, 0);
-    // The ranking is embedded verbatim: same ROW_NUMBER, same tie-break.
-    expect(detailSql.sql).toContain('ROW_NUMBER() OVER (ORDER BY sold.amount DESC');
-    expect(detailSql.sql).toContain('sold.product_id ASC');
-    expect(detailSql.values).toContain(ERP_STATUS_SALE);
-    expect(detailSql.values).toContain(ABC_CLASS_A_MAX_SHARE);
-    expect(detailSql.values).toContain(ABC_CLASS_B_MAX_SHARE);
-    // Current and previous period are read in one pass.
-    expect(isoInstants(detailSql)).toEqual(
-      expect.arrayContaining([
-        '2026-09-01T06:00:00.000Z',
-        '2026-10-01T06:00:00.000Z',
-        '2026-08-02T06:00:00.000Z',
-      ])
+    for (const call of [0, 1]) {
+      const sql = sqlOf(queryRaw, call);
+      expect(sql.values).toContain(PRODUCT_ID);
+      expect(sql.values).toContain(ERP_STATUS_SALE);
+      expect(isoInstants(sql)).toEqual(SEPTEMBER_BOUNDS);
+    }
+  });
+});
+
+describe('getProductCustomers', () => {
+  const customerRows = [
+    {
+      customer_id: 'cccccccc-cccc-cccc-cccc-cccccccccc01',
+      name: 'Farmacia Central',
+      trade_name: 'Central',
+      amount: '800.00',
+      units: '64.0000',
+      invoices: 5,
+      last_purchase_at: new Date('2026-09-20T16:00:00Z'),
+    },
+  ];
+
+  it('returns one page of buyers with the paging totals', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ product_exists: true, total: 45 }])
+      .mockResolvedValueOnce(customerRows);
+
+    const result = await getProductCustomers(
+      buildClient(queryRaw),
+      PRODUCT_ID,
+      { ...SEPTEMBER, page: 2, limit: 20 },
+      NOW
     );
+
+    expect(result.period).toEqual(SEPTEMBER);
+    expect(result.items).toEqual(customerRows);
+    expect(result).toMatchObject({ page: 2, page_size: 20, total: 45, total_pages: 3 });
   });
 
-  it('asks the sellers only for the selected period', async () => {
-    const queryRaw = jest.fn().mockResolvedValueOnce([detailRow]).mockResolvedValueOnce([]);
+  it('turns the page into LIMIT and OFFSET', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ product_exists: true, total: 45 }])
+      .mockResolvedValueOnce([]);
 
-    await getProductDetail(buildClient(queryRaw), PRODUCT_ID, SEPTEMBER, NOW);
+    await getProductCustomers(buildClient(queryRaw), PRODUCT_ID, { ...SEPTEMBER, page: 3, limit: 20 }, NOW);
 
-    const sellersSql = sqlOf(queryRaw, 1);
-    expect(sellersSql.values).toContain(PRODUCT_ID);
-    expect(isoInstants(sellersSql)).toEqual([
-      '2026-09-01T06:00:00.000Z',
-      '2026-10-01T06:00:00.000Z',
-    ]);
+    const pageSql = sqlOf(queryRaw, 1);
+    expect(pageSql.sql).toMatch(/LIMIT\s+\?\s+OFFSET\s+\?/);
+    expect(pageSql.values.slice(-2)).toEqual([20, 40]);
+    expect(isoInstants(pageSql)).toEqual(SEPTEMBER_BOUNDS);
+  });
+
+  it('keeps the total on a page past the end', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ product_exists: true, total: 3 }])
+      .mockResolvedValueOnce([]);
+
+    const result = await getProductCustomers(
+      buildClient(queryRaw),
+      PRODUCT_ID,
+      { ...SEPTEMBER, page: 9, limit: 20 },
+      NOW
+    );
+
+    expect(result).toMatchObject({ items: [], total: 3, total_pages: 1 });
+  });
+
+  it('404s when the product does not exist or is deleted', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([{ product_exists: false, total: 0 }])
+      .mockResolvedValueOnce([]);
+
+    await expect(
+      getProductCustomers(buildClient(queryRaw), PRODUCT_ID, { ...SEPTEMBER, page: 1, limit: 20 }, NOW)
+    ).rejects.toMatchObject({ statusCode: 404 });
   });
 });
 

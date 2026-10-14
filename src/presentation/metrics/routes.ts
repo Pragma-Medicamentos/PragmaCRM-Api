@@ -4,6 +4,7 @@ import { validateParams, validateQuery } from '../middleware/validate';
 import {
   metricsKpiParamsSchema,
   metricsKpiValuesQuerySchema,
+  metricsProductCustomersQuerySchema,
   metricsProductsQuerySchema,
   metricsRangeQuerySchema,
   metricsSellerParamsSchema,
@@ -60,6 +61,12 @@ export class MetricsRoutes {
       validateParams(metricsProductParamsSchema),
       validateQuery(metricsRangeQuerySchema),
       productController.detail
+    );
+    router.get(
+      '/products/:id/customers',
+      validateParams(metricsProductParamsSchema),
+      validateQuery(metricsProductCustomersQuerySchema),
+      productController.customers
     );
 
     return router;

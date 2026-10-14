@@ -2,13 +2,15 @@ import { Client } from '../lib/prisma';
 import { LocalDateRange } from '../lib/localDateRange';
 import { Money } from '../domain/types/customer.types';
 import {
-  AbcClass,
+  ProductCustomer,
   ProductIdentity,
   ProductMovementCounts,
   ProductSeller,
   ProductWithoutMovement,
 } from '../domain/types/productMetrics.types';
 import {
+  productCustomersSql,
+  productCustomersTotalSql,
   productDetailSql,
   productSellersSql,
 } from './metrics/productDetail.sql';
@@ -25,19 +27,14 @@ import {
 
 /** The single row of the detail query: already computed, nothing to derive. */
 export interface ProductDetailRow extends ProductIdentity {
-  position: number | null;
   amount: Money;
   units: string;
-  period_total_amount: Money;
-  share_percent: number;
-  invoices: number;
   average_ticket: Money;
-  customers: number;
-  portfolio_customers: number;
-  penetration_percent: number;
-  abc_class: AbcClass | null;
-  previous_amount: Money;
-  change_percent: number | null;
+}
+
+export interface ProductCustomersTotalRow {
+  product_exists: boolean;
+  total: number;
 }
 
 export interface ProductMovementCountsRow extends ProductMovementCounts {
@@ -48,12 +45,9 @@ export interface ProductMovementCountsRow extends ProductMovementCounts {
 export const findProductDetail = async (
   client: Client,
   range: LocalDateRange,
-  previous: LocalDateRange,
   productId: number
 ): Promise<ProductDetailRow | undefined> => {
-  const rows = await client.$queryRaw<ProductDetailRow[]>(
-    productDetailSql(range, previous, productId)
-  );
+  const rows = await client.$queryRaw<ProductDetailRow[]>(productDetailSql(range, productId));
   return rows[0];
 };
 
@@ -64,6 +58,28 @@ export const findProductSellers = (
   productId: number
 ): Promise<ProductSeller[]> =>
   client.$queryRaw<ProductSeller[]>(productSellersSql(range, productId));
+
+/** One page of the product's buyers in the range, by amount, best first. */
+export const findProductCustomers = (
+  client: Client,
+  range: LocalDateRange,
+  productId: number,
+  limit: number,
+  offset: number
+): Promise<ProductCustomer[]> =>
+  client.$queryRaw<ProductCustomer[]>(productCustomersSql(range, productId, limit, offset));
+
+/** Always exactly one row. */
+export const findProductCustomersTotal = async (
+  client: Client,
+  range: LocalDateRange,
+  productId: number
+): Promise<ProductCustomersTotalRow | undefined> => {
+  const rows = await client.$queryRaw<ProductCustomersTotalRow[]>(
+    productCustomersTotalSql(range, productId)
+  );
+  return rows[0];
+};
 
 /** Active products with no confirmed sale inside the range. */
 export const findProductsWithoutMovement = (

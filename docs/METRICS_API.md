@@ -4,7 +4,7 @@ Contrato de los endpoints que alimentan el **Resumen** (`1a`) y el **Panel de m�
 
 Código: `src/services/metrics.service.ts` (orquestación y mapeo), `src/repositories/metrics.repository.ts` + `src/repositories/metrics/*.sql.ts` (SQL), `src/presentation/metrics/`, `src/domain/types/metrics.types.ts` (tipos de respuesta, fuente de verdad de los campos).
 
-Las métricas de producto (endpoints 8 y 9) viven aparte, en `src/services/productMetrics.service.ts`, `src/repositories/productMetrics.repository.ts` y `src/domain/types/productMetrics.types.ts`, pero se montan bajo el mismo grupo `/api/v1/metrics` y comparten el query y el bloque de contexto.
+Las métricas de producto (endpoints 8 a 10) viven aparte, en `src/services/productMetrics.service.ts`, `src/repositories/productMetrics.repository.ts` y `src/domain/types/productMetrics.types.ts`, pero se montan bajo el mismo grupo `/api/v1/metrics` y comparten el query y el bloque de contexto.
 
 ---
 
@@ -25,7 +25,7 @@ Las métricas de producto (endpoints 8 y 9) viven aparte, en `src/services/produ
 | `names` | lista separada por coma | todas | **Solo en `/kpis/values`.** Ver endpoint 1 |
 | `limit` | entero 1–500 | `50` | **Solo en `/products`.** Filas del ranking. Ver endpoint 7 |
 
-`/products/:id` y `/products/no-movement` aceptan `from` / `to` igual que el resto del panel; `limit` y `names` no aplican.
+`/products/:id` y `/products/no-movement` aceptan `from` / `to` igual que el resto del panel; `limit` y `names` no aplican. `/products/:id/customers` acepta además `page` (desde 1) y `limit` (1–100, por defecto 20), la paginación estándar de la API.
 
 Errores de validación → `400` con `errors[].field` (`from` si `from > to`, `to` si el rango excede 366 días).
 
@@ -282,13 +282,13 @@ Productos ordenados por monto vendido en el período. Misma regla de venta confi
 - Se excluyen las líneas huérfanas (`sale_detail.product_id IS NULL`) y los productos con `deleted_at`, porque no tienen fila de catálogo con la que nombrarlos. Quedan fuera también de `total_amount`.
 - Sin ventas en el período: `products: []` y `total_amount: "0.00"`.
 
-**Fuera del alcance del ranking:** margen e inventario. ABC, participación, penetración, productos sin movimiento y detalle por producto se agregaron en PCRM-177 — endpoints 8 y 9.
+**Fuera del alcance del ranking:** margen e inventario. Productos sin movimiento, detalle por producto y sus compradores se agregaron en PCRM-177 — endpoints 8 a 10.
 
 ### 8. `GET /products/:id` — detalle de un producto (PCRM-177)
 
 Ficha de un producto dentro del período. `:id` es **`product.erp_product_id`**, la PK natural entera del ERP (CLAUDE.md 6.4), no un uuid; cualquier cosa que no sea un entero positivo es `400`.
 
-Misma definición de venta confirmada que el resto del panel (`sale.deleted_at IS NULL`, `erp_status = 2`, línea fechada por `sale.erp_created_at`). **El ranking no se reimplementa:** `productRankingSql` se embebe como CTE, así que `position` sale del mismo orden que el endpoint 7 (`amount` DESC, `product_id` ASC) y `period_total_amount` es el mismo total.
+Misma definición de venta confirmada que el resto del panel (`sale.deleted_at IS NULL`, `erp_status = 2`, línea fechada por `sale.erp_created_at`).
 
 ```json
 {
@@ -297,20 +297,7 @@ Misma definición de venta confirmada que el resto del panel (`sale.deleted_at I
   "product": { "product_id": 42, "code": "ABC-1", "name": "Producto X", "product_group": "Analgésicos" },
   "amount": "1500.00",
   "units": "120.0000",
-  "position": 1,
-  "share_percent": 30,
-  "period_total_amount": "5000.00",
-  "invoices": 12,
   "average_ticket": "125.00",
-  "customers": 9,
-  "portfolio_customers": 45,
-  "penetration_percent": 20,
-  "abc_class": "A",
-  "trend": {
-    "previous_period": { "from": "2026-08-02", "to": "2026-08-31" },
-    "previous_amount": "1200.00",
-    "change_percent": 25
-  },
   "sellers": [
     { "user_id": "1111...", "name": "Rosa Alvarado", "amount": "900.00", "units": "72.0000" }
   ]
@@ -321,28 +308,14 @@ Misma definición de venta confirmada que el resto del panel (`sale.deleted_at I
 |---|---|
 | `amount` | `SUM(sale_detail.total)` del producto en el período, IVA incluido. String de dos decimales |
 | `units` | `SUM(quantity × COALESCE(factor, 1))`, en la unidad base del producto. Nunca se suman unidades de medida distintas en crudo. String de hasta 4 decimales |
-| `position` | Posición en el ranking del período. **`null` si el producto no vendió** en el rango |
-| `share_percent` | Participación: `amount / period_total_amount × 100`, un decimal. **`0`** si el producto no vendió o si el período no tuvo ventas |
-| `period_total_amount` | Monto de todos los productos con venta en el período: el mismo `total_amount` del endpoint 7 |
-| `invoices` | Facturas (`sale`) distintas que incluyen el producto. **Es también su frecuencia de venta** |
-| `average_ticket` | `amount / invoices`. **`"0.00"` sin facturas**, no `null` y sin división por cero |
-| `customers` | Clientes distintos que lo compraron en el período |
-| `portfolio_customers` | **Cartera del período:** clientes con al menos una venta confirmada, a nivel empresa. No es la cartera de un vendedor |
-| `penetration_percent` | `customers / portfolio_customers × 100`, un decimal. `0` si nadie compró |
-| `abc_class` | `"A"`, `"B"`, `"C"` o **`null` si el producto no vendió** en el período. Ver los cortes abajo |
-| `trend.previous_period` | Período anterior de igual largo, contiguo al seleccionado (mismo cálculo que los deltas de las tarjetas) |
-| `trend.change_percent` | Variación % del monto contra ese período. **`null` si el período anterior no vendió** (no hay base contra la cual dividir) |
+| `average_ticket` | `amount` entre las facturas (`sale`) distintas que incluyen el producto. **`"0.00"` sin facturas**, no `null` y sin división por cero |
 | `sellers` | Vendedores que lo movieron, por monto descendente. Lista, no agregado |
 
-**Cortes ABC (Pareto por monto del período).** Se calculan entre los productos **con venta**, ordenados por el mismo ranking, sobre el porcentaje acumulado del monto: **A hasta 80 %, B hasta 95 %, C el resto**. Son los mismos cortes del "Reporte ABC" de `Contexto_KPIs_Pragma_CRM.md` §4 (80 % / siguiente 15 % / resto), aplicados a productos en vez de a clientes. Viven en `src/domain/constants/productMetrics.ts`.
-
-La clase se decide por lo que acumulan los productos **que están por encima**: un producto es A mientras los anteriores a él no lleguen al 80 %. Así el primero del ranking siempre es A, incluso cuando es el único con ventas. Un producto sin venta en el período no entra al Pareto: `abc_class: null`.
-
-**Producto sin ventas en el rango.** No es un error ni un 404: la ficha responde `200` con ceros (`amount: "0.00"`, `units: "0.0000"`, `invoices: 0`, `average_ticket: "0.00"`, `share_percent: 0`, `penetration_percent: 0`, `sellers: []`) y `position`, `abc_class` y `trend.change_percent` en `null`. **Solo un producto inexistente o con `deleted_at` da `404`.**
-
-> **Cero vs. `null` en este endpoint.** Es la excepción a la convención general del panel. Un producto que no vendió nada vendió exactamente cero: el cero es el resultado real, no un "no calculable". `null` queda para lo que de verdad no existe: un puesto en un ranking al que no se entró, una clase ABC sin monto que clasificar, y una variación contra un período que vendió `0` (dividir por cero).
+**Producto sin ventas en el rango.** No es un error ni un 404: la ficha responde `200` con ceros (`amount: "0.00"`, `units: "0.0000"`, `average_ticket: "0.00"`, `sellers: []`). **Solo un producto inexistente o con `deleted_at` da `404`.**
 
 Las líneas de venta sin `user_id` (un `id_usuario` del ERP que nunca casó contra `app_user.erp_user_id`, CLAUDE.md Anexo A.2) no tienen vendedor al que atribuirse y quedan fuera de `sellers`, pero sí suman en `amount`: la suma de `sellers[].amount` puede ser menor que `amount`. Los vendedores deshabilitados o borrados sí aparecen — la venta ocurrió.
+
+**Retirado de la ficha (decisión del PO, 13/10/2026).** La primera versión de PCRM-177 devolvía además posición en el ranking, participación, facturas, clientes, penetración, cartera del período, clase ABC y variación contra el período anterior. Se quitaron por no aportar a la decisión que se toma desde la ficha: la posición y la participación ya se leen en el ranking (endpoint 7), y la cuenta de clientes se reemplazó por la lista del endpoint 10. No reintroducir sin conversación.
 
 ### 9. `GET /products/no-movement` — catálogo sin movimiento (PCRM-177)
 
@@ -377,6 +350,35 @@ Productos **activos** del catálogo que no registran ninguna venta confirmada de
 
 Consecuencia deliberada: **los tres conteos no dependen del largo del rango.** Un rango de una semana sigue respondiendo "y cuántos llevan tres meses quietos". Solo `products` sigue al período seleccionado.
 
+### 10. `GET /products/:id/customers` — compradores de un producto (PCRM-177)
+
+Clientes que compraron el producto en el período, **del que más compró (por monto) al que menos**, paginados. Mismo `:id`, misma regla de venta confirmada y mismo `404` que el endpoint 8; un producto que existe pero no vendió responde `200` con `items: []` y `total: 0`.
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" },
+  "thresholds": { "inactivity_days": 30, "credit_term_days": 60, "gps_radius_meters": 80 },
+  "items": [
+    { "customer_id": "2222...", "name": "Farmacia Central", "trade_name": "Central",
+      "amount": "800.00", "units": "64.0000", "invoices": 5,
+      "last_purchase_at": "2026-09-20T16:00:00.000Z" }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 45,
+  "total_pages": 3
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `amount` / `units` | Lo que ese cliente compró del producto en el período, con las mismas reglas del endpoint 8 |
+| `invoices` | Facturas distintas del período que incluyen el producto |
+| `last_purchase_at` | `erp_created_at` de la más reciente de esas facturas |
+| `total` | Clientes distintos que lo compraron. Una página más allá del final devuelve `items: []` con el `total` real |
+
+Orden: `amount` DESC, después `name` y `id`, para que la paginación sea estable. Las ventas sin `customer_id` no tienen a quién listarse y quedan fuera (sí suman en el `amount` del endpoint 8); los clientes con `deleted_at` sí aparecen.
+
 ---
 
 ## Qué consume cada pantalla
@@ -400,7 +402,6 @@ Consecuencia deliberada: **los tres conteos no dependen del largo del rango.** U
 | Estado de venta válido | `erp_status = 2` | `businessRules.ts` | No |
 | Ventas de contado | `payment_id = 1`, excluidas de cobranza | `businessRules.ts` | No |
 | Radio GPS | 80 m | `src/services/visit.service.ts` | No |
-| Cortes ABC de producto | 80 % / 95 % acumulado | `src/domain/constants/productMetrics.ts` | No |
 | Ventanas "sin movimiento" | 30 / 60 / 90 días | `src/domain/constants/productMetrics.ts` | No |
 | Zona horaria | `America/El_Salvador` | `BUSINESS_TIMEZONE` en `src/config/envs.ts` | Sí, por entorno (validada al arrancar). Cambiarla mueve de día todo el histórico |
 

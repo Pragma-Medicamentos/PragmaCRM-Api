@@ -1,12 +1,18 @@
 import { Client } from '../lib/prisma';
 import { CustomError } from '../domain/errors/CustomError';
-import { MetricsRangeQuery } from '../domain/schemas/metrics.schema';
 import {
+  MetricsProductCustomersQuery,
+  MetricsRangeQuery,
+} from '../domain/schemas/metrics.schema';
+import { buildPage } from '../domain/types/pagination.types';
+import {
+  MetricsProductCustomersResponse,
   MetricsProductDetailResponse,
   MetricsProductsNoMovementResponse,
 } from '../domain/types/productMetrics.types';
-import { previousRange } from '../lib/localDateRange';
 import {
+  findProductCustomers,
+  findProductCustomersTotal,
   findProductDetail,
   findProductMovementCounts,
   findProductSellers,
@@ -17,10 +23,11 @@ import { buildContext } from './metrics.service';
 /*
  * Product metrics (PCRM-177), on top of the ranking of PCRM-172:
  *
- *      GET /api/v1/metrics/products/no-movement -> getProductsWithoutMovement
- *      GET /api/v1/metrics/products/:id         -> getProductDetail
+ *      GET /api/v1/metrics/products/no-movement   -> getProductsWithoutMovement
+ *      GET /api/v1/metrics/products/:id           -> getProductDetail
+ *      GET /api/v1/metrics/products/:id/customers -> getProductCustomers
  *
- * Both take the same `from` / `to` the panel takes and answer the same
+ * All take the same `from` / `to` the panel takes and answer the same
  * `period` + `thresholds` block, so a screen can mix them with the other
  * metrics endpoints without a second date vocabulary. The SQL lives in
  * repositories/productMetrics.repository.ts; the contract is documented in
@@ -28,9 +35,9 @@ import { buildContext } from './metrics.service';
  */
 
 /**
- * Sheet of one product: what it sold, where it ranks, who bought it and who
- * sold it. A product of the catalog that sold nothing in the period is a
- * normal answer made of zeros; only an unknown or deleted product is a 404.
+ * Sheet of one product: what it sold and who sold it. A product of the
+ * catalog that sold nothing in the period is a normal answer made of zeros;
+ * only an unknown or deleted product is a 404.
  */
 export const getProductDetail = async (
   client: Client,
@@ -39,10 +46,9 @@ export const getProductDetail = async (
   now: Date = new Date()
 ): Promise<MetricsProductDetailResponse> => {
   const { range, context } = buildContext(query, now);
-  const previous = previousRange(range);
 
   const [row, sellers] = await Promise.all([
-    findProductDetail(client, range, previous, productId),
+    findProductDetail(client, range, productId),
     findProductSellers(client, range, productId),
   ]);
 
@@ -60,22 +66,31 @@ export const getProductDetail = async (
     },
     amount: row.amount,
     units: row.units,
-    position: row.position,
-    share_percent: row.share_percent,
-    period_total_amount: row.period_total_amount,
-    invoices: row.invoices,
     average_ticket: row.average_ticket,
-    customers: row.customers,
-    portfolio_customers: row.portfolio_customers,
-    penetration_percent: row.penetration_percent,
-    abc_class: row.abc_class,
-    trend: {
-      previous_period: { from: previous.from, to: previous.to },
-      previous_amount: row.previous_amount,
-      change_percent: row.change_percent,
-    },
     sellers,
   };
+};
+
+/** Customers who bought the product in the period, biggest buyer first, one page at a time. */
+export const getProductCustomers = async (
+  client: Client,
+  productId: number,
+  query: MetricsProductCustomersQuery,
+  now: Date = new Date()
+): Promise<MetricsProductCustomersResponse> => {
+  const { range, context } = buildContext(query, now);
+  const offset = (query.page - 1) * query.limit;
+
+  const [totals, items] = await Promise.all([
+    findProductCustomersTotal(client, range, productId),
+    findProductCustomers(client, range, productId, query.limit, offset),
+  ]);
+
+  if (!totals?.product_exists) {
+    throw CustomError.notFound(`Product ${productId} not found`);
+  }
+
+  return { ...context, ...buildPage(items, totals.total, query.page, query.limit) };
 };
 
 /**

@@ -2,13 +2,18 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
-import { MetricsRangeQuery } from '../../domain/schemas/metrics.schema';
+import {
+  MetricsProductCustomersQuery,
+  MetricsRangeQuery,
+} from '../../domain/schemas/metrics.schema';
 import { MetricsProductParams } from '../../domain/schemas/productMetrics.schema';
 import {
+  MetricsProductCustomersResponse,
   MetricsProductDetailResponse,
   MetricsProductsNoMovementResponse,
 } from '../../domain/types/productMetrics.types';
 import {
+  getProductCustomers,
   getProductDetail,
   getProductsWithoutMovement,
 } from '../../services/productMetrics.service';
@@ -30,6 +35,24 @@ export class ProductMetricsController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'ProductMetricsController.detail');
+    }
+  }
+
+  /** Buyers of one product, paginated. Unknown or deleted product: 404. */
+  public async customers(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as MetricsProductParams;
+      const query = req.query as unknown as MetricsProductCustomersQuery;
+      const data = await getProductCustomers(prisma, id, query);
+
+      const response: ApiResponse<MetricsProductCustomersResponse> = {
+        success: true,
+        message: 'Product customers retrieved successfully',
+        data,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProductMetricsController.customers');
     }
   }
 
