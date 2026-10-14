@@ -1,17 +1,14 @@
 import { Client } from '../lib/prisma';
-import { envs } from '../config/envs';
 import { CustomError } from '../domain/errors/CustomError';
-import { CREDIT_TERM_DAYS } from '../domain/constants/businessRules';
 import { MetricsRangeQuery } from '../domain/schemas/metrics.schema';
 import { ROUTE_TOP_LIMIT } from '../domain/schemas/routeMetrics.schema';
-import { MetricsContext } from '../domain/types/metrics.types';
 import {
   MetricsRouteDetailResponse,
   MetricsRoutesResponse,
   RouteMetrics,
   RoutePortfolioCoverage,
 } from '../domain/types/routeMetrics.types';
-import { LocalDateRange, previousRange, resolveRange } from '../lib/localDateRange';
+import { previousRange } from '../lib/localDateRange';
 import {
   RouteMetricsRow,
   RoutePortfolioCoverageRow,
@@ -23,45 +20,47 @@ import {
   findRouteTopProducts,
   findRouteWeekdaySales,
 } from '../repositories/routeMetrics.repository';
-import { GPS_RADIUS_METERS } from './visit.service';
+import { buildContext } from './metrics.service';
 
 /*
- * Per-route metrics (PCRM-178), the route counterpart of the seller table:
+ * Per-route metrics (PCRM-178):
  *
- *     GET /api/v1/metrics/routes      -> listRouteMetrics
+ *     GET /api/v1/metrics/routes      -> listRouteMetrics (the route cards)
  *     GET /api/v1/metrics/routes/:id  -> getRouteMetricsDetail
  *
  * Every figure of sale comes from the attribution rule of CLAUDE.md 5.4,
- * written once in repositories/metrics/routeSales.sql.ts and shared with the
- * company-wide KPI `route_effectiveness`. This service resolves the period,
- * turns the rows into the response and does the divisions that need a
- * "no data" answer instead of a zero.
+ * written once in repositories/metrics/routeSales.sql.ts: a sale belongs to
+ * the route its visit's stop was generated from. This service resolves the
+ * period, turns the rows into the response and does the divisions that need
+ * a "no data" answer instead of a zero.
  *
- * Average ticket per route is PCRM-176, not this issue: the response carries
- * no `average_ticket`. The invoice count it divides by is already computed
- * by `findRouteSalesTotals`.
+ * Average ticket per route is PCRM-176, not this issue. The invoice count it
+ * divides by comes from `findRouteSalesTotals`.
  */
 
-/** Ranking of routes by attributed sale. Routes with no activity come as zeros. */
+/** Every route as a card: attributed sale, variation, visit coverage and sellers. */
 export const listRouteMetrics = async (
   client: Client,
   query: MetricsRangeQuery,
   now: Date = new Date()
 ): Promise<MetricsRoutesResponse> => {
   const { range, context } = buildContext(query, now);
-  const rows = await findRouteMetrics(client, range);
+  const previous = previousRange(range);
+
+  const [rows, totals] = await Promise.all([
+    findRouteMetrics(client, range, previous),
+    findRouteSalesTotals(client, range),
+  ]);
 
   return {
     ...context,
-    routes: rows.map(stripTotals),
-    // The totals travel on every row and are identical on all of them; with
-    // no routes at all there is nothing to sell, hence the zeros.
-    total_amount: rows[0]?.total_amount ?? '0.00',
-    total_units: rows[0]?.total_units ?? '0.0000',
+    previous_period: { from: previous.from, to: previous.to },
+    routes: rows.map(toRouteMetrics),
+    total_amount: totals.amount,
   };
 };
 
-/** Expanded route: ranking row, trend, coverage, top lists and sellers. */
+/** One route: its card plus portfolio coverage, top lists, weekdays and sellers. */
 export const getRouteMetricsDetail = async (
   client: Client,
   routeId: string,
@@ -71,38 +70,24 @@ export const getRouteMetricsDetail = async (
   const { range, context } = buildContext(query, now);
   const previous = previousRange(range);
 
-  const [
-    rows,
-    previousTotals,
-    coverage,
-    topCustomers,
-    topProducts,
-    salesByWeekday,
-    sellerPerformance,
-  ] = await Promise.all([
-    findRouteMetrics(client, range, routeId),
-    findRouteSalesTotals(client, previous, routeId),
-    findRoutePortfolioCoverage(client, range, routeId),
-    findRouteTopCustomers(client, range, routeId, ROUTE_TOP_LIMIT),
-    findRouteTopProducts(client, range, routeId, ROUTE_TOP_LIMIT),
-    findRouteWeekdaySales(client, range, routeId),
-    findRouteSellerPerformance(client, range, routeId),
-  ]);
+  const [rows, coverage, topCustomers, topProducts, salesByWeekday, sellerPerformance] =
+    await Promise.all([
+      findRouteMetrics(client, range, previous, routeId),
+      findRoutePortfolioCoverage(client, range, routeId),
+      findRouteTopCustomers(client, range, routeId, ROUTE_TOP_LIMIT),
+      findRouteTopProducts(client, range, routeId, ROUTE_TOP_LIMIT),
+      findRouteWeekdaySales(client, range, routeId),
+      findRouteSellerPerformance(client, range, routeId),
+    ]);
 
   if (rows.length === 0) {
     throw CustomError.notFound('Route not found');
   }
 
-  const route = stripTotals(rows[0]);
-
   return {
     ...context,
-    route,
-    previous: {
-      period: { from: previous.from, to: previous.to },
-      amount: previousTotals.amount,
-      change_rate: changeRate(previousTotals.amount, route.amount),
-    },
+    previous_period: { from: previous.from, to: previous.to },
+    route: toRouteMetrics(rows[0]),
     portfolio_coverage: portfolioCoverage(coverage),
     top_customers: topCustomers,
     top_products: topProducts,
@@ -117,37 +102,10 @@ export const getRouteMetricsDetail = async (
  * ============================================================================
  */
 
-/**
- * Period and thresholds in force for the request, the block every metrics
- * response opens with. It repeats the one in metrics.service.ts on purpose:
- * that one is private to its module and PCRM-177 is editing the file in
- * parallel. Worth unifying once both land.
- */
-const buildContext = (
-  query: MetricsRangeQuery,
-  now: Date
-): { range: LocalDateRange; context: MetricsContext } => {
-  const range = resolveRange(query.from, query.to, now);
-
-  return {
-    range,
-    context: {
-      period: { from: range.from, to: range.to },
-      thresholds: {
-        inactivity_days: query.inactivity_days ?? envs.INACTIVITY_THRESHOLD_DAYS,
-        credit_term_days: CREDIT_TERM_DAYS,
-        gps_radius_meters: GPS_RADIUS_METERS,
-      },
-    },
-  };
-};
-
-/** The period totals ride along every row; the response carries them once. */
-const stripTotals = ({
-  total_amount: _amount,
-  total_units: _units,
-  ...route
-}: RouteMetricsRow): RouteMetrics => route;
+const toRouteMetrics = (row: RouteMetricsRow): RouteMetrics => ({
+  ...row,
+  change_rate: changeRate(row.previous_amount, row.amount),
+});
 
 /**
  * Percentage change of `current` against `previous`. Null when the previous
@@ -163,11 +121,11 @@ const changeRate = (previous: string, current: string): number | null => {
   return Math.round(((after - before) / before) * 1000) / 10;
 };
 
-/** Share of the route's portfolio that bought. Null without portfolio. */
+/** Share of the agenda's customers that bought. Null without agenda. */
 const portfolioCoverage = (row: RoutePortfolioCoverageRow): RoutePortfolioCoverage => ({
   ...row,
   rate:
-    row.assigned_customers === 0
+    row.scheduled_customers === 0
       ? null
-      : Math.round((row.purchasing_customers / row.assigned_customers) * 1000) / 10,
+      : Math.round((row.purchasing_customers / row.scheduled_customers) * 1000) / 10,
 });

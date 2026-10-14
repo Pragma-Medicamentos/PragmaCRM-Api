@@ -4,8 +4,8 @@ import { LocalDateRange } from '../lib/localDateRange';
 import { Money } from '../domain/types/customer.types';
 import {
   RouteCustomerSales,
-  RouteMetrics,
   RouteProductSales,
+  RouteSeller,
   RouteSellerPerformance,
   RouteWeekdaySales,
 } from '../domain/types/routeMetrics.types';
@@ -28,19 +28,25 @@ import { routeSalesTotalsSql } from './metrics/routeSales.sql';
 /** Attributed sale of a route (or of every route) as a single row. */
 export interface RouteSalesTotals {
   amount: Money;
-  units: string;
   /** Distinct invoices behind `amount`. PCRM-176 divides by this. */
   invoices: number;
 }
 
-/** A ranking row plus the period totals, repeated on every row. */
-export interface RouteMetricsRow extends RouteMetrics {
-  total_amount: Money;
-  total_units: string;
+/** A route card as the query returns it; the service derives `change_rate`. */
+export interface RouteMetricsRow {
+  route_id: string;
+  name: string;
+  municipality: string | null;
+  zone: string | null;
+  active: boolean;
+  amount: Money;
+  previous_amount: Money;
+  visit_coverage_rate: number | null;
+  sellers: RouteSeller[];
 }
 
 export interface RoutePortfolioCoverageRow {
-  assigned_customers: number;
+  scheduled_customers: number;
   purchasing_customers: number;
 }
 
@@ -56,22 +62,21 @@ export const findRouteSalesTotals = async (
   range: DateSpan,
   routeId?: string
 ): Promise<RouteSalesTotals> => {
-  const rows = await client.$queryRaw<RouteSalesTotals[]>(
-    routeSalesTotalsSql(range, routeId)
-  );
+  const rows = await client.$queryRaw<RouteSalesTotals[]>(routeSalesTotalsSql(range, routeId));
 
   // The query aggregates, so it always answers; the fallback only guards
   // against a caller mocking an empty result.
-  return rows[0] ?? { amount: '0.00', units: '0.0000', invoices: 0 };
+  return rows[0] ?? { amount: '0.00', invoices: 0 };
 };
 
-/** Every route with its metrics, best amount first, or only `routeId`. */
+/** Every route with its card metrics, best amount first, or only `routeId`. */
 export const findRouteMetrics = (
   client: Client,
   range: LocalDateRange,
+  previous: LocalDateRange,
   routeId?: string
 ): Promise<RouteMetricsRow[]> =>
-  client.$queryRaw<RouteMetricsRow[]>(routeMetricsSql(range, routeId));
+  client.$queryRaw<RouteMetricsRow[]>(routeMetricsSql(range, previous, routeId));
 
 /** Top `limit` customers of the route by attributed amount. */
 export const findRouteTopCustomers = (
@@ -107,7 +112,7 @@ export const findRouteSellerPerformance = (
 ): Promise<RouteSellerPerformance[]> =>
   client.$queryRaw<RouteSellerPerformance[]>(routeSellerPerformanceSql(range, routeId));
 
-/** Customers of the route today, and how many of them bought in the range. */
+/** Customers on the route's agenda in the range, and how many of them bought. */
 export const findRoutePortfolioCoverage = async (
   client: Client,
   range: LocalDateRange,
@@ -117,5 +122,5 @@ export const findRoutePortfolioCoverage = async (
     routePortfolioCoverageSql(range, routeId)
   );
 
-  return rows[0] ?? { assigned_customers: 0, purchasing_customers: 0 };
+  return rows[0] ?? { scheduled_customers: 0, purchasing_customers: 0 };
 };

@@ -1,6 +1,5 @@
 import { Prisma } from '../../generated/prisma/client';
 import { Client } from '../../lib/prisma';
-import { envs } from '../../config/envs';
 import { ROUTE_TOP_LIMIT } from '../../domain/schemas/routeMetrics.schema';
 import { getRouteMetricsDetail, listRouteMetrics } from '../routeMetrics.service';
 
@@ -8,6 +7,8 @@ const NOW = new Date('2026-09-22T18:00:00Z');
 const ROUTE_ID = '22222222-2222-2222-2222-222222222201';
 const OTHER_ROUTE_ID = '22222222-2222-2222-2222-222222222202';
 const SEPTEMBER = { from: '2026-09-01', to: '2026-09-30' };
+/** The 30 days right before September: what previousRange() builds from it. */
+const AUGUST_TAIL = { from: '2026-08-02', to: '2026-08-31' };
 
 const buildClient = (queryRaw: jest.Mock) => ({ $queryRaw: queryRaw }) as unknown as Client;
 
@@ -19,7 +20,7 @@ const isoInstants = (sql: Prisma.Sql) =>
     .filter((value): value is Date => value instanceof Date)
     .map((value) => value.toISOString());
 
-/** A row as the ranking query returns it: metrics plus the period totals. */
+/** A route card as the query returns it, before the service adds `change_rate`. */
 const routeRow = (overrides: Record<string, unknown> = {}) => ({
   route_id: ROUTE_ID,
   name: 'Zona Escalón',
@@ -27,359 +28,179 @@ const routeRow = (overrides: Record<string, unknown> = {}) => ({
   zone: 'Escalón',
   active: true,
   amount: '9170.00',
-  units: '1240.0000',
-  amount_position: 1,
-  units_position: 1,
-  executed_route_days: 7,
-  effectiveness: '1310.00',
-  visited_customers: 18,
-  planned_customers: 20,
+  previous_amount: '8100.00',
   visit_coverage_rate: 90.0,
-  stops_executed: 72,
-  stops_planned: 80,
   sellers: [{ user_id: 'u1', name: 'Carlos Martínez' }],
-  total_amount: '12000.00',
-  total_units: '1500.0000',
   ...overrides,
 });
 
-/** The six queries the detail runs after the ranking row, in call order. */
+/** The five queries the detail runs after the card, in call order. */
 const detailTail = (
   queryRaw: jest.Mock,
-  overrides: {
-    previous?: { amount: string; units: string; invoices: number };
-    coverage?: { assigned_customers: number; purchasing_customers: number };
-  } = {}
+  coverage: { scheduled_customers: number; purchasing_customers: number } = {
+    scheduled_customers: 20,
+    purchasing_customers: 14,
+  }
 ) =>
   queryRaw
-    .mockResolvedValueOnce([
-      overrides.previous ?? { amount: '8100.00', units: '1100.0000', invoices: 62 },
-    ])
-    .mockResolvedValueOnce([
-      overrides.coverage ?? { assigned_customers: 20, purchasing_customers: 14 },
-    ])
+    .mockResolvedValueOnce([coverage])
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce([]);
 
 describe('listRouteMetrics', () => {
-  it('returns every route ranked, with the period totals lifted out of the rows', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([
-      routeRow(),
-      routeRow({
-        route_id: OTHER_ROUTE_ID,
-        name: 'Zona Centro',
-        amount: '2830.00',
-        units: '260.0000',
-        amount_position: 2,
-        units_position: 2,
-      }),
-    ]);
+  it('returns every route as a card, with the variation and the period total', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([
+        routeRow(),
+        routeRow({ route_id: OTHER_ROUTE_ID, name: 'Zona Centro', amount: '2830.00', previous_amount: '0.00' }),
+      ])
+      .mockResolvedValueOnce([{ amount: '12000.00', invoices: 90 }]);
 
     const result = await listRouteMetrics(buildClient(queryRaw), SEPTEMBER, NOW);
 
-    expect(queryRaw).toHaveBeenCalledTimes(1);
     expect(result.period).toEqual(SEPTEMBER);
+    expect(result.previous_period).toEqual(AUGUST_TAIL);
     expect(result.total_amount).toBe('12000.00');
-    expect(result.total_units).toBe('1500.0000');
     expect(result.routes.map((route) => route.route_id)).toEqual([ROUTE_ID, OTHER_ROUTE_ID]);
+    expect(result.routes[0].change_rate).toBe(13.2);
+    // Growing from zero has no rate: null, never 100 % or Infinity.
+    expect(result.routes[1].change_rate).toBeNull();
     expect(result.routes[0].sellers).toEqual([{ user_id: 'u1', name: 'Carlos Martínez' }]);
-    // The totals ride on every row; they belong to the response, not to a route.
-    expect(result.routes[0]).not.toHaveProperty('total_amount');
-    expect(result.routes[0]).not.toHaveProperty('total_units');
   });
 
-  it('attributes sale through the visit, like the company-wide KPI', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([]);
+  it('attributes sale to the route the visit’s stop came from', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ amount: '0.00', invoices: 0 }]);
 
     await listRouteMetrics(buildClient(queryRaw), SEPTEMBER, NOW);
 
-    const sql = sqlOf(queryRaw, 0).sql;
-    // sale -> visit -> route_user -> route (CLAUDE.md 5.4): no route column on sale.
-    expect(sql).toContain('v.id = s.visit_id');
-    expect(sql).toContain('v.route_user_id IS NOT NULL');
-    expect(sql).toContain('ru.id = v.route_user_id');
-    expect(sql).not.toMatch(/\bs\.route_id\b/);
-    expect(sql).toContain('s.deleted_at IS NULL');
-    expect(sql).toContain('s.erp_status =');
-    // Units in the product's base unit, like the product ranking.
-    expect(sql).toContain('SUM(d.quantity * COALESCE(d.factor, 1))');
-    // Half-open [start, end) on the raw columns, never `::date` in a WHERE.
-    expect(sql).not.toMatch(/erp_created_at::date/);
-    expect(sql).not.toMatch(/started_at::date\s*>=/);
+    for (const call of [0, 1]) {
+      const sql = sqlOf(queryRaw, call).sql;
+      // sale -> visit -> scheduled_visit -> route_user -> route (CLAUDE.md 5.4).
+      expect(sql).toContain('v.id = s.visit_id');
+      expect(sql).toContain('sv.id = v.scheduled_visit_id');
+      expect(sql).toContain('ru.id = sv.route_user_id');
+      expect(sql).not.toContain('ru.id = v.route_user_id');
+      expect(sql).toContain('s.deleted_at IS NULL');
+      expect(sql).toContain('s.erp_status =');
+      // Half-open [start, end) on the raw column, never `::date` in a WHERE.
+      expect(sql).not.toMatch(/erp_created_at::date/);
+    }
+  });
+
+  it('reads the current and the previous period in one pass', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ amount: '0.00', invoices: 0 }]);
+
+    await listRouteMetrics(buildClient(queryRaw), SEPTEMBER, NOW);
+
     expect(isoInstants(sqlOf(queryRaw, 0))).toEqual(
-      expect.arrayContaining(['2026-09-01T06:00:00.000Z', '2026-10-01T06:00:00.000Z'])
+      expect.arrayContaining([
+        '2026-08-02T06:00:00.000Z',
+        '2026-09-01T06:00:00.000Z',
+        '2026-10-01T06:00:00.000Z',
+      ])
     );
   });
 
-  it('answers with an empty list and zero totals when there are no routes', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([]);
+  it('measures visit coverage over the route’s agenda of the period', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ amount: '0.00', invoices: 0 }]);
+
+    await listRouteMetrics(buildClient(queryRaw), SEPTEMBER, NOW);
+
+    const sql = sqlOf(queryRaw, 0);
+    expect(sql.sql).toContain('FROM   scheduled_visit sv');
+    expect(sql.sql).toContain('v.scheduled_visit_id = ag.id');
+    expect(sql.values).toEqual(expect.arrayContaining(['2026-09-01', '2026-09-30']));
+  });
+
+  it('answers with an empty list and a zero total when there are no routes', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     const result = await listRouteMetrics(buildClient(queryRaw), SEPTEMBER, NOW);
 
     expect(result.routes).toEqual([]);
     expect(result.total_amount).toBe('0.00');
-    expect(result.total_units).toBe('0.0000');
   });
 
-  it('keeps a route with no activity as zeros, with no effectiveness', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([
-      routeRow({
-        amount: '0.00',
-        units: '0.0000',
-        executed_route_days: 0,
-        // The query divides with NULLIF: no route-day is a null, not a crash.
-        effectiveness: null,
-        visited_customers: 0,
-        planned_customers: 0,
-        visit_coverage_rate: null,
-        stops_executed: 0,
-        stops_planned: 0,
-        sellers: [],
-        total_amount: '0.00',
-        total_units: '0.0000',
-      }),
-    ]);
+  it('keeps a route with no activity as zeros, with no coverage and no variation', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([
+        routeRow({ amount: '0.00', previous_amount: '0.00', visit_coverage_rate: null, sellers: [] }),
+      ])
+      .mockResolvedValueOnce([{ amount: '0.00', invoices: 0 }]);
 
-    const result = await listRouteMetrics(buildClient(queryRaw), SEPTEMBER, NOW);
+    const [route] = (await listRouteMetrics(buildClient(queryRaw), SEPTEMBER, NOW)).routes;
 
-    expect(result.routes[0]).toMatchObject({
-      amount: '0.00',
-      executed_route_days: 0,
-      effectiveness: null,
-      visit_coverage_rate: null,
-      stops_executed: 0,
-      sellers: [],
-    });
-    expect(result.total_amount).toBe('0.00');
-  });
-
-  it('guards effectiveness and coverage against a division by zero in SQL', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([]);
-
-    await listRouteMetrics(buildClient(queryRaw), SEPTEMBER, NOW);
-
-    const sql = sqlOf(queryRaw, 0).sql;
-    expect(sql).toContain('NULLIF(rd.days, 0)');
-    expect(sql).toContain('NULLIF(p.planned_customers, 0)');
-  });
-
-  it('echoes the thresholds in force', async () => {
-    const queryRaw = jest.fn().mockResolvedValue([]);
-
-    const result = await listRouteMetrics(buildClient(queryRaw), {}, NOW);
-
-    expect(result.thresholds).toEqual({
-      inactivity_days: envs.INACTIVITY_THRESHOLD_DAYS,
-      credit_term_days: 60,
-      gps_radius_meters: 80,
-    });
-    // Omitted bounds default to the current month in El Salvador.
-    expect(result.period).toEqual(SEPTEMBER);
+    expect(route.amount).toBe('0.00');
+    expect(route.change_rate).toBeNull();
+    expect(route.visit_coverage_rate).toBeNull();
+    expect(route.sellers).toEqual([]);
   });
 });
 
 describe('getRouteMetricsDetail', () => {
-  it('assembles the route with its trend, coverage and top lists', async () => {
-    const topCustomers = [
-      {
-        position: 1,
-        customer_id: 'c1',
-        name: 'Farmacia San José',
-        trade_name: null,
-        amount: '2100.00',
-        orders_count: 9,
-      },
-    ];
-    const topProducts = [
-      {
-        position: 1,
-        product_id: 42,
-        code: 'ABC-1',
-        name: 'Producto X',
-        amount: '1500.00',
-        units: '120.0000',
-      },
-    ];
-    const weekdays = Array.from({ length: 7 }, (_, weekday) => ({
-      weekday,
-      amount: weekday === 1 ? '9170.00' : '0.00',
-      orders_count: weekday === 1 ? 72 : 0,
-    }));
-    const sellers = [
-      { user_id: 'u1', name: 'Carlos Martínez', amount: '9170.00', units: '1240.0000', orders_count: 72 },
-    ];
+  it('returns the card, coverage and lists of one route', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([routeRow()]);
+    detailTail(queryRaw);
 
-    const queryRaw = jest
-      .fn()
-      .mockResolvedValueOnce([routeRow()])
-      .mockResolvedValueOnce([{ amount: '8100.00', units: '1100.0000', invoices: 62 }])
-      .mockResolvedValueOnce([{ assigned_customers: 20, purchasing_customers: 14 }])
-      .mockResolvedValueOnce(topCustomers)
-      .mockResolvedValueOnce(topProducts)
-      .mockResolvedValueOnce(weekdays)
-      .mockResolvedValueOnce(sellers);
+    const result = await getRouteMetricsDetail(buildClient(queryRaw), ROUTE_ID, SEPTEMBER, NOW);
 
-    const result = await getRouteMetricsDetail(
-      buildClient(queryRaw),
-      ROUTE_ID,
-      SEPTEMBER,
-      NOW
-    );
-
+    expect(result.previous_period).toEqual(AUGUST_TAIL);
     expect(result.route.route_id).toBe(ROUTE_ID);
-    expect(result.route.effectiveness).toBe('1310.00');
-    expect(result.previous).toEqual({
-      period: { from: '2026-08-02', to: '2026-08-31' },
-      amount: '8100.00',
-      // (9170 - 8100) / 8100 = 13.2 %
-      change_rate: 13.2,
-    });
-    expect(result.portfolio_coverage).toEqual({
-      assigned_customers: 20,
-      purchasing_customers: 14,
-      rate: 70,
-    });
-    expect(result.top_customers).toEqual(topCustomers);
-    expect(result.top_products).toEqual(topProducts);
-    expect(result.sales_by_weekday).toHaveLength(7);
-    expect(result.seller_performance).toEqual(sellers);
-    // PCRM-176, not this issue: no average ticket anywhere in the payload.
-    expect(result.route).not.toHaveProperty('average_ticket');
-    expect(JSON.stringify(result)).not.toContain('average_ticket');
-  });
-
-  it('asks the previous period of equal length for the trend', async () => {
-    const queryRaw = detailTail(jest.fn().mockResolvedValueOnce([routeRow()]));
-
-    await getRouteMetricsDetail(buildClient(queryRaw), ROUTE_ID, SEPTEMBER, NOW);
-
-    expect(queryRaw).toHaveBeenCalledTimes(7);
-    // Second call is the previous-period total: 2 Aug .. 31 Aug, 30 local days.
-    expect(isoInstants(sqlOf(queryRaw, 1))).toEqual([
-      '2026-08-02T06:00:00.000Z',
-      '2026-09-01T06:00:00.000Z',
-    ]);
-    expect(sqlOf(queryRaw, 1).values).toContain(ROUTE_ID);
-    // The ranking row is filtered after the window functions, so the detail
-    // reports the position the route holds among all of them.
-    expect(sqlOf(queryRaw, 0).sql).toContain('ranked.route_id =');
-  });
-
-  it('returns no change rate when the previous period sold nothing', async () => {
-    const queryRaw = detailTail(jest.fn().mockResolvedValueOnce([routeRow()]), {
-      previous: { amount: '0.00', units: '0.0000', invoices: 0 },
-    });
-
-    const result = await getRouteMetricsDetail(
-      buildClient(queryRaw),
-      ROUTE_ID,
-      SEPTEMBER,
-      NOW
-    );
-
-    expect(result.previous.amount).toBe('0.00');
-    // Growth from zero has no rate: null, never a division by zero.
-    expect(result.previous.change_rate).toBeNull();
-  });
-
-  it('reports a drop as a negative change rate', async () => {
-    const queryRaw = detailTail(
-      jest.fn().mockResolvedValueOnce([routeRow({ amount: '4050.00' })]),
-      { previous: { amount: '8100.00', units: '1100.0000', invoices: 62 } }
-    );
-
-    const result = await getRouteMetricsDetail(
-      buildClient(queryRaw),
-      ROUTE_ID,
-      SEPTEMBER,
-      NOW
-    );
-
-    expect(result.previous.change_rate).toBe(-50);
-  });
-
-  it('has no portfolio coverage when the route has no customers assigned', async () => {
-    const queryRaw = detailTail(jest.fn().mockResolvedValueOnce([routeRow()]), {
-      coverage: { assigned_customers: 0, purchasing_customers: 0 },
-    });
-
-    const result = await getRouteMetricsDetail(
-      buildClient(queryRaw),
-      ROUTE_ID,
-      SEPTEMBER,
-      NOW
-    );
-
-    expect(result.portfolio_coverage).toEqual({
-      assigned_customers: 0,
-      purchasing_customers: 0,
-      rate: null,
-    });
-  });
-
-  it('carries a route that sold nothing through the whole detail', async () => {
-    const queryRaw = detailTail(
-      jest.fn().mockResolvedValueOnce([
-        routeRow({
-          amount: '0.00',
-          units: '0.0000',
-          executed_route_days: 0,
-          effectiveness: null,
-          visited_customers: 0,
-          planned_customers: 12,
-          visit_coverage_rate: 0,
-          stops_executed: 0,
-          stops_planned: 12,
-        }),
-      ]),
-      { previous: { amount: '0.00', units: '0.0000', invoices: 0 } }
-    );
-
-    const result = await getRouteMetricsDetail(
-      buildClient(queryRaw),
-      ROUTE_ID,
-      SEPTEMBER,
-      NOW
-    );
-
-    // Agenda with no stop executed: 0 % coverage is a real figure, not a null.
-    expect(result.route.visit_coverage_rate).toBe(0);
-    expect(result.route.effectiveness).toBeNull();
-    expect(result.previous.change_rate).toBeNull();
+    expect(result.route.change_rate).toBe(13.2);
+    expect(result.portfolio_coverage).toEqual({ scheduled_customers: 20, purchasing_customers: 14, rate: 70 });
     expect(result.top_customers).toEqual([]);
+    expect(result.top_products).toEqual([]);
+    expect(result.sales_by_weekday).toEqual([]);
     expect(result.seller_performance).toEqual([]);
   });
 
-  it('keeps a fully covered route at 100 %', async () => {
-    const queryRaw = detailTail(
-      jest.fn().mockResolvedValueOnce([
-        routeRow({ visited_customers: 20, planned_customers: 20, visit_coverage_rate: 100 }),
-      ])
-    );
-
-    const result = await getRouteMetricsDetail(
-      buildClient(queryRaw),
-      ROUTE_ID,
-      SEPTEMBER,
-      NOW
-    );
-
-    expect(result.route.visit_coverage_rate).toBe(100);
-  });
-
-  it('limits both top lists to ROUTE_TOP_LIMIT rows', async () => {
-    const queryRaw = detailTail(jest.fn().mockResolvedValueOnce([routeRow()]));
+  it('filters the card query to the route', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([routeRow()]);
+    detailTail(queryRaw);
 
     await getRouteMetricsDetail(buildClient(queryRaw), ROUTE_ID, SEPTEMBER, NOW);
 
-    expect(sqlOf(queryRaw, 3).values).toContain(ROUTE_TOP_LIMIT);
-    expect(sqlOf(queryRaw, 4).values).toContain(ROUTE_TOP_LIMIT);
+    expect(sqlOf(queryRaw, 0).values).toContain(ROUTE_ID);
   });
 
-  it('throws 404 when the route does not exist', async () => {
-    const queryRaw = detailTail(jest.fn().mockResolvedValueOnce([]));
+  it('asks the top lists for ROUTE_TOP_LIMIT rows of this route', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([routeRow()]);
+    detailTail(queryRaw);
+
+    await getRouteMetricsDetail(buildClient(queryRaw), ROUTE_ID, SEPTEMBER, NOW);
+
+    for (const call of [2, 3]) {
+      expect(sqlOf(queryRaw, call).values).toEqual(expect.arrayContaining([ROUTE_ID, ROUTE_TOP_LIMIT]));
+    }
+  });
+
+  it('reads portfolio coverage from the agenda, not from today’s route composition', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([routeRow()]);
+    detailTail(queryRaw);
+
+    await getRouteMetricsDetail(buildClient(queryRaw), ROUTE_ID, SEPTEMBER, NOW);
+
+    const sql = sqlOf(queryRaw, 1).sql;
+    expect(sql).toContain('FROM   scheduled_visit sv');
+    expect(sql).not.toContain('route_customer');
+  });
+
+  it('leaves portfolio coverage null when the route had no agenda', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([routeRow()]);
+    detailTail(queryRaw, { scheduled_customers: 0, purchasing_customers: 0 });
+
+    const result = await getRouteMetricsDetail(buildClient(queryRaw), ROUTE_ID, SEPTEMBER, NOW);
+
+    expect(result.portfolio_coverage.rate).toBeNull();
+  });
+
+  it('404s when the route does not exist or is deleted', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([]);
+    detailTail(queryRaw);
 
     await expect(
       getRouteMetricsDetail(buildClient(queryRaw), ROUTE_ID, SEPTEMBER, NOW)

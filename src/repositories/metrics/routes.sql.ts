@@ -1,69 +1,80 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ERP_STATUS_SALE } from '../../domain/constants/businessRules';
 import { LocalDateRange } from '../../lib/localDateRange';
-import { SALE_AT, TZ, VISIT_AT, inRange } from './fragments.sql';
-import { attributedSalesCte, routeDaysCte, routeSalesCte } from './routeSales.sql';
+import { SALE_AT, TZ, inRange } from './fragments.sql';
+import { attributedSalesCte } from './routeSales.sql';
 
 /*
- * Per-route metrics (PCRM-178): the ranking of GET /metrics/routes and the
- * blocks of GET /metrics/routes/:id.
+ * Per-route metrics (PCRM-178): the route cards of GET /metrics/routes and
+ * the blocks of GET /metrics/routes/:id.
  *
  * A route is identified by `route.id`, the same uuid the routes API exposes
- * (presentation/routes/). The sale carries no route: it reaches one through
- * `sale.visit_id -> visit.route_user_id -> route_user.route_id`, so every
- * query joins `route_user` to translate the assignment into the route id the
- * rest of the API speaks. The attribution itself lives in ./routeSales.sql.ts
- * and is never rewritten here.
+ * (presentation/routes/). Everything here reads the route's history, its
+ * agenda (`scheduled_visit`), and reaches the route through the assignment
+ * that generated each stop; sales follow the rule of ./routeSales.sql.ts.
  */
 
+/** Columns of the route agenda inside the period, aliased `ag`. */
+const agendaCte = (range: LocalDateRange): Prisma.Sql => Prisma.sql`
+  agenda AS (
+    -- visit_date is a plain date in the customer's calendar, so it compares
+    -- against the range's local days with no timezone conversion. Stops on
+    -- prospects have no customer and are not portfolio (CLAUDE.md 7.1).
+    SELECT ru.route_id, sv.id, sv.customer_id
+    FROM   scheduled_visit sv
+    JOIN   route_user ru
+           ON ru.id = sv.route_user_id
+    WHERE  sv.deleted_at IS NULL
+      AND  sv.customer_id IS NOT NULL
+      AND  sv.visit_date >= ${range.from}::date
+      AND  sv.visit_date <= ${range.to}::date
+  )
+`;
+
 /**
- * One row per route, ranked by attributed amount. Includes routes with no
- * activity, as zeros: the panel lists the whole route catalogue, and an empty
- * route is a finding, not a missing row.
+ * One row per route, best attributed amount first, with the previous period's
+ * amount for the variation. Includes routes with no activity, as zeros: the
+ * panel lists the whole route catalogue, and an empty route is a finding.
  *
- * `routeId` filters the result without changing the ranking: positions and
- * `total_amount` are computed over every route in the inner query and only
- * then filtered, so the detail of a route reports the position it really
- * holds instead of a 1 of 1.
+ * `routeId` keeps only that route; it is how the detail reads its summary.
  */
-export const routeMetricsSql = (range: LocalDateRange, routeId?: string): Prisma.Sql => {
-  const ranked = Prisma.sql`
+export const routeMetricsSql = (
+  range: LocalDateRange,
+  previous: LocalDateRange,
+  routeId?: string
+): Prisma.Sql => {
+  const routeFilter = routeId ? Prisma.sql`AND r.id = ${routeId}::uuid` : Prisma.empty;
+
+  return Prisma.sql`
     WITH
-    ${routeSalesCte(range)},
-    ${routeDaysCte(range)},
-    executed AS (
-      SELECT ru.route_id,
-             COUNT(*)                            AS stops_executed,
-             COUNT(DISTINCT v.customer_id)       AS visited_customers
-      FROM   visit v
-      JOIN   route_user ru
-             ON ru.id = v.route_user_id
-      WHERE  v.deleted_at IS NULL
-        AND  v.route_user_id IS NOT NULL
-        AND  ${inRange(VISIT_AT, range)}
-      GROUP  BY ru.route_id
+    ${attributedSalesCte({ start: previous.start, end: range.end })},
+    route_sales AS (
+      SELECT a.route_id,
+             COALESCE(SUM(a.amount) FILTER (
+               WHERE ${inRange(Prisma.raw('a.erp_created_at'), range)}), 0)     AS amount,
+             COALESCE(SUM(a.amount) FILTER (
+               WHERE ${inRange(Prisma.raw('a.erp_created_at'), previous)}), 0)  AS previous_amount
+      FROM   attributed_sales a
+      GROUP  BY a.route_id
     ),
-    planned AS (
-      -- The agenda of the period. visit_date is a plain date already in the
-      -- customer's calendar, so it compares against the range's local days
-      -- and needs no timezone conversion. A stop on a prospect has a null
-      -- customer_id and counts as a planned stop but not as a planned
-      -- customer: a prospect is not portfolio (CLAUDE.md 7.1).
-      SELECT ru.route_id,
-             COUNT(*)                            AS stops_planned,
-             COUNT(DISTINCT sv.customer_id)      AS planned_customers
-      FROM   scheduled_visit sv
-      JOIN   route_user ru
-             ON ru.id = sv.route_user_id
-      WHERE  sv.deleted_at IS NULL
-        AND  sv.visit_date >= ${range.from}::date
-        AND  sv.visit_date <= ${range.to}::date
-      GROUP  BY ru.route_id
+    ${agendaCte(range)},
+    coverage AS (
+      -- Of the customers on the route's agenda, how many had a stop executed:
+      -- a visit only exists for a stop of the agenda, so visited <= planned.
+      SELECT ag.route_id,
+             COUNT(DISTINCT ag.customer_id) AS planned_customers,
+             COUNT(DISTINCT ag.customer_id) FILTER (
+               WHERE EXISTS (SELECT 1 FROM visit v
+                             WHERE v.scheduled_visit_id = ag.id
+                               AND v.deleted_at IS NULL)
+             )                              AS visited_customers
+      FROM   agenda ag
+      GROUP  BY ag.route_id
     ),
     operators AS (
       -- Who works the route: the sellers assigned today plus anyone who
-      -- actually executed a stop on it during the period, so a reassignment
-      -- mid-period does not erase whoever did the work.
+      -- executed one of its stops in the period, so a reassignment mid-period
+      -- does not erase whoever did the work.
       SELECT ru.route_id, u.id, u.name
       FROM   route_user ru
       JOIN   app_user u
@@ -71,16 +82,14 @@ export const routeMetricsSql = (range: LocalDateRange, routeId?: string): Prisma
             AND u.deleted_at IS NULL
       WHERE  ru.deleted_at IS NULL
       UNION
-      SELECT ru.route_id, u.id, u.name
-      FROM   visit v
-      JOIN   route_user ru
-             ON ru.id = v.route_user_id
+      SELECT ag.route_id, u.id, u.name
+      FROM   agenda ag
+      JOIN   visit v
+             ON v.scheduled_visit_id = ag.id
+            AND v.deleted_at IS NULL
       JOIN   app_user u
              ON u.id = v.user_id
             AND u.deleted_at IS NULL
-      WHERE  v.deleted_at IS NULL
-        AND  v.route_user_id IS NOT NULL
-        AND  ${inRange(VISIT_AT, range)}
     ),
     sellers AS (
       SELECT o.route_id,
@@ -89,46 +98,23 @@ export const routeMetricsSql = (range: LocalDateRange, routeId?: string): Prisma
       FROM   operators o
       GROUP  BY o.route_id
     )
-    SELECT r.id::text        AS route_id,
+    SELECT r.id::text                                          AS route_id,
            r.name,
            r.municipality,
            r.zone,
            r.active,
-           COALESCE(rs.amount, 0)::numeric(14,2)::text AS amount,
-           COALESCE(rs.units, 0)::numeric(16,4)::text  AS units,
-           ROW_NUMBER() OVER (ORDER BY COALESCE(rs.amount, 0) DESC, r.name ASC)::int
-             AS amount_position,
-           ROW_NUMBER() OVER (ORDER BY COALESCE(rs.units, 0) DESC, r.name ASC)::int
-             AS units_position,
-           COALESCE(rd.days, 0)::int                   AS executed_route_days,
-           -- Null, not zero: a route nobody executed has no effectiveness to
-           -- report, and NULLIF keeps the division out of trouble.
-           (rs.amount / NULLIF(rd.days, 0))::numeric(14,2)::text AS effectiveness,
-           COALESCE(e.visited_customers, 0)::int       AS visited_customers,
-           COALESCE(p.planned_customers, 0)::int       AS planned_customers,
-           ROUND(100.0 * COALESCE(e.visited_customers, 0)
-                 / NULLIF(p.planned_customers, 0), 1)::float8 AS visit_coverage_rate,
-           COALESCE(e.stops_executed, 0)::int          AS stops_executed,
-           COALESCE(p.stops_planned, 0)::int           AS stops_planned,
-           COALESCE(sl.sellers, '[]'::json)            AS sellers,
-           SUM(COALESCE(rs.amount, 0)) OVER ()::numeric(14,2)::text AS total_amount,
-           SUM(COALESCE(rs.units, 0)) OVER ()::numeric(16,4)::text  AS total_units
+           COALESCE(rs.amount, 0)::numeric(14,2)::text          AS amount,
+           COALESCE(rs.previous_amount, 0)::numeric(14,2)::text AS previous_amount,
+           ROUND(100.0 * COALESCE(c.visited_customers, 0)
+                 / NULLIF(c.planned_customers, 0), 1)::float8   AS visit_coverage_rate,
+           COALESCE(sl.sellers, '[]'::json)                     AS sellers
     FROM   route r
     LEFT   JOIN route_sales rs ON rs.route_id = r.id
-    LEFT   JOIN route_days  rd ON rd.route_id = r.id
-    LEFT   JOIN executed    e  ON e.route_id  = r.id
-    LEFT   JOIN planned     p  ON p.route_id  = r.id
+    LEFT   JOIN coverage    c  ON c.route_id  = r.id
     LEFT   JOIN sellers     sl ON sl.route_id = r.id
     WHERE  r.deleted_at IS NULL
-  `;
-
-  if (!routeId) {
-    return Prisma.sql`${ranked} ORDER BY amount_position`;
-  }
-
-  return Prisma.sql`
-    SELECT * FROM (${ranked}) ranked
-    WHERE  ranked.route_id = ${routeId}
+           ${routeFilter}
+    ORDER  BY COALESCE(rs.amount, 0) DESC, r.name ASC
   `;
 };
 
@@ -162,7 +148,7 @@ export const routeTopCustomersSql = (
  * Products sold the most on the route during the period. Same rules as the
  * company-wide ranking (./products.sql.ts): VAT included, lines dated by
  * their sale, units in the product's base unit and orphan or deleted
- * products out.
+ * products out. Units are per product, where they add like with like.
  */
 export const routeTopProductsSql = (
   range: LocalDateRange,
@@ -226,7 +212,6 @@ export const routeSellerPerformanceSql = (
   SELECT u.id::text                         AS user_id,
          u.name,
          SUM(a.amount)::numeric(14,2)::text AS amount,
-         SUM(a.units)::numeric(16,4)::text  AS units,
          COUNT(DISTINCT a.erp_sale_id)::int AS orders_count
   FROM   attributed_sales a
   JOIN   app_user u
@@ -237,33 +222,31 @@ export const routeSellerPerformanceSql = (
 `;
 
 /**
- * Portfolio coverage of the route: of the customers that make up the route
- * today (`route_customer`), how many bought in the period.
+ * Portfolio coverage of the route: of the customers on its agenda in the
+ * period, how many bought.
  *
- * Deliberately different from visit coverage. The purchase counted here is
- * any confirmed sale of the customer, with or without a visit behind it: the
- * question is whether the portfolio is buying, not whether the route gets
- * the credit. Always one row, zeros included.
+ * Read from the agenda and not from today's `route_customer`, so a customer
+ * moved to another route later still counts where it was planned. The
+ * purchase counted is any confirmed sale of the customer, with or without a
+ * visit behind it: the question is whether the portfolio is buying, not
+ * whether the route gets the credit. Always one row, zeros included.
  */
 export const routePortfolioCoverageSql = (
   range: LocalDateRange,
   routeId: string
 ): Prisma.Sql => Prisma.sql`
-  SELECT COUNT(*)::int AS assigned_customers,
-         COUNT(*) FILTER (
+  WITH ${agendaCte(range)}
+  SELECT COUNT(DISTINCT ag.customer_id)::int AS scheduled_customers,
+         COUNT(DISTINCT ag.customer_id) FILTER (
            WHERE EXISTS (
              SELECT 1
              FROM   sale s
-             WHERE  s.customer_id = rc.customer_id
+             WHERE  s.customer_id = ag.customer_id
                AND  s.deleted_at IS NULL
                AND  s.erp_status = ${ERP_STATUS_SALE}
                AND  ${inRange(SALE_AT, range)}
            )
          )::int AS purchasing_customers
-  FROM   route_customer rc
-  JOIN   customer c
-         ON c.id = rc.customer_id
-        AND c.deleted_at IS NULL
-  WHERE  rc.route_id = ${routeId}::uuid
-    AND  rc.deleted_at IS NULL
+  FROM   agenda ag
+  WHERE  ag.route_id = ${routeId}::uuid
 `;

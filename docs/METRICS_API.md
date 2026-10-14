@@ -150,7 +150,7 @@ Cada KPI viene como `{ value, previous_value }`. `previous_value` es la misma KP
 | `orders_count` | "Número de pedidos" | `COUNT(sale)` |
 | `average_ticket` | "Ticket promedio" | `total_sales / orders_count` |
 | `average_monthly_sales` | "Venta prom. mensual" | `total_sales /` meses calendario que toca el rango |
-| `route_effectiveness` | "Efectividad de ruta" | Venta atribuida a ruta (`sale.visit_id → visit.route_user_id`) ÷ jornadas ejecutadas (par ruta-asignada + día local con al menos una visita) |
+| `route_effectiveness` | "Efectividad de ruta" | Venta atribuida a ruta (`sale.visit_id → visit.scheduled_visit_id → scheduled_visit.route_user_id`, la misma regla del endpoint 11) ÷ jornadas ejecutadas (par asignación que generó la parada + día local con al menos una parada ejecutada) |
 | `goal_compliance` | "Cumplimiento de meta" | Venta de los vendedores con meta ÷ suma de sus metas de los meses tocados × 100 |
 | `customers_without_visit` | "Clientes sin visita" | Clientes activos sin visita en los `inactivity_days` previos al fin del rango (o a hoy, si el rango llega al futuro) |
 | `recovered_customers` | "Clientes recuperados" | Clientes con una compra en el rango precedida de un hueco de más de `inactivity_days` sin comprar. La primera compra histórica no cuenta (clientes nuevos está retirado) |
@@ -381,52 +381,48 @@ Orden: `amount` DESC, después `name` y `id`, para que la paginación sea establ
 
 ### 11. `GET /routes` y `GET /routes/:id` — métricas por ruta (PCRM-178)
 
-Ranking de rutas y detalle de una ruta. Misma query común (`from`, `to`) que el resto del panel.
+Cards de rutas y detalle de una ruta. Misma query común (`from`, `to`) que el resto del panel.
 
-**Atribución de la venta.** Es **la misma regla que la KPI global `route_effectiveness`** (CLAUDE.md 5.4), escrita una sola vez en `src/repositories/metrics/routeSales.sql.ts` y compartida por las dos: venta confirmada (`deleted_at IS NULL`, `erp_status = 2`, fechada por `erp_created_at`) **unida a una visita que lleva `route_user_id`**. Una venta sin `visit_id`, o colgada de una visita fuera de ruta, no es venta de ruta y no aparece en ningún número de estos endpoints.
+**Atribución de la venta.** El historial de una ruta es su agenda: cada parada es un `scheduled_visit` que cuelga de la asignación (`route_user`) que la generó, y cada visita que registra la app apunta a la parada que ejecutó. Una venta confirmada (`deleted_at IS NULL`, `erp_status = 2`, fechada por `erp_created_at`) es de la ruta de la que salió la parada de su visita:
 
-**Identidad de la ruta.** `route_id` es `route.id`, el mismo uuid que expone la API de rutas (`/api/v1/routes`), así que la fila del ranking enlaza directo con la pantalla de configuración de la ruta. La venta no guarda ruta: llega a ella por `sale.visit_id → visit.route_user_id → route_user.route_id`. Por eso cada query une `route_user`, que es quien traduce la asignación al id de ruta. `route_user.deleted_at` **no** se filtra: una asignación reasignada después igual ejecutó las visitas de su período, y la KPI global también las cuenta.
+```
+sale.visit_id → visit.scheduled_visit_id → scheduled_visit.route_user_id → route_user.route_id
+```
 
-**Qué no trae.** `average_ticket` por ruta es PCRM-176 / issue #56, no está en estos endpoints. El denominador que esa issue necesita (facturas distintas) ya lo calcula `findRouteSalesTotals` en `src/repositories/routeMetrics.repository.ts`; #56 lo importa en lugar de reescribir el SQL.
+La cadena no se mueve con cambios posteriores: reasignar el día (`route_user` borrado) o cambiar los clientes de la ruta (`route_customer`) no reubica ventas ya hechas. Una venta sin visita, o con una visita sin parada detrás, no es venta de ruta (CLAUDE.md Anexo A.2). La regla vive una sola vez en `src/repositories/metrics/routeSales.sql.ts`.
 
-#### `GET /routes` — ranking
+**Identidad de la ruta.** `route_id` es `route.id`, el mismo uuid que expone la API de rutas (`/api/v1/routes`).
+
+**Qué no trae.** `average_ticket` por ruta es PCRM-176: lo calcula aparte con `findRouteSalesTotals` (`amount` / `invoices`) de `src/repositories/routeMetrics.repository.ts`, sin reescribir la atribución.
+
+#### `GET /routes` — cards
 
 ```json
 {
-  "period": { "...": "..." }, "thresholds": { "...": "..." },
+  "period": { "from": "2026-09-01", "to": "2026-09-30" }, "thresholds": { "...": "..." },
+  "previous_period": { "from": "2026-08-02", "to": "2026-08-31" },
   "routes": [
     {
       "route_id": "…", "name": "Zona Escalón", "municipality": "San Salvador", "zone": "Escalón", "active": true,
-      "amount": "9170.00", "units": "1240.0000",
-      "amount_position": 1, "units_position": 2,
-      "executed_route_days": 7, "effectiveness": "1310.00",
-      "visited_customers": 18, "planned_customers": 20, "visit_coverage_rate": 90.0,
-      "stops_executed": 72, "stops_planned": 80,
+      "amount": "9170.00", "previous_amount": "8100.00", "change_rate": 13.2,
+      "visit_coverage_rate": 90.0,
       "sellers": [{ "user_id": "…", "name": "Carlos Martínez" }]
     }
   ],
-  "total_amount": "12000.00",
-  "total_units": "1500.0000"
+  "total_amount": "12000.00"
 }
 ```
 
 | Campo | Notas |
 |---|---|
 | `amount` | Venta atribuida a la ruta en el período, IVA incluido |
-| `units` | `SUM(quantity × COALESCE(factor, 1))` de las líneas de esas ventas, en la unidad base del producto. Misma regla que `/products` |
-| `amount_position` / `units_position` | Posición 1 en adelante entre **todas** las rutas; los empates se rompen por nombre. En el detalle es la posición real de la ruta, no un 1 de 1 |
-| `executed_route_days` | Jornadas ejecutadas: pares distintos (asignación, día local) con al menos una visita. Misma unidad que la KPI global |
-| `effectiveness` | `amount / executed_route_days`. **`null`** si la ruta no se ejecutó ningún día: no hay división por cero |
-| `visited_customers` | Clientes distintos visitados en la ruta durante el período |
-| `planned_customers` | Clientes distintos en la agenda (`scheduled_visit`) de la ruta en el período. Una parada sobre prospecto suma parada planificada pero no cliente planificado |
-| `visit_coverage_rate` | `visited_customers / planned_customers × 100`. **`null`** sin agenda. Puede pasar de 100 % si la ruta visitó clientes que no estaban agendados |
-| `stops_executed` / `stops_planned` | Visitas marcadas y paradas agendadas de la ruta en el período |
-| `sellers` | Vendedores que la operan: los asignados hoy, más quien ejecutó alguna parada en el período (una reasignación a mitad de período no borra a quien hizo el trabajo) |
-| `total_amount` / `total_units` | Suma de **todas** las rutas en el período |
+| `previous_amount` / `change_rate` | Lo mismo en `previous_period` (igual largo, contiguo) y su variación %. `change_rate` es **`null`** si el período anterior vendió cero |
+| `visit_coverage_rate` | De los clientes en la agenda de la ruta en el período (`scheduled_visit`, sin prospectos), qué % tuvo su parada ejecutada. **`null`** sin agenda. No pasa de 100 %: toda visita sale de una parada |
+| `sellers` | Los asignados hoy, más quien ejecutó alguna parada de la ruta en el período (una reasignación a mitad de período no borra a quien hizo el trabajo) |
+| `total_amount` | Venta atribuida de **todas** las rutas. **No cuadra con `total_sales` del panel, y es correcto**: `total_sales` incluye la venta sin visita. `total_amount ≤ total_sales` siempre |
 
-- Ordenado por `amount` descendente.
-- Aparecen todas las rutas no borradas, incluidas las que no tuvieron actividad: llegan en ceros, con `effectiveness: null` y `sellers: []`. Nunca un 500.
-- **`total_amount` no cuadra con `total_sales` del panel, y es correcto**: `total_sales` incluye la venta sin visita, que no es atribuible a ninguna ruta (Anexo A.2). `total_amount ≤ total_sales` siempre.
+- Ordenado por `amount` descendente, empates por nombre.
+- Aparecen todas las rutas no borradas, incluidas las que no tuvieron actividad: llegan en ceros, con `change_rate` y `visit_coverage_rate` en `null` y `sellers: []`.
 
 #### `GET /routes/:id` — detalle
 
@@ -435,13 +431,9 @@ Ranking de rutas y detalle de una ruta. Misma query común (`from`, `to`) que el
 ```json
 {
   "period": { "...": "..." }, "thresholds": { "...": "..." },
-  "route": { "...misma forma que una fila de /routes..." },
-  "previous": {
-    "period": { "from": "2026-08-02", "to": "2026-08-31" },
-    "amount": "8100.00",
-    "change_rate": 13.2
-  },
-  "portfolio_coverage": { "assigned_customers": 20, "purchasing_customers": 14, "rate": 70.0 },
+  "previous_period": { "from": "2026-08-02", "to": "2026-08-31" },
+  "route": { "...misma forma que una card de /routes..." },
+  "portfolio_coverage": { "scheduled_customers": 20, "purchasing_customers": 14, "rate": 70.0 },
   "top_customers": [
     { "position": 1, "customer_id": "…", "name": "Farmacia San José", "trade_name": null,
       "amount": "2100.00", "orders_count": 9 }
@@ -455,19 +447,21 @@ Ranking de rutas y detalle de una ruta. Misma query común (`from`, `to`) que el
     { "weekday": 1, "amount": "9170.00", "orders_count": 72 }
   ],
   "seller_performance": [
-    { "user_id": "…", "name": "Carlos Martínez", "amount": "9170.00", "units": "1240.0000", "orders_count": 72 }
+    { "user_id": "…", "name": "Carlos Martínez", "amount": "9170.00", "orders_count": 72 }
   ]
 }
 ```
 
 | Bloque | Notas |
 |---|---|
-| `previous` | Período anterior de igual largo. `change_rate` es la variación % de `route.amount` contra `previous.amount`; **`null` si el período anterior vendió cero**, porque crecer desde cero no tiene tasa |
-| `portfolio_coverage` | Clientes que componen la ruta hoy (`route_customer` vigente) y cuántos compraron en el período. **Distinta de `visit_coverage_rate`**: aquí cuenta cualquier venta confirmada del cliente, con visita o sin ella — la pregunta es si la cartera está comprando, no si la ruta se lleva el crédito. `rate` es `null` sin cartera asignada |
-| `top_customers` | Hasta 10 clientes por monto atribuido. Las ventas sin cliente quedan fuera de la lista pero siguen dentro del total de la ruta |
-| `top_products` | Hasta 10 productos por monto. Mismas reglas que `/products`: IVA incluido, líneas fechadas por su venta, unidades en la unidad base, sin líneas huérfanas ni productos borrados |
+| `portfolio_coverage` | De los clientes en la agenda de la ruta en el período, cuántos compraron. Sale de la agenda y no del `route_customer` de hoy, para que un cliente movido después de ruta cuente donde estaba planificado. **Distinta de `visit_coverage_rate`**: aquí cuenta cualquier venta confirmada del cliente, con visita o sin ella. `rate` es `null` sin agenda |
+| `top_customers` | Hasta 10 clientes por monto atribuido. Las ventas sin cliente quedan fuera de la lista pero dentro del total de la ruta |
+| `top_products` | Hasta 10 productos por monto, con sus unidades en la unidad base. Mismas reglas que `/products` |
 | `sales_by_weekday` | Siempre 7 buckets, ceros incluidos. `weekday` es el `DOW` de Postgres sobre el **día local**: 0 domingo … 6 sábado |
-| `seller_performance` | Lista, no serie de gráfico. La venta se acredita a `sale.user_id`, el vendedor del ERP, igual que en `/sellers`. Solo aparecen vendedores con venta atribuida en la ruta |
+| `seller_performance` | Monto y pedidos acreditados a `sale.user_id`, igual que en `/sellers`. Solo vendedores con venta atribuida en la ruta |
+
+**Retirado (decisión del PO, 13/10/2026).** La primera versión de PCRM-178 devolvía además unidades de la ruta, posiciones por monto y por unidades, venta por día-ruta (efectividad), clientes visitados / planificados y paradas ejecutadas / planificadas. Las unidades de una ruta suman productos distintos y no se pueden comparar; el resto no aportaba a la vista de cards. Las unidades siguen por producto en `top_products`. No reintroducir sin conversación.
+
 ---
 
 ## Qué consume cada pantalla
