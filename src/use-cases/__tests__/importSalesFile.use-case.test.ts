@@ -6,6 +6,7 @@ import {
   SYNC_CHUNK_SIZE,
   finalizeUploadSync,
   markUploadProcessing,
+  removeSalesNotInUpload,
   syncStagedSalesChunk,
 } from '../../services/salesSync.service';
 import { deleteAuthUser } from '../../services/supabaseAdmin.service';
@@ -31,6 +32,7 @@ jest.mock('../../services/salesSync.service', () => {
     syncStagedSalesChunk: jest.fn(),
     finalizeUploadSync: jest.fn(),
     markUploadProcessing: jest.fn(),
+    removeSalesNotInUpload: jest.fn(),
   };
 });
 
@@ -49,6 +51,7 @@ const syncChunkMock = syncStagedSalesChunk as jest.Mock;
 const finalizeMock = finalizeUploadSync as jest.Mock;
 const markProcessingMock = markUploadProcessing as jest.Mock;
 const deleteAuthUserMock = deleteAuthUser as jest.Mock;
+const removeSalesMock = removeSalesNotInUpload as jest.Mock;
 
 const stagingResult = {
   upload_id: 'upload-1',
@@ -56,12 +59,14 @@ const stagingResult = {
   accepted: 120,
   rejected: 0,
   range: { from: new Date('2025-09-01'), to: new Date('2025-09-30') },
+  export_range: { from: new Date('2025-08-28'), to: new Date('2025-09-30') },
   rejections: [],
   rejections_truncated: 0,
   warnings: {
     sales_without_customer: 0,
     sales_without_user: 0,
     quotations_skipped: 0,
+    annulled_sales: 0,
   },
 };
 
@@ -77,6 +82,8 @@ describe('importSalesFile — chunked sync orchestration (PCRM-168)', () => {
     markProcessingMock.mockResolvedValue(undefined);
     deleteAuthUserMock.mockReset();
     deleteAuthUserMock.mockResolvedValue(undefined);
+    removeSalesMock.mockReset();
+    removeSalesMock.mockResolvedValue({ annulled: 0, missing: 0 });
 
     // Each $transaction call invokes its callback with a fake tx client.
     prismaTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
@@ -96,7 +103,7 @@ describe('importSalesFile — chunked sync orchestration (PCRM-168)', () => {
 
     const result = await importSalesFile(Buffer.from('[]'), 'admin-1');
 
-    // 1 lock + 1 stage + 1 mark-processing + 3 sync chunks + 1 finalize.
+    // 1 lock + 1 stage + 1 mark-processing + 3 sync chunks + 1 remove-and-finalize.
     expect(prismaTransaction).toHaveBeenCalledTimes(7);
     expect(markProcessingMock).toHaveBeenCalledWith(expect.anything(), 'upload-1');
     expect(stageSalesFileMock).toHaveBeenCalledTimes(1);
@@ -159,6 +166,40 @@ describe('importSalesFile — chunked sync orchestration (PCRM-168)', () => {
     });
 
     expect(deleteAuthUserMock).toHaveBeenCalledWith('auth-orphan-1');
+    expect(finalizeMock).not.toHaveBeenCalled();
+    // A failed import removes nothing.
+    expect(removeSalesMock).not.toHaveBeenCalled();
+  });
+
+  it('removes the sales the file no longer carries after every chunk, in the finalize transaction', async () => {
+    stageSalesFileMock.mockResolvedValue(stagingResult);
+    syncChunkMock.mockResolvedValue({ inserted: 10, updated: 0, sync_failed: 0, has_more: false });
+    finalizeMock.mockResolvedValue(undefined);
+    removeSalesMock.mockResolvedValue({ annulled: 1, missing: 4 });
+
+    const result = await importSalesFile(Buffer.from('[]'), 'admin-1');
+
+    // The created_at range, not the fecha_emision one: that is what the
+    // ERP export filters on.
+    expect(removeSalesMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'upload-1',
+      stagingResult.export_range
+    );
+    expect(removeSalesMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      syncChunkMock.mock.invocationCallOrder[0]
+    );
+    // Same tx client as finalize: both commit or neither does.
+    expect(removeSalesMock.mock.calls[0][0]).toBe(finalizeMock.mock.calls[0][0]);
+    expect(result.removed).toEqual({ annulled: 1, missing: 4 });
+  });
+
+  it('does not finalize the upload when the removal throws', async () => {
+    stageSalesFileMock.mockResolvedValue(stagingResult);
+    syncChunkMock.mockResolvedValue({ inserted: 10, updated: 0, sync_failed: 0, has_more: false });
+    removeSalesMock.mockRejectedValue(new Error('boom'));
+
+    await expect(importSalesFile(Buffer.from('[]'), 'admin-1')).rejects.toThrow('boom');
     expect(finalizeMock).not.toHaveBeenCalled();
   });
 

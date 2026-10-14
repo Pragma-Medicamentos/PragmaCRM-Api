@@ -290,6 +290,101 @@ describe('stageSalesFile — quotations (estado 1)', () => {
   });
 });
 
+describe('stageSalesFile — annulled sales (estado 3)', () => {
+  it('stages an annulled sale as annulled, not pending, and counts it apart', async () => {
+    const { client, stagedRows } = createClientMock();
+    const annulled = validSale(3);
+    annulled.venta.estado = 3;
+
+    const result = await stageSalesFile(client, toBuffer([validSale(1), annulled]), UPLOADED_BY);
+
+    expect(result).toMatchObject({ sales_received: 2, accepted: 1, rejected: 0 });
+    expect(result.warnings.annulled_sales).toBe(1);
+    expect(stagedRows).toEqual([
+      expect.objectContaining({ erp_sale_id: 1, status: 'pending' }),
+      expect.objectContaining({ erp_sale_id: 3, status: 'annulled', error: null }),
+    ]);
+  });
+
+  it('recognizes an annulled sale even when the rest of its data is incomplete', async () => {
+    const { client, stagedRows } = createClientMock();
+    const annulled = { venta: { id_venta: 9, estado: 3 }, detalle: [] };
+
+    const result = await stageSalesFile(client, toBuffer([validSale(1), annulled]), UPLOADED_BY);
+
+    expect(result.rejected).toBe(0);
+    expect(stagedRows[1]).toMatchObject({ erp_sale_id: 9, status: 'annulled' });
+  });
+
+  it('does not widen the batch range with the date of an annulled sale', async () => {
+    const { client } = createClientMock();
+    const annulled = validSale(3);
+    annulled.venta.estado = 3;
+    annulled.venta.fecha_emision = '2026-09-01 10:00:00';
+
+    const result = await stageSalesFile(client, toBuffer([validSale(1), annulled]), UPLOADED_BY);
+
+    expect(result.range.from).toEqual(new Date(Date.UTC(2026, 8, 5)));
+    expect(result.range.to).toEqual(new Date(Date.UTC(2026, 8, 5)));
+  });
+
+  it('accepts a file that only carries annulments: there are sales to remove', async () => {
+    const { client, spies } = createClientMock();
+    const annulled = validSale(1);
+    annulled.venta.estado = 3;
+
+    const result = await stageSalesFile(client, toBuffer([annulled]), UPLOADED_BY);
+
+    expect(result).toMatchObject({ accepted: 0, warnings: { annulled_sales: 1 } });
+    expect(spies.upload.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an id_venta that comes both annulled and as a sale in the same file', async () => {
+    const { client } = createClientMock();
+    const annulled = validSale(1);
+    annulled.venta.estado = 3;
+
+    const result = await stageSalesFile(client, toBuffer([annulled, validSale(1)]), UPLOADED_BY);
+
+    expect(result.rejected).toBe(1);
+    expect(result.rejections[0].reason).toMatch(/more than once/);
+  });
+});
+
+describe('stageSalesFile — export range (venta.created_at)', () => {
+  it('spans created_at of every entry, apart from the fecha_emision range', async () => {
+    const { client } = createClientMock();
+    const confirmed = { ...validSale(1), venta: { ...validSale(1).venta, created_at: '02/09/2026 08:00:00' } };
+    const quotation = { ...validSale(2), venta: { ...validSale(2).venta, estado: 1, created_at: '30/08/2026 09:00:00' } };
+    const annulled = { venta: { id_venta: 3, estado: 3, created_at: '04/09/2026 11:00:00' }, detalle: [] };
+    const rejected = { venta: { id_venta: 4, created_at: '01/09/2026 12:00:00' }, detalle: [] };
+
+    const result = await stageSalesFile(
+      client,
+      toBuffer([confirmed, quotation, annulled, rejected]),
+      UPLOADED_BY
+    );
+
+    expect(result.export_range).toEqual({
+      from: new Date(Date.UTC(2026, 7, 30)),
+      to: new Date(Date.UTC(2026, 8, 4)),
+    });
+    // range keeps going by fecha_emision of the confirmed sales only.
+    expect(result.range).toEqual({
+      from: new Date(Date.UTC(2026, 8, 5)),
+      to: new Date(Date.UTC(2026, 8, 5)),
+    });
+  });
+
+  it('is empty when no entry carries created_at', async () => {
+    const { client } = createClientMock();
+
+    const result = await stageSalesFile(client, toBuffer([validSale(1)]), UPLOADED_BY);
+
+    expect(result.export_range).toEqual({ from: null, to: null });
+  });
+});
+
 describe('stageSalesFile — volume', () => {
   it('splits the insert into batches instead of one giant INSERT', async () => {
     const { client, spies, stagedRows } = createClientMock();

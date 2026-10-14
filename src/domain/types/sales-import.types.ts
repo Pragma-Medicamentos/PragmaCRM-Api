@@ -31,6 +31,8 @@ export type UploadStatus = 'staged' | 'processing' | 'completed' | 'failed';
  *   pending    -> validated and queued, waiting for PCRM-34   (this module)
  *   failed     -> failed validation, will not be processed    (this module)
  *   processed  -> already upserted into the live tables       (PCRM-34)
+ *   annulled   -> `estado = 3` in the file: never synchronized; the end of
+ *                 the import soft-deletes that sale from the CRM
  *
  * Careful with `pending`: it does NOT mean "pending validation" — that sale
  * already passed the schema. The PCRM-34 synchronizer queries
@@ -42,7 +44,7 @@ export type UploadStatus = 'staged' | 'processing' | 'completed' | 'failed';
  * The name comes from the column's `@default("pending")` (prisma/schema.prisma),
  * defined in PCRM-31.
  */
-export type SaleStagingStatus = 'pending' | 'failed' | 'processed';
+export type SaleStagingStatus = 'pending' | 'failed' | 'processed' | 'annulled';
 
 /** Invoice date range covered by the batch, for `upload.range_from/to`. */
 export interface UploadRange {
@@ -60,6 +62,13 @@ export interface StagingResult {
   /** Sales queued as `failed`. */
   rejected: number;
   range: UploadRange;
+  /**
+   * Days spanned by `venta.created_at` across every entry of the file,
+   * quotations, annulments and rejections included: the field Efactsoft
+   * filters its export on. Scopes the reconciliation against
+   * `sale.erp_quoted_at`. Differs from `range`, which goes by `fecha_emision`.
+   */
+  export_range: UploadRange;
   /**
    * Rejection details, truncated so a very dirty file does not produce a huge
    * response. `rejected` keeps the real total and every rejection is stored in
@@ -84,7 +93,23 @@ export interface StagingResult {
      * (CLAUDE.md 5.5). Confirmed by the team on 2026-09-11.
      */
     quotations_skipped: number;
+    /**
+     * Annulled sales (`venta.estado === 3`): staged as `annulled` and removed
+     * from the CRM at the end of the import.
+     */
+    annulled_sales: number;
   };
+}
+
+/**
+ * Sales soft-deleted at the end of an import, so the CRM mirrors the file:
+ * annulled in the file, or inside its export range but absent from it.
+ */
+export interface RemovedSalesResult {
+  /** `estado = 3` in the file, wherever their date falls. */
+  annulled: number;
+  /** Inside `export_range` but not present in the file at all. */
+  missing: number;
 }
 
 /** A seller created from the payload because its `erp_user_id` was unknown. */

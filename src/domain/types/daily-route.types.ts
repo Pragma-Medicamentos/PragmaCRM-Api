@@ -70,12 +70,15 @@ export interface DailyRouteStop {
    * degrades to the zone with no distance.
    */
   location: GeoPoint | null;
-  /** `route_customer.sort_order`. Null on extras and on prospects. */
+  /**
+   * `scheduled_visit.sort_order`: a frozen copy of `route_customer.sort_order`
+   * stamped at generation time (PCRM-161), not the live column. Null on
+   * extras and on prospects.
+   */
   sort_order: number | null;
   /**
-   * Derived, never stored: true when no live `route_customer` row ties the
-   * target to this route. Prospects are extra by definition, since they have
-   * no route membership at all.
+   * `scheduled_visit.is_extra` ORed with "is this a prospect": prospects are
+   * extra by definition, since they have no route membership at all.
    */
   is_extra: boolean;
   /** `scheduled_visit.reason` — why an ad-hoc stop was added. */

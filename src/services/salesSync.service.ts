@@ -8,13 +8,17 @@ import {
 } from '../domain/schemas/efactsoft-sale.schema';
 import { ROLES } from '../domain/types/auth.types';
 import {
+  RemovedSalesResult,
   SellerCreated,
   SellerUnmapped,
   SyncResult,
+  UploadRange,
 } from '../domain/types/sales-import.types';
 import { logger } from '../lib/adapters/logger';
 import { ERP_TIMEZONE, parseErpTimestamp } from '../lib/parseErpDate';
 import { Client } from '../lib/prisma';
+import { softDeleteSalesNotInUpload } from '../repositories/sales.repository';
+import { SaleRemovalWindow } from '../repositories/sales/sales.sql';
 import { createPendingSellerAuthUser } from './supabaseAdmin.service';
 
 /**
@@ -283,7 +287,7 @@ const upsertSale = async (
 ): Promise<{ wasInsert: boolean }> => {
   const existing = await client.sale.findUnique({
     where: { erp_sale_id: venta.id_venta },
-    select: { erp_created_at: true, last_payment_at: true, visit_id: true },
+    select: { erp_created_at: true, last_payment_at: true, visit_id: true, erp_quoted_at: true },
   });
 
   // Timestamps come from the payload, never the import time (CLAUDE.md 5.5
@@ -311,6 +315,9 @@ const upsertSale = async (
     visit_id: visitId,
     erp_created_at: erpCreatedAt,
     last_payment_at: lastPaymentAt,
+    // The date Efactsoft filters its export on; only scopes the import
+    // reconciliation. A payload without it keeps what was stored.
+    erp_quoted_at: parseErpTimestamp(venta.created_at) ?? existing?.erp_quoted_at ?? null,
     total: toDecimalInput(venta.total),
     net_total: toDecimalInput(venta.total_neto ?? null),
     vat: toDecimalInput(venta.iva ?? null),
@@ -322,6 +329,9 @@ const upsertSale = async (
     erp_status: venta.estado,
     document: venta.documento ?? null,
     remarks: venta.observaciones ?? null,
+    // A sale removed by an earlier import (annulled or missing from its file)
+    // comes back if a later file carries it again: the file is the truth.
+    deleted_at: null,
     updated_at: new Date(),
   };
 
@@ -480,6 +490,57 @@ export const finalizeUploadSync = async (
       updated_at: new Date(),
     },
   });
+};
+
+/**
+ * Turns an import range — UTC-midnight `date` values holding Salvadoran
+ * calendar days (see `parseErpDateOnly`) — into instant bounds `[start, end)`
+ * that cover both days whole, so a sale booked after 6 p.m. on the last day
+ * still falls inside (CLAUDE.md 5.7). Null when the range is empty.
+ */
+export const getRangeRemovalWindow = (range: UploadRange): SaleRemovalWindow | null => {
+  if (!range.from || !range.to) return null;
+
+  const dayStart = (day: Date) =>
+    DateTime.fromObject(
+      { year: day.getUTCFullYear(), month: day.getUTCMonth() + 1, day: day.getUTCDate() },
+      { zone: ERP_TIMEZONE }
+    ).startOf('day');
+
+  return {
+    start: dayStart(range.from).toJSDate(),
+    end: dayStart(range.to).plus({ days: 1 }).toJSDate(),
+  };
+};
+
+/**
+ * Leaves the CRM matching the imported file: soft-deletes the sales the file
+ * annulled (`estado = 3`) and those inside its export range that it no
+ * longer carries. Limited to the range on purpose, so a partial export never
+ * wipes the history outside it.
+ *
+ * `exportRange` is the `created_at` range (`StagingResult.export_range`),
+ * compared against `sale.erp_quoted_at`: Efactsoft filters its export on
+ * that date, not on `fecha_emision`, which lags it by days.
+ *
+ * Must run after every chunk committed and in the same transaction as
+ * `finalizeUploadSync`: if any step of the import throws first, nothing is
+ * removed. Soft delete, like the rest of the model (CLAUDE.md 5.9); every
+ * read of `sale` already filters `deleted_at IS NULL`.
+ */
+export const removeSalesNotInUpload = async (
+  client: Client,
+  uploadId: string,
+  exportRange: UploadRange
+): Promise<RemovedSalesResult> => {
+  const removed = await softDeleteSalesNotInUpload(
+    client,
+    uploadId,
+    getRangeRemovalWindow(exportRange)
+  );
+
+  const annulled = removed.filter((row) => row.annulled).length;
+  return { annulled, missing: removed.length - annulled };
 };
 
 /**

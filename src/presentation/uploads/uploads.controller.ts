@@ -22,7 +22,12 @@ const buildMessage = (result: ImportSalesResult): string => {
     created_count > 0
       ? ` ${created_count} new ${created_count === 1 ? 'seller' : 'sellers'} created (disabled, pending admin activation).`
       : '';
-  return `${base}, ${rejectedPart}. ${syncPart}.${sellersPart}`;
+  const removedCount = result.removed.annulled + result.removed.missing;
+  const removedPart =
+    removedCount > 0
+      ? ` ${removedCount} ${removedCount === 1 ? 'sale' : 'sales'} removed (${result.removed.annulled} annulled, ${result.removed.missing} no longer in the ERP).`
+      : '';
+  return `${base}, ${rejectedPart}. ${syncPart}.${removedPart}${sellersPart}`;
 };
 
 export class UploadsController {
@@ -47,6 +52,8 @@ export class UploadsController {
         inserted: result.inserted,
         updated: result.updated,
         sync_failed: result.sync_failed,
+        removed_annulled: result.removed.annulled,
+        removed_missing: result.removed.missing,
         sellers_created: result.sellers.created_count,
         sellers_unmapped: result.sellers.unmapped.length,
         request_id: res.getHeader('X-Request-ID'),
@@ -63,10 +70,15 @@ export class UploadsController {
           inserted: result.inserted,
           updated: result.updated,
           sync_failed: result.sync_failed,
+          removed: result.removed,
           sellers: result.sellers,
           range: {
             from: toIsoDate(result.range.from),
             to: toIsoDate(result.range.to),
+          },
+          export_range: {
+            from: toIsoDate(result.export_range.from),
+            to: toIsoDate(result.export_range.to),
           },
           rejections: result.rejections,
           rejections_truncated: result.rejections_truncated,

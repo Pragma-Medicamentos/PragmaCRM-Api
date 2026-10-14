@@ -6,7 +6,7 @@ import { CreateExtraStopInput } from '../domain/schemas/extra-stop.schema';
 import { ExtraStop, EXTRA_STOP_ERROR_CODES } from '../domain/types/extra-stop.types';
 import { customerHasGps } from '../repositories/extra-stop.repository';
 import { DailyRoute } from '../domain/types/daily-route.types';
-import { getDailyRoute, todayInBusinessZone } from './daily-route.service';
+import { ensureDailyStops, getDailyRoute, todayInBusinessZone } from './daily-route.service';
 
 // Same business timezone daily-route.service.ts uses for "today" (CLAUDE.md
 // 5.7): a stop dated "today" has to mean today in El Salvador, not the
@@ -65,6 +65,12 @@ export const createExtraStop = async (
   await client.$executeRaw`
     SELECT pg_advisory_xact_lock(hashtext(${`${sellerId}:${input.date}`}))
   `;
+
+  // PCRM-161: generates the day's planned stops before checking for a
+  // duplicate, so an extra that collides with a customer+type the weekly
+  // route already plans for that day is caught here as EXTRA_STOP_DUPLICATE,
+  // even if nobody had opened the seller's day yet.
+  await ensureDailyStops(client, sellerId, input.date);
 
   const duplicate = await client.scheduled_visit.findFirst({
     where: {
