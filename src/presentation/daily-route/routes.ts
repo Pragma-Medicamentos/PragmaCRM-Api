@@ -37,6 +37,15 @@ export class DailyRouteRoutes {
       controller.setNote
     );
 
+    // PCRM-164: the seller's view of the customer metrics. The admin profile
+    // (GET /customers/:id) stays admin-only; this one opens only for stops on
+    // the seller's own agenda.
+    router.get(
+      '/stops/:id/customer',
+      validateParams(stopParamsSchema),
+      controller.getCustomer
+    );
+
     return router;
   }
 }

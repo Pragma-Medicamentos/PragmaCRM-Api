@@ -12,9 +12,11 @@ import {
   DailyRouteStop,
   RouteRef,
   StopCustomerLocation,
+  StopCustomerMetrics,
   StopNote,
   TargetKind,
 } from '../domain/types/daily-route.types';
+import { getCustomerSummary, getRecentVisitNotes } from './customer.service';
 import { GPS_RADIUS_METERS } from './visit.service';
 import { generateDailyStops } from '../repositories/daily-route.repository';
 
@@ -51,6 +53,7 @@ const UNPLANNED_SORT_ORDER = 32767;
  *      GET   /api/v1/me/route                     -> getDailyRoute
  *      PATCH /api/v1/me/route/stops/:id/location  -> setStopCustomerLocation
  *      PATCH /api/v1/me/route/stops/:id/note      -> setStopNote
+ *      GET   /api/v1/me/route/stops/:id/customer  -> getStopCustomerMetrics
  * ============================================================================
  */
 
@@ -119,20 +122,7 @@ export const setStopCustomerLocation = async (
     );
   }
 
-  const stop = await client.scheduled_visit.findFirst({
-    where: { id: stopId, deleted_at: null },
-    select: {
-      customer_id: true,
-      route_user: { select: { user_id: true, deleted_at: true } },
-    },
-  });
-  if (!stop || stop.route_user.deleted_at !== null) {
-    throw CustomError.notFound('Scheduled visit not found');
-  }
-
-  if (stop.route_user.user_id !== sellerId) {
-    throw CustomError.forbidden('This stop is not assigned to you');
-  }
+  const stop = await findOwnedStop(client, sellerId, stopId);
 
   // `prospect.location` exists, but prospects are registered with their pin
   // (PCRM-62) and a visit cannot be executed on one anyway.
@@ -230,6 +220,46 @@ export const setStopNote = async (
 };
 
 /**
+ * PCRM-164: the commercial figures of a stop's customer, so the seller can
+ * prepare the visit without leaving the route.
+ *
+ * The admin's GET /customers/:id stays admin-only (RF-02). This is the
+ * seller's narrower door to the same numbers: keyed by the stop, so it opens
+ * only for customers on the seller's own agenda — the same proof
+ * setStopCustomerLocation relies on — and it reuses the profile's readers, so
+ * the app and the dashboard cannot disagree on a figure. Sales history and
+ * the credit tab are not exposed.
+ */
+export const getStopCustomerMetrics = async (
+  client: Client,
+  sellerId: string,
+  stopId: string
+): Promise<StopCustomerMetrics> => {
+  const stop = await findOwnedStop(client, sellerId, stopId);
+
+  // Prospects have no sales, visits or credit yet: there is nothing to show.
+  if (!stop.customer_id) {
+    throw CustomError.unprocessable(
+      'Metrics are only available on customer stops'
+    );
+  }
+
+  const [summary, notes] = await Promise.all([
+    getCustomerSummary(client, stop.customer_id),
+    getRecentVisitNotes(client, stop.customer_id),
+  ]);
+
+  const { category, ...metrics } = summary;
+
+  return {
+    customer_id: stop.customer_id,
+    category,
+    summary: metrics,
+    recent_notes: notes,
+  };
+};
+
+/**
  * PCRM-161: generates the seller's planned stops for `date` from the weekly
  * route composition, on demand rather than through a nightly job. Called by
  * `getDailyRoute` before its SELECT, so both `/me/route` and the admin
@@ -256,9 +286,9 @@ export const ensureDailyStops = async (
 
 /*
  * ============================================================================
- * 2. OTHER METHODS — the date default and the row→DTO mappers. Private: the
- *    endpoint is the only consumer, and the mappers only make sense against
- *    the row shape produced by section 3.
+ * 2. OTHER METHODS — the date default, the stop ownership check and the
+ *    row→DTO mappers. Private: the endpoints are the only consumers, and the
+ *    mappers only make sense against the row shape produced by section 3.
  * ============================================================================
  */
 
@@ -280,6 +310,38 @@ export const todayInBusinessZone = (): string => {
   }
 
   return today;
+};
+
+/**
+ * The stop, provided it is on `sellerId`'s agenda. Going through
+ * `scheduled_visit -> route_user` is what authorises the stop endpoints: any
+ * date is accepted, like confirmVisit, because the stop being assigned to the
+ * seller is the authorisation.
+ *
+ * 404 for a stop that does not exist or whose assignment was deleted; 403 for
+ * one that belongs to another seller.
+ */
+const findOwnedStop = async (
+  client: Client,
+  sellerId: string,
+  stopId: string
+): Promise<{ customer_id: string | null }> => {
+  const stop = await client.scheduled_visit.findFirst({
+    where: { id: stopId, deleted_at: null },
+    select: {
+      customer_id: true,
+      route_user: { select: { user_id: true, deleted_at: true } },
+    },
+  });
+  if (!stop || stop.route_user.deleted_at !== null) {
+    throw CustomError.notFound('Scheduled visit not found');
+  }
+
+  if (stop.route_user.user_id !== sellerId) {
+    throw CustomError.forbidden('This stop is not assigned to you');
+  }
+
+  return { customer_id: stop.customer_id };
 };
 
 /**

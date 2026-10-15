@@ -28,7 +28,7 @@ export const dailyRouteQuerySchema = z.object({
 });
 export type DailyRouteQuery = z.infer<typeof dailyRouteQuerySchema>;
 
-/** Path params of PATCH /api/v1/me/route/stops/:id/{location,note}. */
+/** Path params of the /api/v1/me/route/stops/:id/* routes. */
 export const stopParamsSchema = z.object({
   id: z.string().uuid('Invalid scheduled visit id'),
 });

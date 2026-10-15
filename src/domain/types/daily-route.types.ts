@@ -1,5 +1,10 @@
+import { CustomerCategory } from '../schemas/customer.schema';
 import { StopType } from '../schemas/daily-route.schema';
-import { GeoPoint } from './customer.types';
+import {
+  CustomerSummary,
+  CustomerVisitNote,
+  GeoPoint,
+} from './customer.types';
 
 /**
  * Which table the stop points at.
@@ -137,4 +142,19 @@ export interface StopNote {
   visit_id: string;
   notes: string;
   updated_at: Date;
+}
+
+/**
+ * Result of GET /api/v1/me/route/stops/:id/customer (PCRM-164): the commercial
+ * figures of the stop's customer, for the seller standing at it.
+ *
+ * The identity fields are not repeated: the stop in GET /me/route already
+ * carries them. The same `summary` and `category` as the admin profile
+ * (GET /customers/:id), so both screens can never disagree on a number.
+ */
+export interface StopCustomerMetrics {
+  customer_id: string;
+  category: CustomerCategory;
+  summary: CustomerSummary;
+  recent_notes: CustomerVisitNote[];
 }
