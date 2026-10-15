@@ -6,6 +6,7 @@ import {
   ensureDailyStops,
   getDailyRoute,
   setStopCustomerLocation,
+  setStopNote,
 } from '../daily-route.service';
 import { CustomError } from '../../domain/errors/CustomError';
 
@@ -60,6 +61,7 @@ interface StopRow {
   is_extra: boolean;
   reason: string | null;
   completed_at: Date | null;
+  notes: string | null;
 }
 
 /** A planned customer stop with GPS, still pending. The seed's "stop A". */
@@ -89,6 +91,7 @@ const stopRow = (overrides: Partial<StopRow> = {}): StopRow => ({
   is_extra: false,
   reason: null,
   completed_at: null,
+  notes: null,
   ...overrides,
 });
 
@@ -712,6 +715,170 @@ describe('setStopCustomerLocation', () => {
     });
 
     expect($executeRaw).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('setStopNote', () => {
+  const STOP_ID = '69b10917-fcbb-4450-b909-73963b7534d8';
+  const VISIT_ID = '5d0c8a64-3f0e-4c55-9f35-2a8d4c7b9e01';
+  const UPDATED_AT = new Date('2026-09-20T03:30:00.000Z');
+  const input = { notes: 'Atendió el auxiliar, el dueño no estaba' };
+
+  // 21:30 of 2026-09-19 in El Salvador, already 2026-09-20 in UTC: a stop of
+  // the 19th must still accept its note, which only holds if "today" is
+  // resolved in the business timezone.
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-20T03:30:00.000Z'));
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  type StopLookup = {
+    visit_date: Date;
+    route_user: { user_id: string; deleted_at: Date | null };
+  } | null;
+
+  const buildNoteClient = (
+    stop: StopLookup,
+    visit: { id: string } | null = { id: VISIT_ID }
+  ) => {
+    const findStop = jest.fn().mockResolvedValue(stop);
+    const findVisit = jest.fn().mockResolvedValue(visit);
+    const update = jest
+      .fn()
+      .mockResolvedValue({ id: VISIT_ID, updated_at: UPDATED_AT });
+    const client = {
+      scheduled_visit: { findFirst: findStop },
+      visit: { findFirst: findVisit, update },
+    } as unknown as Client;
+    return { client, findVisit, update };
+  };
+
+  const ownStop = (overrides: Partial<NonNullable<StopLookup>> = {}) => ({
+    visit_date: new Date(`${DATE}T00:00:00.000Z`),
+    route_user: { user_id: SELLER_ID, deleted_at: null },
+    ...overrides,
+  });
+
+  const statusOf = async (promise: Promise<unknown>) => {
+    try {
+      await promise;
+    } catch (error) {
+      return (error as CustomError).statusCode;
+    }
+    throw new Error('expected the call to throw');
+  };
+
+  it('replaces the note of the linked visit and returns it', async () => {
+    const { client, update } = buildNoteClient(ownStop());
+
+    const result = await setStopNote(client, SELLER_ID, STOP_ID, input);
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: VISIT_ID },
+        data: { notes: input.notes },
+      })
+    );
+    expect(result).toEqual({
+      id: STOP_ID,
+      visit_id: VISIT_ID,
+      notes: input.notes,
+      updated_at: UPDATED_AT,
+    });
+  });
+
+  it('looks up the visit by scheduled_visit_id, skipping soft-deleted ones', async () => {
+    const { client, findVisit } = buildNoteClient(ownStop());
+
+    await setStopNote(client, SELLER_ID, STOP_ID, input);
+
+    expect(findVisit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { scheduled_visit_id: STOP_ID, deleted_at: null },
+      })
+    );
+  });
+
+  it('responds 409 when the stop has not been completed', async () => {
+    const { client, update } = buildNoteClient(ownStop(), null);
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(409);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 404 when the stop does not exist', async () => {
+    const { client, update } = buildNoteClient(null);
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(404);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 404 when the stop assignment was deleted', async () => {
+    const { client, update } = buildNoteClient(
+      ownStop({ route_user: { user_id: SELLER_ID, deleted_at: new Date() } })
+    );
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(404);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 403 when the stop belongs to another seller', async () => {
+    const { client, update } = buildNoteClient(
+      ownStop({ route_user: { user_id: 'another-seller', deleted_at: null } })
+    );
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(403);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 422 when the stop is from another day', async () => {
+    const { client, update } = buildNoteClient(
+      ownStop({ visit_date: new Date('2026-09-18T00:00:00.000Z') })
+    );
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(422);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 422 for the UTC day when it is not yet the local one', async () => {
+    const { client, update } = buildNoteClient(
+      ownStop({ visit_date: new Date('2026-09-20T00:00:00.000Z') })
+    );
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(422);
+    expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe('getDailyRoute — notes', () => {
+  it('reads the note from the linked visit', async () => {
+    const $queryRaw = jest
+      .fn()
+      .mockResolvedValue([stopRow({ notes: 'Pidió volver el jueves' })]);
+    const client = {
+      $queryRaw,
+      $executeRaw: jest.fn().mockResolvedValue(0),
+    } as unknown as Client;
+
+    const route = await getDailyRoute(client, SELLER_ID, DATE);
+
+    const sql = ($queryRaw.mock.calls[0][0] as Prisma.Sql).sql.replace(/\s+/g, ' ');
+    expect(sql).toContain('v.notes AS notes');
+    expect(route.stops[0].notes).toBe('Pidió volver el jueves');
   });
 });
 

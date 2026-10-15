@@ -8,6 +8,7 @@ import {
 import {
   dailyRouteQuerySchema,
   setStopLocationSchema,
+  setStopNoteSchema,
   stopParamsSchema,
 } from '../../domain/schemas/daily-route.schema';
 
@@ -26,6 +27,14 @@ export class DailyRouteRoutes {
       validateParams(stopParamsSchema),
       validateBody(setStopLocationSchema),
       controller.setLocation
+    );
+
+    // RF-07: note on a stop already completed, same day only.
+    router.patch(
+      '/stops/:id/note',
+      validateParams(stopParamsSchema),
+      validateBody(setStopNoteSchema),
+      controller.setNote
     );
 
     return router;

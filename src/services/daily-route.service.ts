@@ -4,6 +4,7 @@ import { Client } from '../lib/prisma';
 import { CustomError } from '../domain/errors/CustomError';
 import {
   SetStopLocationInput,
+  SetStopNoteInput,
   StopType,
 } from '../domain/schemas/daily-route.schema';
 import {
@@ -11,6 +12,7 @@ import {
   DailyRouteStop,
   RouteRef,
   StopCustomerLocation,
+  StopNote,
   TargetKind,
 } from '../domain/types/daily-route.types';
 import { GPS_RADIUS_METERS } from './visit.service';
@@ -48,6 +50,7 @@ const UNPLANNED_SORT_ORDER = 32767;
  *
  *      GET   /api/v1/me/route                     -> getDailyRoute
  *      PATCH /api/v1/me/route/stops/:id/location  -> setStopCustomerLocation
+ *      PATCH /api/v1/me/route/stops/:id/note      -> setStopNote
  * ============================================================================
  */
 
@@ -154,6 +157,75 @@ export const setStopCustomerLocation = async (
   return {
     customer_id: stop.customer_id,
     location: { lat: input.latitude, lng: input.longitude },
+  };
+};
+
+/**
+ * RF-07: the seller adds or rewrites the note of a stop he already completed.
+ *
+ * The note lives on `visit`, the execution, so a stop with no linked visit
+ * has nothing to attach it to and gets a 409 — it is a state the seller can
+ * still leave by confirming the stop, which can carry the note itself.
+ *
+ * Editable only on the stop's planned day, in the business timezone. RF-08
+ * shows these notes to the admin as the record of what happened in the
+ * field; a seller rewriting last week's note would be rewriting that record.
+ *
+ * The note replaces the previous one rather than appending to it, so a retry
+ * from an offline client is idempotent.
+ */
+export const setStopNote = async (
+  client: Client,
+  sellerId: string,
+  stopId: string,
+  input: SetStopNoteInput
+): Promise<StopNote> => {
+  const stop = await client.scheduled_visit.findFirst({
+    where: { id: stopId, deleted_at: null },
+    select: {
+      visit_date: true,
+      route_user: { select: { user_id: true, deleted_at: true } },
+    },
+  });
+  if (!stop || stop.route_user.deleted_at !== null) {
+    throw CustomError.notFound('Scheduled visit not found');
+  }
+
+  if (stop.route_user.user_id !== sellerId) {
+    throw CustomError.forbidden('This stop is not assigned to you');
+  }
+
+  // `visit_date` is a `date` column, handed back as UTC midnight of that day.
+  const stopDate = DateTime.fromJSDate(stop.visit_date, { zone: 'utc' }).toISODate();
+  if (stopDate !== todayInBusinessZone()) {
+    throw CustomError.unprocessable(
+      'Notes can only be added on the planned day of the stop'
+    );
+  }
+
+  // Looked up by the column, not through the 1:1 relation: the unique index
+  // behind it is partial on deleted_at, so a soft-deleted visit can coexist
+  // with the live one.
+  const visit = await client.visit.findFirst({
+    where: { scheduled_visit_id: stopId, deleted_at: null },
+    select: { id: true },
+  });
+  if (!visit) {
+    throw CustomError.conflict('This stop has not been completed yet');
+  }
+
+  // updated_at is stamped by the visit_set_updated_at trigger.
+  const updated = await client.visit.update({
+    where: { id: visit.id },
+    data: { notes: input.notes },
+    select: { id: true, updated_at: true },
+  });
+
+  return {
+    id: stopId,
+    visit_id: updated.id,
+    notes: input.notes,
+    updated_at: updated.updated_at,
   };
 };
 
@@ -304,6 +376,7 @@ interface DailyRouteStopRow {
   is_extra: boolean;
   reason: string | null;
   completed_at: Date | null;
+  notes: string | null;
 }
 
 /**
@@ -382,7 +455,8 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
          (CASE WHEN sv.is_extra OR sv.prospect_id IS NOT NULL THEN NULL ELSE sv.sort_order END)::int AS sort_order,
          (sv.is_extra OR sv.prospect_id IS NOT NULL) AS is_extra,
          sv.reason,
-         v.started_at             AS completed_at
+         v.started_at             AS completed_at,
+         v.notes                  AS notes
   FROM   route_user ru
   /* INNER on purpose, not the LEFT JOIN the rest of this query uses.
      route.name is NOT NULL and RouteRef.name is typed as a plain string; a
