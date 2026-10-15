@@ -4,10 +4,12 @@ import { CustomError } from '../../domain/errors/CustomError';
 import {
   DailyRoute,
   StopCustomerLocation,
+  StopNote,
 } from '../../domain/types/daily-route.types';
 import {
   DailyRouteQuery,
   SetStopLocationInput,
+  SetStopNoteInput,
   StopParams,
 } from '../../domain/schemas/daily-route.schema';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
@@ -15,6 +17,7 @@ import { prisma } from '../../lib/prisma';
 import {
   getDailyRoute,
   setStopCustomerLocation,
+  setStopNote,
 } from '../../services/daily-route.service';
 
 export class DailyRouteController {
@@ -66,6 +69,28 @@ export class DailyRouteController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'DailyRouteController.setLocation');
+    }
+  }
+
+  /** RF-07: add or replace the note of a completed stop. */
+  public async setNote(req: Request, res: Response) {
+    try {
+      if (!req.authUser) throw CustomError.unauthorized();
+
+      const { id } = req.params as unknown as StopParams;
+      const input = req.body as SetStopNoteInput;
+
+      const note = await setStopNote(prisma, req.authUser.id, id, input);
+
+      const response: ApiResponse<StopNote> = {
+        success: true,
+        message: 'Nota de la parada guardada correctamente',
+        data: note,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'DailyRouteController.setNote');
     }
   }
 }
