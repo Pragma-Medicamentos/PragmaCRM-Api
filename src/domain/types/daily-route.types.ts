@@ -121,3 +121,15 @@ export interface StopCustomerLocation {
   customer_id: string;
   location: GeoPoint;
 }
+
+/**
+ * Result of PATCH /api/v1/me/route/stops/:id/note: the visit that executed
+ * the stop, with the note now stored on it.
+ */
+export interface StopNote {
+  /** `scheduled_visit.id`, the same id the request was addressed to. */
+  id: string;
+  visit_id: string;
+  notes: string;
+  updated_at: Date;
+}
