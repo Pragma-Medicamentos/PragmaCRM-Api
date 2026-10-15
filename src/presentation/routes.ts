@@ -9,6 +9,7 @@ import { ProductsRoutes } from './products/routes';
 import { DailyRouteRoutes } from './daily-route/routes';
 import { RoutesRoutes } from './routes/routes';
 import { VisitsRoutes } from './visits/routes';
+import { ProductRequestsRoutes } from './product-requests/routes';
 import { MetricsRoutes } from './metrics/routes';
 import { ProspectsRoutes } from './prospects/routes';
 import { ReportsRoutes } from './reports/routes';
@@ -108,6 +109,15 @@ export class AppRoutes {
       requireAuth,
       requireRole(ROLES.SELLER),
       VisitsRoutes.routes
+    );
+
+    // RF-11 (PCRM-65): off-catalog products requested during a visit. The
+    // seller registers them; the admin report (PCRM-67) reads them elsewhere.
+    router.use(
+      '/api/v1/product-requests',
+      requireAuth,
+      requireRole(ROLES.SELLER),
+      ProductRequestsRoutes.routes
     );
 
     // RF-09: base metrics panel. Admin only: it aggregates the whole team's
