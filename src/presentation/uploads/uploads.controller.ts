@@ -3,7 +3,7 @@ import { ApiResponse } from '../../domain/interfaces';
 import { logger } from '../../lib/adapters/logger';
 import { prisma } from '../../lib/prisma';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
-import { getImportInProgress } from '../../services/uploads.service';
+import { getImportInProgress, getSalesSyncRange } from '../../services/uploads.service';
 import { importSalesFile, ImportSalesResult } from '../../use-cases/importSalesFile.use-case';
 
 /** Date to `YYYY-MM-DD`, which is how the frontend expects a day range. */
@@ -110,6 +110,25 @@ export class UploadsController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'UploadsController.salesImportInProgress');
+    }
+  }
+
+  // GET /api/v1/uploads/sales/sync-range
+  // Date range the daily Efactsoft sync script exports before POSTing it to
+  // /sales: wide enough to refresh the balance of every sale still owing money.
+  public async salesSyncRange(_req: Request, res: Response) {
+    try {
+      const range = await getSalesSyncRange(prisma);
+
+      const response: ApiResponse = {
+        success: true,
+        message: `Export sales created from ${range.from} to ${range.to}.`,
+        data: range,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'UploadsController.salesSyncRange');
     }
   }
 }
