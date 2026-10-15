@@ -7,6 +7,7 @@ import { findUserByAuthUserId } from '../../../services/auth.service';
 import {
   getDailyRoute,
   setStopCustomerLocation,
+  setStopNote,
 } from '../../../services/daily-route.service';
 import { CustomError } from '../../../domain/errors/CustomError';
 import { ROLES } from '../../../domain/types/auth.types';
@@ -26,12 +27,14 @@ jest.mock('../../../services/auth.service', () => ({
 jest.mock('../../../services/daily-route.service', () => ({
   getDailyRoute: jest.fn(),
   setStopCustomerLocation: jest.fn(),
+  setStopNote: jest.fn(),
 }));
 
 const verifyAccessTokenMock = verifyAccessToken as unknown as jest.Mock;
 const findUserByAuthUserIdMock = findUserByAuthUserId as jest.Mock;
 const getDailyRouteMock = getDailyRoute as jest.Mock;
 const setStopCustomerLocationMock = setStopCustomerLocation as jest.Mock;
+const setStopNoteMock = setStopNote as jest.Mock;
 
 const AUTH_ID = '66666666-6666-6666-6666-666666666666';
 const SELLER_ID = '33333333-3333-3333-3333-333333333333';
@@ -293,5 +296,112 @@ describe('PATCH /api/v1/me/route/stops/:id/location', () => {
     // move an existing one; this route is the seller's narrower door.
     expect(res.status).toBe(403);
     expect(setStopCustomerLocationMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /api/v1/me/route/stops/:id/note', () => {
+  const STOP_ID = '69b10917-fcbb-4450-b909-73963b7534d8';
+  const body = { notes: 'Atendió el auxiliar, el dueño no estaba' };
+
+  const patchNote = (id: string, payload: unknown) =>
+    request(app)
+      .patch(`/api/v1/me/route/stops/${id}/note`)
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY)
+      .send(payload as object);
+
+  it('stores the note of the stop for the authenticated seller', async () => {
+    asSeller();
+    const data = {
+      id: STOP_ID,
+      visit_id: '5d0c8a64-3f0e-4c55-9f35-2a8d4c7b9e01',
+      notes: body.notes,
+      updated_at: '2026-09-19T21:30:00.000Z',
+    };
+    setStopNoteMock.mockResolvedValue(data);
+
+    const res = await patchNote(STOP_ID, body);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      success: true,
+      message: 'Nota de la parada guardada correctamente',
+      data,
+    });
+    // The seller comes from the token, never from the request.
+    expect(setStopNoteMock).toHaveBeenCalledWith(
+      expect.anything(),
+      SELLER_ID,
+      STOP_ID,
+      body
+    );
+  });
+
+  it('trims the note before handing it to the service', async () => {
+    asSeller();
+    setStopNoteMock.mockResolvedValue({});
+
+    await patchNote(STOP_ID, { notes: '  Volver el jueves  ' });
+
+    expect(setStopNoteMock).toHaveBeenCalledWith(
+      expect.anything(),
+      SELLER_ID,
+      STOP_ID,
+      { notes: 'Volver el jueves' }
+    );
+  });
+
+  it('propagates the 409 of the service when the stop is not completed', async () => {
+    asSeller();
+    setStopNoteMock.mockRejectedValue(
+      CustomError.conflict('This stop has not been completed yet')
+    );
+
+    const res = await patchNote(STOP_ID, body);
+
+    expect(res.status).toBe(409);
+    expect(res.body.success).toBe(false);
+  });
+
+  it.each([
+    ['missing', {}],
+    ['blank', { notes: '   ' }],
+    ['longer than 1000 characters', { notes: 'a'.repeat(1001) }],
+  ])('responds 400 when the note is %s and never calls the service', async (_case, payload) => {
+    asSeller();
+
+    const res = await patchNote(STOP_ID, payload);
+
+    expect(res.status).toBe(400);
+    expect(setStopNoteMock).not.toHaveBeenCalled();
+  });
+
+  it('responds 400 when the stop id is not a uuid', async () => {
+    asSeller();
+
+    const res = await patchNote('not-a-uuid', body);
+
+    expect(res.status).toBe(400);
+    expect(setStopNoteMock).not.toHaveBeenCalled();
+  });
+
+  it('responds 403 for an Administrador and never calls the service', async () => {
+    verifyAccessTokenMock.mockResolvedValue({ sub: AUTH_ID });
+    findUserByAuthUserIdMock.mockResolvedValue(adminRecord);
+
+    const res = await patchNote(STOP_ID, body);
+
+    expect(res.status).toBe(403);
+    expect(setStopNoteMock).not.toHaveBeenCalled();
+  });
+
+  it('responds 401 without a token and never calls the service', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/me/route/stops/${STOP_ID}/note`)
+      .set('x-api-key', API_KEY)
+      .send(body);
+
+    expect(res.status).toBe(401);
+    expect(setStopNoteMock).not.toHaveBeenCalled();
   });
 });
