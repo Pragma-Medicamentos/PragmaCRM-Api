@@ -93,6 +93,11 @@ export interface DailyRouteStop {
    * only cost the next consumer a reparse.
    */
   completed_at: Date | null;
+  /**
+   * RF-07 `visit.notes` of that same execution. Null while the stop is
+   * pending or when the seller left no note.
+   */
+  notes: string | null;
 }
 
 export interface DailyRoute {

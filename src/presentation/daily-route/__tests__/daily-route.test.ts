@@ -93,6 +93,7 @@ const nonEmptyRoute: DailyRoute = {
       is_extra: false,
       reason: null,
       completed_at: null,
+      notes: null,
     },
   ],
 };

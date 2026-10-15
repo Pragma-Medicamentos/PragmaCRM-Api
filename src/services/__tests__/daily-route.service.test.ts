@@ -60,6 +60,7 @@ interface StopRow {
   is_extra: boolean;
   reason: string | null;
   completed_at: Date | null;
+  notes: string | null;
 }
 
 /** A planned customer stop with GPS, still pending. The seed's "stop A". */
@@ -89,6 +90,7 @@ const stopRow = (overrides: Partial<StopRow> = {}): StopRow => ({
   is_extra: false,
   reason: null,
   completed_at: null,
+  notes: null,
   ...overrides,
 });
 

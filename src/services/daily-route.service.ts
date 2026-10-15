@@ -376,6 +376,7 @@ interface DailyRouteStopRow {
   is_extra: boolean;
   reason: string | null;
   completed_at: Date | null;
+  notes: string | null;
 }
 
 /**
@@ -454,7 +455,8 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
          (CASE WHEN sv.is_extra OR sv.prospect_id IS NOT NULL THEN NULL ELSE sv.sort_order END)::int AS sort_order,
          (sv.is_extra OR sv.prospect_id IS NOT NULL) AS is_extra,
          sv.reason,
-         v.started_at             AS completed_at
+         v.started_at             AS completed_at,
+         v.notes                  AS notes
   FROM   route_user ru
   /* INNER on purpose, not the LEFT JOIN the rest of this query uses.
      route.name is NOT NULL and RouteRef.name is typed as a plain string; a
