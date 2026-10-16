@@ -7,6 +7,7 @@ import {
   getRecentVisitNotes,
   listCustomers,
   listCustomerSales,
+  updateCustomerCommercialProfile,
   updateCustomerContact,
   updateCustomerLocation,
 } from '../customer.service';
@@ -39,6 +40,31 @@ const buildClient = (overrides: Record<string, unknown> = {}) =>
   }) as unknown as Client;
 
 const pagination = { page: 1, limit: 20 };
+
+// Shape of findCustomerCore's row, which every update re-reads to answer.
+const coreRow = (overrides: Record<string, unknown> = {}) => ({
+  id: CUSTOMER_ID,
+  erp_customer_id: 1001,
+  name: 'Farmacia San José',
+  trade_name: null,
+  establishment_type: null,
+  address: null,
+  place_id: null,
+  municipality: null,
+  zone: null,
+  phone: null,
+  mobile: null,
+  attends: null,
+  personality: null,
+  potential: null,
+  credit: false,
+  credit_limit: null,
+  origin: null,
+  active: true,
+  lat: null,
+  lng: null,
+  ...overrides,
+});
 
 describe('listCustomers', () => {
   it('orders by name with the id as tie-break, so pages never skip a namesake', async () => {
@@ -427,30 +453,6 @@ describe('updateCustomerLocation', () => {
 });
 
 describe('updateCustomerContact', () => {
-  const coreRow = (overrides: Record<string, unknown> = {}) => ({
-    id: CUSTOMER_ID,
-    erp_customer_id: 1001,
-    name: 'Farmacia San José',
-    trade_name: null,
-    establishment_type: null,
-    address: null,
-    place_id: null,
-    municipality: null,
-    zone: null,
-    phone: null,
-    mobile: null,
-    attends: null,
-    personality: null,
-    potential: null,
-    credit: false,
-    credit_limit: null,
-    origin: null,
-    active: true,
-    lat: null,
-    lng: null,
-    ...overrides,
-  });
-
   it('lanza 404 si el cliente no existe', async () => {
     const client = buildClient({
       customer: { findFirst: jest.fn().mockResolvedValue(null) },
@@ -523,6 +525,79 @@ describe('updateCustomerContact', () => {
     expect(update).toHaveBeenCalledWith({
       where: { id: CUSTOMER_ID },
       data: { phone: null, updated_at: expect.any(Date) },
+    });
+  });
+});
+
+describe('updateCustomerCommercialProfile', () => {
+  const clientWith = (update: jest.Mock, row = coreRow()) =>
+    buildClient({
+      customer: {
+        findFirst: jest.fn().mockResolvedValue({ id: CUSTOMER_ID }),
+        update,
+      },
+      $queryRaw: jest.fn().mockResolvedValue([row]),
+    });
+
+  it('throws 404 when the customer does not exist', async () => {
+    const update = jest.fn();
+    const client = buildClient({
+      customer: { findFirst: jest.fn().mockResolvedValue(null), update },
+    });
+
+    await expect(
+      updateCustomerCommercialProfile(client, CUSTOMER_ID, { personality: 'rojo' })
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('writes both fields and answers with the re-read core', async () => {
+    const update = jest.fn().mockResolvedValue({});
+    const client = clientWith(
+      update,
+      coreRow({ personality: 'rojo', potential: 'alto' })
+    );
+
+    const core = await updateCustomerCommercialProfile(client, CUSTOMER_ID, {
+      personality: 'rojo',
+      potential: 'alto',
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CUSTOMER_ID },
+      data: {
+        personality: 'rojo',
+        potential: 'alto',
+        updated_at: expect.any(Date),
+      },
+    });
+    expect(core.personality).toBe('rojo');
+    expect(core.potential).toBe('alto');
+  });
+
+  it('leaves the omitted field untouched', async () => {
+    const update = jest.fn().mockResolvedValue({});
+
+    await updateCustomerCommercialProfile(clientWith(update), CUSTOMER_ID, {
+      potential: 'medio',
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CUSTOMER_ID },
+      data: { potential: 'medio', updated_at: expect.any(Date) },
+    });
+  });
+
+  it('clears a field when it arrives as null', async () => {
+    const update = jest.fn().mockResolvedValue({});
+
+    await updateCustomerCommercialProfile(clientWith(update), CUSTOMER_ID, {
+      personality: null,
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CUSTOMER_ID },
+      data: { personality: null, updated_at: expect.any(Date) },
     });
   });
 });
