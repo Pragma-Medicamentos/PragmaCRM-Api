@@ -50,7 +50,7 @@ export interface DailyRouteStop {
   phone: string | null;
   /**
    * RF-12 communication style as a lowercase colour (`rojo`, `amarillo`,
-   * `verde`, `azul`). Free text in the database, so the client normalises it.
+   * `verde`, `azul`), enforced by customer_personality_check.
    * Always null when `target_kind` is 'prospect': the table has no such column.
    */
   personality: string | null;

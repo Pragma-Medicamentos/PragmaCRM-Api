@@ -10,6 +10,7 @@ import {
   listCustomerCreditsQuerySchema,
   listCustomerSalesQuerySchema,
   listCustomersQuerySchema,
+  updateCustomerCommercialProfileSchema,
   updateCustomerContactSchema,
   updateCustomerLocationSchema,
 } from '../../domain/schemas/customer.schema';
@@ -52,6 +53,13 @@ export class CustomersRoutes {
       validateParams(customerParamsSchema),
       validateBody(updateCustomerContactSchema),
       controller.updateContact
+    );
+    // RF-12: colour and buying potential, from the selector in the profile.
+    router.patch(
+      '/:id/commercial-profile',
+      validateParams(customerParamsSchema),
+      validateBody(updateCustomerCommercialProfileSchema),
+      controller.updateCommercialProfile
     );
 
     return router;
