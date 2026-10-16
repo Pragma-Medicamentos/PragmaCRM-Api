@@ -1,4 +1,8 @@
-import { CustomerCategory } from '../schemas/customer.schema';
+import {
+  CustomerCategory,
+  CustomerPersonality,
+  CustomerPotential,
+} from '../schemas/customer.schema';
 
 /**
  * Money is carried as a string, never as a number.
@@ -76,8 +80,10 @@ export interface CustomerCore {
   phone: string | null;
   mobile: string | null;
   attends: string | null;
-  personality: string | null;
-  potential: string | null;
+  /** RF-12 colour. Null = not classified yet. */
+  personality: CustomerPersonality | null;
+  /** RF-12 buying potential. Null = not classified yet. */
+  potential: CustomerPotential | null;
   credit: boolean;
   credit_limit: Money | null;
   origin: string | null;
