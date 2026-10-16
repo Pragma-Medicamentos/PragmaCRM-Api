@@ -15,17 +15,16 @@
 -- assignment, replacing seed.sql's planned stops for the same customers:
 --
 --   A  1001  visit       rojo / alto               GPS    full profile
---   B  1011  dispatch    ' Amarillo ' / Medio      GPS    mixed case + spaces:
---                                                          the app normalises
+--   B  1011  dispatch    amarillo / medio          GPS
 --   C  1041  collection  verde / bajo              GPS
 --   D  1020  visit       azul / alto               NO GPS "Establecer ubicación"
 --   E  1040  dispatch    (no profile)              NO GPS "Establecer ubicación",
 --                                                          empty profile row
 --   F  1021  collection  rojo / medio              GPS    already completed
---   G  1016  visit       morado / medio            GPS    extra stop (not on
+--   G  1016  visit       (none) / medio            GPS    extra stop (not on
 --                                                          Zona Escalon), with
---                                                          reason; unknown
---                                                          personality -> hidden
+--                                                          reason; no colour
+--                                                          -> hidden
 --   H  prospect "Farmacia Nueva Vida"  visit             prospect: no profile,
 --                                                          no action button
 --
@@ -102,12 +101,12 @@ BEGIN
       updated_at = now()
   FROM (VALUES
     (1001, 'rojo',         'alto'),
-    (1011, ' Amarillo ',   'Medio'),
+    (1011, 'amarillo',     'medio'),
     (1041, 'verde',        'bajo'),
     (1020, 'azul',         'alto'),
     (1040, NULL,           NULL),
     (1021, 'rojo',         'medio'),
-    (1016, 'morado',       'medio')
+    (1016, NULL,           'medio')
   ) AS p(erp_id, personality, potential)
   WHERE c.erp_customer_id = p.erp_id;
 
