@@ -13,6 +13,7 @@ import {
   listProspectsQuerySchema,
   prospectParamsSchema,
   updateProspectLocationSchema,
+  updateProspectSchema,
 } from '../../domain/schemas/prospect.schema';
 
 export class ProspectsRoutes {
@@ -50,6 +51,14 @@ export class ProspectsRoutes {
       validateParams(prospectParamsSchema),
       validateBody(updateProspectLocationSchema),
       controller.updateLocation
+    );
+
+    router.patch(
+      '/:id',
+      requireRole(ROLES.ADMIN),
+      validateParams(prospectParamsSchema),
+      validateBody(updateProspectSchema),
+      controller.update
     );
 
     return router;
