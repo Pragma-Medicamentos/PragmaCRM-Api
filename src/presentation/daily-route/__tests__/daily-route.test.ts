@@ -6,6 +6,7 @@ import { envs } from '../../../config/envs';
 import { findUserByAuthUserId } from '../../../services/auth.service';
 import {
   getDailyRoute,
+  getStopCustomerMetrics,
   setStopCustomerLocation,
   setStopNote,
 } from '../../../services/daily-route.service';
@@ -26,6 +27,7 @@ jest.mock('../../../services/auth.service', () => ({
 
 jest.mock('../../../services/daily-route.service', () => ({
   getDailyRoute: jest.fn(),
+  getStopCustomerMetrics: jest.fn(),
   setStopCustomerLocation: jest.fn(),
   setStopNote: jest.fn(),
 }));
@@ -35,6 +37,7 @@ const findUserByAuthUserIdMock = findUserByAuthUserId as jest.Mock;
 const getDailyRouteMock = getDailyRoute as jest.Mock;
 const setStopCustomerLocationMock = setStopCustomerLocation as jest.Mock;
 const setStopNoteMock = setStopNote as jest.Mock;
+const getStopCustomerMetricsMock = getStopCustomerMetrics as jest.Mock;
 
 const AUTH_ID = '66666666-6666-6666-6666-666666666666';
 const SELLER_ID = '33333333-3333-3333-3333-333333333333';
@@ -403,5 +406,89 @@ describe('PATCH /api/v1/me/route/stops/:id/note', () => {
 
     expect(res.status).toBe(401);
     expect(setStopNoteMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/v1/me/route/stops/:id/customer', () => {
+  const STOP_ID = '69b10917-fcbb-4450-b909-73963b7534d8';
+
+  it('devuelve las métricas del cliente de la parada al vendedor autenticado', async () => {
+    asSeller();
+    const data = {
+      customer_id: 'd4444444-4444-4444-4444-444444444444',
+      category: 'B',
+      summary: {
+        net_purchases: '980.00',
+        orders_count: 3,
+        visits_count: 2,
+        conversion_rate: 50,
+        avg_payment_days: null,
+        pending_balance: '0.00',
+        purchase_frequency_days: 30,
+        last_purchase_at: '2026-09-30T15:00:00.000Z',
+        last_visit_at: null,
+      },
+      recent_notes: [],
+    };
+    getStopCustomerMetricsMock.mockResolvedValue(data);
+
+    const res = await request(app)
+      .get(`/api/v1/me/route/stops/${STOP_ID}/customer`)
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      success: true,
+      message: 'Métricas del cliente obtenidas correctamente',
+      data,
+    });
+    // The seller comes from the token, never from the request.
+    expect(getStopCustomerMetricsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      SELLER_ID,
+      STOP_ID
+    );
+  });
+
+  it('propaga el 403 del service cuando la parada es de otro vendedor', async () => {
+    asSeller();
+    getStopCustomerMetricsMock.mockRejectedValue(
+      CustomError.forbidden('This stop is not assigned to you')
+    );
+
+    const res = await request(app)
+      .get(`/api/v1/me/route/stops/${STOP_ID}/customer`)
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY);
+
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+  });
+
+  it('responde 400 cuando el id de la parada no es un uuid', async () => {
+    asSeller();
+
+    const res = await request(app)
+      .get('/api/v1/me/route/stops/no-es-uuid/customer')
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY);
+
+    expect(res.status).toBe(400);
+    expect(getStopCustomerMetricsMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 403 para un Administrador y nunca llama al service', async () => {
+    verifyAccessTokenMock.mockResolvedValue({ sub: AUTH_ID });
+    findUserByAuthUserIdMock.mockResolvedValue(adminRecord);
+
+    const res = await request(app)
+      .get(`/api/v1/me/route/stops/${STOP_ID}/customer`)
+      .set('Authorization', 'Bearer token-de-prueba')
+      .set('x-api-key', API_KEY);
+
+    // Admins read the full profile through GET /customers/:id.
+    expect(res.status).toBe(403);
+    expect(getStopCustomerMetricsMock).not.toHaveBeenCalled();
   });
 });

@@ -5,10 +5,20 @@ import { TargetKind } from '../../domain/types/daily-route.types';
 import {
   ensureDailyStops,
   getDailyRoute,
+  getStopCustomerMetrics,
   setStopCustomerLocation,
   setStopNote,
 } from '../daily-route.service';
+import { getCustomerSummary, getRecentVisitNotes } from '../customer.service';
 import { CustomError } from '../../domain/errors/CustomError';
+
+// The profile readers have their own tests and their own SQL; here they only
+// need to answer, so getStopCustomerMetrics can be checked for what it adds:
+// the ownership gate and the shape of the response.
+jest.mock('../customer.service', () => ({
+  getCustomerSummary: jest.fn(),
+  getRecentVisitNotes: jest.fn(),
+}));
 
 const SELLER_ID = '11111111-1111-1111-1111-111111111101';
 const ROUTE_ID = '22222222-2222-2222-2222-222222222201';
@@ -1079,5 +1089,117 @@ describe('ensureDailyStops — generación de paradas', () => {
     expect(selectSql).not.toContain('route_customer');
     expect(selectSql).toContain('sv.sort_order');
     expect(selectSql).toContain('sv.is_extra');
+  });
+});
+
+describe('getStopCustomerMetrics', () => {
+  const STOP_ID = '69b10917-fcbb-4450-b909-73963b7534d8';
+  const CUSTOMER_ID = 'b09d04b7-f931-4162-b028-7b6ed0fc9f88';
+
+  const getCustomerSummaryMock = getCustomerSummary as jest.Mock;
+  const getRecentVisitNotesMock = getRecentVisitNotes as jest.Mock;
+
+  const summary = {
+    category: 'A',
+    net_purchases: '1520.40',
+    orders_count: 6,
+    visits_count: 4,
+    conversion_rate: 75,
+    avg_payment_days: 38,
+    pending_balance: '210.00',
+    purchase_frequency_days: 21,
+    last_purchase_at: new Date('2026-09-30T15:00:00.000Z'),
+    last_visit_at: new Date('2026-10-01T16:00:00.000Z'),
+  };
+  const notes = [
+    { date: new Date('2026-10-01T16:00:00.000Z'), notes: 'Pidió catálogo' },
+  ];
+
+  type StopLookup = {
+    customer_id: string | null;
+    route_user: { user_id: string; deleted_at: Date | null };
+  } | null;
+
+  const buildMetricsClient = (stop: StopLookup) => {
+    const findFirst = jest.fn().mockResolvedValue(stop);
+    const client = { scheduled_visit: { findFirst } } as unknown as Client;
+    return { client, findFirst };
+  };
+
+  const ownStop = (overrides: Partial<NonNullable<StopLookup>> = {}) => ({
+    customer_id: CUSTOMER_ID,
+    route_user: { user_id: SELLER_ID, deleted_at: null },
+    ...overrides,
+  });
+
+  const statusOf = async (promise: Promise<unknown>) => {
+    try {
+      await promise;
+    } catch (error) {
+      return (error as CustomError).statusCode;
+    }
+    throw new Error('expected the call to throw');
+  };
+
+  beforeEach(() => {
+    getCustomerSummaryMock.mockResolvedValue(summary);
+    getRecentVisitNotesMock.mockResolvedValue(notes);
+  });
+
+  it('devuelve categoría, resumen y notas del cliente de la parada', async () => {
+    const { client } = buildMetricsClient(ownStop());
+
+    const result = await getStopCustomerMetrics(client, SELLER_ID, STOP_ID);
+
+    const { category: _category, ...metrics } = summary;
+    expect(result).toEqual({
+      customer_id: CUSTOMER_ID,
+      category: 'A',
+      summary: metrics,
+      recent_notes: notes,
+    });
+    // Keyed by the customer behind the stop, never by an id the app sends.
+    expect(getCustomerSummaryMock).toHaveBeenCalledWith(client, CUSTOMER_ID);
+    expect(getRecentVisitNotesMock).toHaveBeenCalledWith(client, CUSTOMER_ID);
+  });
+
+  it('responde 404 cuando la parada no existe', async () => {
+    const { client } = buildMetricsClient(null);
+
+    await expect(
+      statusOf(getStopCustomerMetrics(client, SELLER_ID, STOP_ID))
+    ).resolves.toBe(404);
+    expect(getCustomerSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 404 cuando la asignación de la parada fue borrada', async () => {
+    const { client } = buildMetricsClient(
+      ownStop({ route_user: { user_id: SELLER_ID, deleted_at: new Date() } })
+    );
+
+    await expect(
+      statusOf(getStopCustomerMetrics(client, SELLER_ID, STOP_ID))
+    ).resolves.toBe(404);
+    expect(getCustomerSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 403 cuando la parada es de otro vendedor', async () => {
+    const { client } = buildMetricsClient(
+      ownStop({ route_user: { user_id: 'otro-vendedor', deleted_at: null } })
+    );
+
+    await expect(
+      statusOf(getStopCustomerMetrics(client, SELLER_ID, STOP_ID))
+    ).resolves.toBe(403);
+    expect(getCustomerSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 422 cuando la parada es de un prospecto', async () => {
+    const { client } = buildMetricsClient(ownStop({ customer_id: null }));
+
+    await expect(
+      statusOf(getStopCustomerMetrics(client, SELLER_ID, STOP_ID))
+    ).resolves.toBe(422);
+    expect(getCustomerSummaryMock).not.toHaveBeenCalled();
   });
 });
