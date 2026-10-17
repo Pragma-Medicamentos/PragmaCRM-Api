@@ -345,7 +345,7 @@ Estas no viven en el modelo de datos y **deben quedar en el manual técnico**, n
 |---|---|---|
 | Plazo de crédito | 60 días | Recálculo retroactivo de cartera vencida y mora |
 | **Umbral de inactividad** | **30 días, provisional** (wireframe `1f`). Configurable con `INACTIVITY_THRESHOLD_DAYS` y por petición con `?inactivity_days=`; las respuestas de métricas lo devuelven en `thresholds`. **Pendiente de firma del cliente** | Determina clientes inactivos, recuperados y "clientes sin visita". La especificación menciona cortes de 30/60/90 días para reportes pero no fija cuál usan los KPIs |
-| **Meta prorrateada** | Un periodo que no es mes completo se compara contra la meta prorrateada por días (7 días de octubre = 7/31 de la meta). Decidido el 16/10/2026 (PCRM-173) | Cumplimiento de meta global y por vendedor. Un vendedor deshabilitado solo cuenta en el global los meses en que vendió |
+| **Meta prorrateada** | Un periodo que no es mes completo se compara contra la meta prorrateada por días (7 días de octubre = 7/31 de la meta). Decidido el 16/10/2026 (PCRM-173) | Cumplimiento de meta global y por vendedor. El global cuenta a todo vendedor con meta vigente, esté habilitado o no: si no vendió, su venta es 0 |
 | Radio de validación GPS | 80 metros | Recálculo retroactivo del histórico de alertas fuera de radio |
 | Zona horaria | `America/El_Salvador`, en `BUSINESS_TIMEZONE` | Ver 5.7. Recalcula a qué día local pertenece todo el histórico |
 | Estado de venta válido | `erp_status = 2` | Excluye cotizaciones de todo cálculo |

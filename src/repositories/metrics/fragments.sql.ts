@@ -96,7 +96,6 @@ export const goalSlicesCte = (range: LocalDateRange, name: string): Prisma.Sql =
   return Prisma.sql`
     ${Prisma.raw(name)} AS (
       SELECT u.id                       AS user_id,
-             u.active,
              eg.goal_amount * gm.factor AS goal_amount,
              COALESCE((SELECT SUM(s.total)
                        FROM   sale s
