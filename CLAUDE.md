@@ -542,8 +542,13 @@ prospect
       name / trade_name / address / phone
       location     geography(Point,4326)
       status       text
+      sanitary_registration / nrc / nit / email  text  -- PCRM-185, opcionales
       created_at / updated_at / deleted_at
 ```
+
+**Datos fiscales del prospecto (PCRM-185, 16/10/2026).** `sanitary_registration` (registro sanitario, texto libre sin formato conocido), `nrc`, `nit` y `email`, todos opcionales. El formato lo valida la API, no un CHECK: NRC `230204-4`, NIT de 14 dígitos (`0614-250621-108-6`) **o** el DUI homologado como NIT de persona natural (`01234567-8`), y correo guardado en minúsculas. Un string vacío del formulario se guarda como `NULL`. `PATCH /api/v1/prospects/:id` (solo Administrador) edita nombre, teléfono y estos cuatro campos de forma parcial.
+
+**`customer` no recibe estos campos por ahora, por decisión del equipo.** El JSON de Efactsoft no trae NRC, NIT ni correo del cliente: las llaves `nrc`, `nif`, `email`, `telefono` y `razon_social` del payload son del **emisor** (Pragma), con un único valor en todas las ventas. Agregarlos a `customer` implicaría captura manual, no importación.
 
 ### 7.4 Rutas
 
