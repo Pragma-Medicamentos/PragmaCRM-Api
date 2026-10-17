@@ -1,6 +1,7 @@
 import { Prisma } from '../../generated/prisma/client';
 import { ERP_STATUS_SALE } from '../../domain/constants/businessRules';
-import { LocalDateRange, monthsTouched } from '../../lib/localDateRange';
+import { ROLES } from '../../domain/types/auth.types';
+import { LocalDateRange, goalMonths } from '../../lib/localDateRange';
 import { ERP_TIMEZONE } from '../../lib/parseErpDate';
 
 /*
@@ -73,32 +74,51 @@ export const inPrevious = (column: Prisma.Sql, window: KpiWindow): Prisma.Sql =>
   Prisma.sql`${column} < ${window.range.start}`;
 
 /**
- * Goal rows (alias `g`) of the months the range touches. Goals are monthly:
- * a range of half a month is compared against the full month's goal.
+ * Goal slices (PCRM-173): a CTE named `name` with one row per seller and per
+ * month the range touches in which the seller has a goal.
+ *
+ * - A `goal` row applies from its month onward, until a later row replaces
+ *   it: the goal of month M is the latest row with (year, month) <= M. A
+ *   goal of 0 means "no goal from that month on".
+ * - The goal is prorated by the share of the month inside the range
+ *   (`goalMonths`), so 7 days of October weigh 7/31 of October's goal.
+ * - `sales` are the seller's confirmed sales inside that same slice, so a
+ *   month without a goal never adds sales to the numerator.
+ *
+ * `name` must be a trusted constant: it is inlined as an identifier.
  */
-export const goalsOfMonths = (range: LocalDateRange): Prisma.Sql => {
-  const keys = monthsTouched(range).map(({ year, month }) => year * 100 + month);
+export const goalSlicesCte = (range: LocalDateRange, name: string): Prisma.Sql => {
+  const months = goalMonths(range).map(
+    (m) => Prisma.sql`(${m.year}::int, ${m.month}::int, ${m.start}::timestamptz,
+                       ${m.end}::timestamptz, ${m.factor}::numeric)`
+  );
 
   return Prisma.sql`
-    g.deleted_at IS NULL
-    AND (g.year * 100 + g.month) IN (${Prisma.join(keys)})
-  `;
-};
-
-/**
- * Goals of the months the range touches, summed per seller. Goals are
- * monthly: a range of half a month is compared against the full month's goal.
- */
-export const goalsCte = (range: LocalDateRange): Prisma.Sql => {
-  const keys = monthsTouched(range).map(({ year, month }) => year * 100 + month);
-
-  return Prisma.sql`
-    goals AS (
-      SELECT g.user_id, SUM(g.goal_amount) AS goal_amount
-      FROM   goal g
-      WHERE  g.deleted_at IS NULL
-        AND  (g.year * 100 + g.month) IN (${Prisma.join(keys)})
-      GROUP  BY g.user_id
+    ${Prisma.raw(name)} AS (
+      SELECT u.id                       AS user_id,
+             u.active,
+             eg.goal_amount * gm.factor AS goal_amount,
+             COALESCE((SELECT SUM(s.total)
+                       FROM   sale s
+                       WHERE  s.deleted_at IS NULL
+                         AND  s.erp_status = ${ERP_STATUS_SALE}
+                         AND  s.user_id = u.id
+                         AND  ${SALE_AT} >= gm.starts_at
+                         AND  ${SALE_AT} <  gm.ends_at), 0) AS sales
+      FROM   (VALUES ${Prisma.join(months)}) AS gm (year, month, starts_at, ends_at, factor)
+      CROSS  JOIN app_user u
+      CROSS  JOIN LATERAL (
+               SELECT g.goal_amount
+               FROM   goal g
+               WHERE  g.user_id = u.id
+                 AND  g.deleted_at IS NULL
+                 AND  (g.year * 100 + g.month) <= gm.year * 100 + gm.month
+               ORDER  BY g.year DESC, g.month DESC
+               LIMIT  1
+             ) eg
+      WHERE  u.deleted_at IS NULL
+        AND  u.role = ${ROLES.SELLER}
+        AND  eg.goal_amount > 0
     )
   `;
 };

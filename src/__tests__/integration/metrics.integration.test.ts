@@ -308,6 +308,30 @@ describe('GET /api/v1/metrics/kpis/:name (real Postgres)', () => {
     });
   });
 
+  it('keeps a goal in force in the following months (PCRM-173)', async () => {
+    // Only March has a goal row; April inherits it and sold nothing. The
+    // previous period (2-31 March) weighs 30/31 of the goal: 150 / 290.32.
+    const res = await get('/kpis/goal_compliance?from=2020-04-01&to=2020-04-30');
+
+    expect(res.body.data).toMatchObject({ value: 0, previous_value: 51.7 });
+  });
+
+  it('prorates the goal to a partial month', async () => {
+    // 1-15 March: 15/31 of 300 = 145.16, against the 100 sold on the 2nd.
+    const res = await get('/kpis/goal_compliance?from=2020-03-01&to=2020-03-15');
+
+    expect(res.body.data.value).toBe(68.9);
+    // The goal starts in March: nothing in force in February.
+    expect(res.body.data.previous_value).toBeNull();
+  });
+
+  it('leaves sales of months without goal out of the compliance', async () => {
+    // The 30 sold in January has no goal to count against: 150 / 300.
+    const res = await get('/kpis/goal_compliance?from=2020-01-01&to=2020-03-31');
+
+    expect(res.body.data.value).toBe(50);
+  });
+
   it('answers 404 for an unknown KPI', async () => {
     const res = await get(`/kpis/monto_cobrado?${RANGE}`);
 
@@ -347,6 +371,13 @@ describe('GET /api/v1/metrics/sellers (real Postgres)', () => {
     });
   });
 
+  it('prorates the seller goal to the period', async () => {
+    const res = await get('/sellers?from=2020-03-01&to=2020-03-15');
+    const seller = res.body.data.sellers.find((s: { user_id: string }) => s.user_id === sellerId);
+
+    expect(seller).toMatchObject({ goal_amount: '145.16', goal_compliance: 68.9 });
+  });
+
   it('returns the detail with forgotten customers of the portfolio', async () => {
     const res = await get(`/sellers/${sellerId}?${RANGE}&inactivity_days=10`);
 
@@ -379,5 +410,59 @@ describe('GET /api/v1/metrics/trends (real Postgres)', () => {
         average_ticket: '56.67',
       },
     ]);
+  });
+});
+
+describe('Seller goals endpoints (real Postgres, PCRM-173)', () => {
+  const goalsPath = () => `/api/v1/sellers/${sellerId}/goals`;
+
+  it('sets a goal from a month onward without touching the one in force', async () => {
+    // 2099 is in the future: the March 2020 goal stays in force today.
+    const put = await request(app)
+      .put(goalsPath())
+      .set(HEADERS)
+      .send({ year: 2099, month: 1, goal_amount: 450.5 });
+
+    expect(put.status).toBe(200);
+    expect(put.body.data).toMatchObject({ year: 2099, month: 1, goal_amount: '450.50' });
+
+    const list = await request(app).get(goalsPath()).set(HEADERS);
+
+    expect(list.body.data.current).toMatchObject({ year: 2020, month: 3, goal_amount: '300.00' });
+    expect(list.body.data.history.map((g: { year: number }) => g.year)).toEqual([2099, 2020]);
+
+    const sellers = await request(app).get('/api/v1/sellers').set(HEADERS);
+    const seller = sellers.body.data.find((s: { id: string }) => s.id === sellerId);
+    expect(seller.current_goal).toBe('300.00');
+  });
+
+  it('updates the same month instead of duplicating it', async () => {
+    await request(app).put(goalsPath()).set(HEADERS).send({ year: 2099, month: 1, goal_amount: 500 });
+
+    const list = await request(app).get(goalsPath()).set(HEADERS);
+    const future = list.body.data.history.filter((g: { year: number }) => g.year === 2099);
+
+    expect(future).toHaveLength(1);
+    expect(future[0].goal_amount).toBe('500.00');
+  });
+
+  it('deletes a goal change once', async () => {
+    const list = await request(app).get(goalsPath()).set(HEADERS);
+    const future = list.body.data.history.find((g: { year: number }) => g.year === 2099);
+
+    const first = await request(app).delete(`${goalsPath()}/${future.id}`).set(HEADERS);
+    const second = await request(app).delete(`${goalsPath()}/${future.id}`).set(HEADERS);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(404);
+  });
+
+  it('rejects an invalid month', async () => {
+    const res = await request(app)
+      .put(goalsPath())
+      .set(HEADERS)
+      .send({ year: 2099, month: 13, goal_amount: 100 });
+
+    expect(res.status).toBe(400);
   });
 });

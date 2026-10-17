@@ -12,6 +12,7 @@ import {
   updateSellerSchema,
   updateSellerStatusSchema,
 } from '../../domain/schemas/seller.schema';
+import { goalParamsSchema, setGoalSchema } from '../../domain/schemas/goal.schema';
 
 export class SellersRoutes {
   static get routes(): Router {
@@ -39,6 +40,19 @@ export class SellersRoutes {
       '/:id/resend-otp',
       validateParams(sellerParamsSchema),
       controller.resendOtp
+    );
+    // PCRM-173: monthly goal in force from a month onward.
+    router.get('/:id/goals', validateParams(sellerParamsSchema), controller.listGoals);
+    router.put(
+      '/:id/goals',
+      validateParams(sellerParamsSchema),
+      validateBody(setGoalSchema),
+      controller.setGoal
+    );
+    router.delete(
+      '/:id/goals/:goalId',
+      validateParams(goalParamsSchema),
+      controller.deleteGoal
     );
 
     return router;

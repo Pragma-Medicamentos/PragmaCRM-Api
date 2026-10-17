@@ -800,11 +800,11 @@ model scheduled_visit {
   prospect_id   String?    @db.Uuid
   stop_type     String     @default("visit")
   reason        String?
-  sort_order    Int?       @db.SmallInt
   created_at    DateTime   @default(now()) @db.Timestamptz(6)
   updated_at    DateTime   @default(now()) @db.Timestamptz(6)
   deleted_at    DateTime?  @db.Timestamptz(6)
   is_extra      Boolean    @default(false)
+  sort_order    Int?       @db.SmallInt
   customer      customer?  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   prospect      prospect?  @relation(fields: [prospect_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   route_user    route_user @relation(fields: [route_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)

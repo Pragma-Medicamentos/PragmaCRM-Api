@@ -70,7 +70,7 @@ export const SELLER_COLUMNS: ReportColumn[] = [
   { key: 'orders_count', header: 'Pedidos', type: 'integer', width: 10 },
   { key: 'total_sales', header: 'Venta total', type: 'money', width: 15 },
   { key: 'average_ticket', header: 'Ticket promedio', type: 'money', width: 14 },
-  { key: 'goal_amount', header: 'Meta', type: 'money', width: 14 },
+  { key: 'goal_amount', header: 'Meta del periodo', type: 'money', width: 16 },
   { key: 'goal_compliance', header: 'Cumplimiento', type: 'percent', width: 13 },
   { key: 'route_sales', header: 'Venta en ruta', type: 'money', width: 15, pdf: false },
   { key: 'executed_route_days', header: 'Rutas-día', type: 'integer', width: 10, pdf: false },

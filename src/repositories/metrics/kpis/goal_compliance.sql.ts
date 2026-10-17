@@ -1,33 +1,22 @@
 import { Prisma } from '../../../generated/prisma/client';
-import { ERP_STATUS_SALE } from '../../../domain/constants/businessRules';
-import { LocalDateRange } from '../../../lib/localDateRange';
-import {
-  KpiWindow,
-  SALE_AT,
-  inRange,
-  goalsOfMonths,
-} from '../fragments.sql';
+import { KpiWindow, goalSlicesCte } from '../fragments.sql';
 
 /**
- * Cumplimiento de meta (%): sales of the sellers that have a goal divided by
- * the sum of their goals, for the months each period touches. Null when no
- * goal is loaded. The two periods touch different months, so each gets its
- * own subquery instead of a FILTER.
+ * Cumplimiento de meta (%): sales inside the seller-months that have a goal,
+ * divided by those goals prorated to the period (PCRM-173, see goalSlicesCte).
+ * A disabled seller still carries the goal in force, so its months only count
+ * when it sold in them; otherwise the team would chase a ghost's goal. Null
+ * when no seller has a goal in the period.
  */
-const complianceOf = (range: LocalDateRange): Prisma.Sql => Prisma.sql`
-  ROUND(100.0
-        * COALESCE((SELECT SUM(s.total)
-                    FROM   sale s
-                    WHERE  s.deleted_at IS NULL
-                      AND  s.erp_status = ${ERP_STATUS_SALE}
-                      AND  ${inRange(SALE_AT, range)}
-                      AND  s.user_id IN (SELECT g.user_id FROM goal g
-                                         WHERE ${goalsOfMonths(range)})), 0)
-        / NULLIF((SELECT SUM(g.goal_amount) FROM goal g
-                  WHERE ${goalsOfMonths(range)}), 0), 1)::float8
+const complianceOf = (slices: string): Prisma.Sql => Prisma.sql`
+  (SELECT ROUND(100.0 * SUM(gs.sales) / NULLIF(SUM(gs.goal_amount), 0), 1)::float8
+   FROM   ${Prisma.raw(slices)} gs
+   WHERE  gs.active OR gs.sales > 0)
 `;
 
 export const goalComplianceSql = (w: KpiWindow): Prisma.Sql => Prisma.sql`
-  SELECT ${complianceOf(w.range)}    AS value,
-         ${complianceOf(w.previous)} AS previous_value
+  WITH ${goalSlicesCte(w.range, 'current_slices')},
+       ${goalSlicesCte(w.previous, 'previous_slices')}
+  SELECT ${complianceOf('current_slices')}  AS value,
+         ${complianceOf('previous_slices')} AS previous_value
 `;
