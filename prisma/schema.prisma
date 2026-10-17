@@ -626,19 +626,23 @@ model product_request {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model prospect {
-  id              String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id         String                    @db.Uuid
-  name            String
-  trade_name      String?
-  address         String?
-  phone           String?
-  location        Unsupported("geography")?
-  status          String?
-  created_at      DateTime                  @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime                  @default(now()) @db.Timestamptz(6)
-  deleted_at      DateTime?                 @db.Timestamptz(6)
-  app_user        app_user                  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  scheduled_visit scheduled_visit[]
+  id                    String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id               String                    @db.Uuid
+  name                  String
+  trade_name            String?
+  address               String?
+  phone                 String?
+  location              Unsupported("geography")?
+  status                String?
+  created_at            DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime                  @default(now()) @db.Timestamptz(6)
+  deleted_at            DateTime?                 @db.Timestamptz(6)
+  sanitary_registration String?
+  nrc                   String?
+  nit                   String?
+  email                 String?
+  app_user              app_user                  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  scheduled_visit       scheduled_visit[]
 
   @@index([user_id], where: raw("(deleted_at IS NULL)"))
   @@schema("public")
@@ -800,11 +804,11 @@ model scheduled_visit {
   prospect_id   String?    @db.Uuid
   stop_type     String     @default("visit")
   reason        String?
-  sort_order    Int?       @db.SmallInt
   created_at    DateTime   @default(now()) @db.Timestamptz(6)
   updated_at    DateTime   @default(now()) @db.Timestamptz(6)
   deleted_at    DateTime?  @db.Timestamptz(6)
   is_extra      Boolean    @default(false)
+  sort_order    Int?       @db.SmallInt
   customer      customer?  @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   prospect      prospect?  @relation(fields: [prospect_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   route_user    route_user @relation(fields: [route_user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
