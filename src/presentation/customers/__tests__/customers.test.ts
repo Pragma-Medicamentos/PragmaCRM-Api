@@ -8,6 +8,7 @@ import {
   listCustomerSales,
   listCustomers,
   updateCustomerCommercialProfile,
+  updateCustomerFiscalData,
   updateCustomerContact,
   updateCustomerLocation,
 } from '../../../services/customer.service';
@@ -41,6 +42,7 @@ jest.mock('../../../services/customer.service', () => ({
   updateCustomerLocation: jest.fn(),
   updateCustomerContact: jest.fn(),
   updateCustomerCommercialProfile: jest.fn(),
+  updateCustomerFiscalData: jest.fn(),
 }));
 
 const listCustomersMock = listCustomers as jest.Mock;
@@ -51,6 +53,7 @@ const updateCustomerLocationMock = updateCustomerLocation as jest.Mock;
 const updateCustomerContactMock = updateCustomerContact as jest.Mock;
 const updateCustomerCommercialProfileMock =
   updateCustomerCommercialProfile as jest.Mock;
+const updateCustomerFiscalDataMock = updateCustomerFiscalData as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
@@ -449,5 +452,95 @@ describe('PATCH /api/v1/customers/:id/commercial-profile', () => {
       CUSTOMER_ID,
       { personality: null }
     );
+  });
+});
+
+describe('PATCH /api/v1/customers/:id/fiscal-data', () => {
+  const patch = (id: string, body: Record<string, unknown>) =>
+    request(app)
+      .patch(`/api/v1/customers/${id}/fiscal-data`)
+      .set(AUTH)
+      .send(body);
+
+  beforeEach(() => updateCustomerFiscalDataMock.mockReset());
+
+  it('saves the fields, email lowercased, and returns the customer', async () => {
+    updateCustomerFiscalDataMock.mockResolvedValue({ id: CUSTOMER_ID, nrc: '230204-4' });
+
+    const res = await patch(CUSTOMER_ID, {
+      sanitary_registration: 'RS-2024-00123',
+      nrc: '230204-4',
+      nit: '0614-250621-108-6',
+      email: 'Compras@Farmacia.com',
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateCustomerFiscalDataMock).toHaveBeenCalledWith(expect.anything(), CUSTOMER_ID, {
+      sanitary_registration: 'RS-2024-00123',
+      nrc: '230204-4',
+      nit: '0614-250621-108-6',
+      email: 'compras@farmacia.com',
+    });
+  });
+
+  it('accepts the DUI homologated as NIT', async () => {
+    updateCustomerFiscalDataMock.mockResolvedValue({ id: CUSTOMER_ID });
+
+    const res = await patch(CUSTOMER_ID, { nit: '01234567-8' });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('passes null through, and turns a blank string into null', async () => {
+    updateCustomerFiscalDataMock.mockResolvedValue({ id: CUSTOMER_ID });
+
+    await patch(CUSTOMER_ID, { email: null, nrc: '' });
+
+    expect(updateCustomerFiscalDataMock).toHaveBeenCalledWith(expect.anything(), CUSTOMER_ID, {
+      email: null,
+      nrc: null,
+    });
+  });
+
+  it('rejects an empty body', async () => {
+    const res = await patch(CUSTOMER_ID, {});
+
+    expect(res.status).toBe(400);
+    expect(updateCustomerFiscalDataMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ nit: '06142506211086' }, 'nit'],
+    [{ nrc: '2302044' }, 'nrc'],
+    [{ email: 'not-an-email' }, 'email'],
+  ])('rejects %j', async (body, field) => {
+    const res = await patch(CUSTOMER_ID, body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe(field);
+    expect(updateCustomerFiscalDataMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects fields owned by another section', async () => {
+    const res = await patch(CUSTOMER_ID, { nrc: '230204-4', phone: '2222-2222' });
+
+    expect(res.status).toBe(400);
+    expect(updateCustomerFiscalDataMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an id that is not a uuid', async () => {
+    const res = await patch('not-a-uuid', { nrc: '230204-4' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe('id');
+  });
+
+  it('propagates the service 404', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    updateCustomerFiscalDataMock.mockRejectedValue(CustomError.notFound('Customer not found'));
+
+    const res = await patch(CUSTOMER_ID, { nrc: '230204-4' });
+
+    expect(res.status).toBe(404);
   });
 });

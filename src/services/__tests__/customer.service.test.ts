@@ -9,6 +9,7 @@ import {
   listCustomerSales,
   updateCustomerCommercialProfile,
   updateCustomerContact,
+  updateCustomerFiscalData,
   updateCustomerLocation,
 } from '../customer.service';
 
@@ -57,6 +58,10 @@ const coreRow = (overrides: Record<string, unknown> = {}) => ({
   attends: null,
   personality: null,
   potential: null,
+  sanitary_registration: null,
+  nrc: null,
+  nit: null,
+  email: null,
   credit: false,
   credit_limit: null,
   origin: null,
@@ -599,5 +604,50 @@ describe('updateCustomerCommercialProfile', () => {
       where: { id: CUSTOMER_ID },
       data: { personality: null, updated_at: expect.any(Date) },
     });
+  });
+});
+
+describe('updateCustomerFiscalData', () => {
+  const clientWith = (update: jest.Mock, row = coreRow()) =>
+    buildClient({
+      customer: {
+        findFirst: jest.fn().mockResolvedValue({ id: CUSTOMER_ID }),
+        update,
+      },
+      $queryRaw: jest.fn().mockResolvedValue([row]),
+    });
+
+  it('throws 404 when the customer does not exist', async () => {
+    const update = jest.fn();
+    const client = buildClient({
+      customer: { findFirst: jest.fn().mockResolvedValue(null), update },
+    });
+
+    await expect(
+      updateCustomerFiscalData(client, CUSTOMER_ID, { nrc: '230204-4' })
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('writes only the given fields, so Prisma leaves the omitted ones untouched', async () => {
+    const update = jest.fn().mockResolvedValue({});
+    const client = clientWith(update, coreRow({ nrc: '230204-4', email: null }));
+
+    const core = await updateCustomerFiscalData(client, CUSTOMER_ID, {
+      nrc: '230204-4',
+      email: null,
+    });
+
+    expect(update).toHaveBeenCalledWith({
+      where: { id: CUSTOMER_ID },
+      data: {
+        sanitary_registration: undefined,
+        nrc: '230204-4',
+        nit: undefined,
+        email: null,
+        updated_at: expect.any(Date),
+      },
+    });
+    expect(core).toMatchObject({ nrc: '230204-4', email: null, nit: null });
   });
 });

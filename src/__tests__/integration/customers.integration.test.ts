@@ -184,3 +184,75 @@ describe('customer RF-12 constraints', () => {
     ).rejects.toThrow(/customer_(personality|potential)_check/);
   });
 });
+
+describe('PATCH /api/v1/customers/:id/fiscal-data (PCRM-185)', () => {
+  const patchFiscal = (id: string, body: Record<string, unknown>) =>
+    request(app)
+      .patch(`/api/v1/customers/${id}/fiscal-data`)
+      .set(HEADERS)
+      .send(body);
+
+  const fiscal = () =>
+    prisma.customer.findUniqueOrThrow({
+      where: { id: customerId },
+      select: { sanitary_registration: true, nrc: true, nit: true, email: true, name: true },
+    });
+
+  it('saves the four fields and the profile returns them', async () => {
+    const res = await patchFiscal(customerId, {
+      sanitary_registration: 'RS-2024-00185',
+      nrc: '230204-4',
+      nit: '0614-250621-108-6',
+      email: 'Compras@Perfil.com',
+    });
+
+    expect(res.status).toBe(200);
+    expect(await fiscal()).toMatchObject({
+      sanitary_registration: 'RS-2024-00185',
+      nrc: '230204-4',
+      nit: '0614-250621-108-6',
+      email: 'compras@perfil.com',
+    });
+
+    const profile = await request(app).get(`/api/v1/customers/${customerId}`).set(HEADERS);
+    expect(profile.body.data).toMatchObject({
+      nrc: '230204-4',
+      nit: '0614-250621-108-6',
+      email: 'compras@perfil.com',
+      sanitary_registration: 'RS-2024-00185',
+    });
+  });
+
+  it('changes one field, clears another, and leaves the rest and the name untouched', async () => {
+    const res = await patchFiscal(customerId, { nit: '01234567-8', email: null });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ nit: '01234567-8', email: null, nrc: '230204-4' });
+    expect(await fiscal()).toEqual({
+      sanitary_registration: 'RS-2024-00185',
+      nrc: '230204-4',
+      nit: '01234567-8',
+      email: null,
+      name: 'Commercial Profile Test Customer',
+    });
+  });
+
+  it('answers 404 for a soft-deleted customer and leaves it untouched', async () => {
+    const deleted = await prisma.customer.create({
+      data: { name: 'Deleted Fiscal Customer', deleted_at: new Date() },
+    });
+
+    try {
+      const res = await patchFiscal(deleted.id, { nrc: '230204-4' });
+
+      expect(res.status).toBe(404);
+      const row = await prisma.customer.findUniqueOrThrow({
+        where: { id: deleted.id },
+        select: { nrc: true },
+      });
+      expect(row.nrc).toBeNull();
+    } finally {
+      await prisma.$executeRaw`delete from customer where id = ${deleted.id}::uuid`;
+    }
+  });
+});

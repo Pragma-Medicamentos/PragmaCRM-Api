@@ -78,6 +78,10 @@ export interface CustomerCoreRow {
   attends: string | null;
   personality: CustomerPersonality | null;
   potential: CustomerPotential | null;
+  sanitary_registration: string | null;
+  nrc: string | null;
+  nit: string | null;
+  email: string | null;
   credit: boolean;
   credit_limit: string | null;
   origin: string | null;

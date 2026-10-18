@@ -522,6 +522,7 @@ customer
       erp_customer_id     integer  UNIQUE parcial
       personality         text  CHECK            -- RF-12: rojo|azul|verde|amarillo, NULL = sin clasificar
       potential           text  CHECK            -- RF-12: alto|medio|bajo, NULL = sin clasificar
+      sanitary_registration / nrc / nit / email  text  -- PCRM-185, opcionales, captura manual
       name                text
       trade_name          text
       establishment_type  text                   -- cadena|independiente|droguería
@@ -544,8 +545,16 @@ prospect
       name / trade_name / address / phone
       location     geography(Point,4326)
       status       text
+      sanitary_registration / nrc / nit / email  text  -- PCRM-185, opcionales
       created_at / updated_at / deleted_at
 ```
+
+**Datos fiscales de clientes y prospectos (PCRM-185).** `sanitary_registration` (registro sanitario, texto libre sin formato conocido), `nrc`, `nit` y `email`, todos opcionales, en `prospect` (16/10/2026) y en `customer` (confirmado por el PO el 18/10/2026). El formato lo valida la API con un solo esquema compartido (`domain/schemas/fiscal.schema.ts`), no un CHECK: NRC `230204-4`, NIT de 14 dígitos (`0614-250621-108-6`) **o** el DUI homologado como NIT de persona natural (`01234567-8`), y correo guardado en minúsculas. Un string vacío del formulario se guarda como `NULL`.
+
+- Prospectos: se aceptan al crear (vendedor y admin) y `PATCH /api/v1/prospects/:id` (solo Administrador) edita nombre, teléfono y estos cuatro campos de forma parcial.
+- Clientes: `PATCH /api/v1/customers/:id/fiscal-data` (solo Administrador), parcial y `strict`, como las otras secciones del perfil (`/contact`, `/location`, `/commercial-profile`). Se leen en `GET /api/v1/customers/:id`; el listado y la ruta móvil no los traen.
+
+**En `customer` son captura manual: el importador no los toca.** El JSON de Efactsoft no trae NRC, NIT ni correo del cliente: las llaves `nrc`, `nif`, `email`, `telefono` y `razon_social` del payload son del **emisor** (Pragma), con un único valor en todas las ventas. `upsertCustomer` (`salesSync.service.ts`) solo escribe nombre y crédito, así que una carga posterior no borra lo capturado.
 
 ### 7.4 Rutas
 

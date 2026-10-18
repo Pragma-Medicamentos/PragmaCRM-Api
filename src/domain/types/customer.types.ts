@@ -84,6 +84,11 @@ export interface CustomerCore {
   personality: CustomerPersonality | null;
   /** RF-12 buying potential. Null = not classified yet. */
   potential: CustomerPotential | null;
+  /** PCRM-185 fiscal and contact data, captured by hand. Null = not captured. */
+  sanitary_registration: string | null;
+  nrc: string | null;
+  nit: string | null;
+  email: string | null;
   credit: boolean;
   credit_limit: Money | null;
   origin: string | null;
