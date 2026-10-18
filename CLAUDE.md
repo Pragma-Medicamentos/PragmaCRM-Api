@@ -273,6 +273,8 @@ Es el punto donde más errores de interpretación ocurren. Los cuatro son entida
 
 **Consecuencia de que la asignación sea recurrente:** las jornadas concretas no están almacenadas. Se **generan en runtime** con `generate_series` sobre el día de la semana, uniendo la composición vigente a esa fecha. Esto sostiene tanto "próximas visitas" como "cobertura de ruta".
 
+**Ruta semanal del vendedor (PCRM-170).** `GET /api/v1/me/route/week` devuelve la semana en curso (lunes a domingo, zona de negocio), con los 7 días siempre presentes, leyendo la asignación **viva**: `route_user` + `route_customer` más las paradas extra (`scheduled_visit.is_extra`) de esas fechas. Es de solo lectura y **nunca** genera días: `ensureDailyStops` congela el plan del día que genera, y esta vista existe justamente para que una reasignación (miércoles de Santa Ana a San Salvador) se vea al refrescar. Las paradas tienen el mismo shape que las de `/me/route`; las de plantilla llevan `route_customer.id` como `id`.
+
 **✅ Discrepancia resuelta en el esquema aplicado.** El DER dibujaba `ruta_usuario.fecha date`; la decisión confirmada pedía día de la semana con vigencia. **La base implementada le dio la razón a la decisión:** `route_user.day smallint` + `created_at` / `deleted_at`, con índice único parcial `(route_id, user_id, day) WHERE deleted_at IS NULL`. El punto 1 del Anexo B queda cerrado.
 
 ### 5.2 Clasificación estricta de paradas
