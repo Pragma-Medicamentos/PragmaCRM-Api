@@ -21,6 +21,9 @@ export class DailyRouteRoutes {
     // mounted in presentation/routes.ts, not here (CLAUDE.md 8.1 convention).
     router.get('/', validateQuery(dailyRouteQuerySchema), controller.get);
 
+    // PCRM-170: the live weekly assignment. Read-only — never generates days.
+    router.get('/week', controller.getWeek);
+
     // PCRM-160: the seller may fill an empty customer pin, never move one.
     router.patch(
       '/stops/:id/location',

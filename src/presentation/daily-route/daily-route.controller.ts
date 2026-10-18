@@ -21,6 +21,8 @@ import {
   setStopCustomerLocation,
   setStopNote,
 } from '../../services/daily-route.service';
+import { getWeeklyRoute } from '../../services/weekly-route.service';
+import { WeeklyRoute } from '../../domain/types/weekly-route.types';
 
 export class DailyRouteController {
   public async get(req: Request, res: Response) {
@@ -44,6 +46,25 @@ export class DailyRouteController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'DailyRouteController.get');
+    }
+  }
+
+  /** PCRM-170: the seller's live weekly assignment for the current week. */
+  public async getWeek(req: Request, res: Response) {
+    try {
+      if (!req.authUser) throw CustomError.unauthorized();
+
+      const week = await getWeeklyRoute(prisma, req.authUser.id);
+
+      const response: ApiResponse<WeeklyRoute> = {
+        success: true,
+        message: 'Ruta semanal obtenida correctamente',
+        data: week,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'DailyRouteController.getWeek');
     }
   }
 
