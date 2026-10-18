@@ -4,6 +4,7 @@ import { CustomError } from '../../domain/errors/CustomError';
 import {
   DailyRoute,
   StopCustomerLocation,
+  StopCustomerMetrics,
   StopNote,
 } from '../../domain/types/daily-route.types';
 import {
@@ -16,9 +17,12 @@ import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
 import {
   getDailyRoute,
+  getStopCustomerMetrics,
   setStopCustomerLocation,
   setStopNote,
 } from '../../services/daily-route.service';
+import { getWeeklyRoute } from '../../services/weekly-route.service';
+import { WeeklyRoute } from '../../domain/types/weekly-route.types';
 
 export class DailyRouteController {
   public async get(req: Request, res: Response) {
@@ -42,6 +46,25 @@ export class DailyRouteController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'DailyRouteController.get');
+    }
+  }
+
+  /** PCRM-170: the seller's live weekly assignment for the current week. */
+  public async getWeek(req: Request, res: Response) {
+    try {
+      if (!req.authUser) throw CustomError.unauthorized();
+
+      const week = await getWeeklyRoute(prisma, req.authUser.id);
+
+      const response: ApiResponse<WeeklyRoute> = {
+        success: true,
+        message: 'Ruta semanal obtenida correctamente',
+        data: week,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'DailyRouteController.getWeek');
     }
   }
 
@@ -91,6 +114,27 @@ export class DailyRouteController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'DailyRouteController.setNote');
+    }
+  }
+
+  /** PCRM-164: commercial figures of the stop's customer. */
+  public async getCustomer(req: Request, res: Response) {
+    try {
+      if (!req.authUser) throw CustomError.unauthorized();
+
+      const { id } = req.params as unknown as StopParams;
+
+      const metrics = await getStopCustomerMetrics(prisma, req.authUser.id, id);
+
+      const response: ApiResponse<StopCustomerMetrics> = {
+        success: true,
+        message: 'Métricas del cliente obtenidas correctamente',
+        data: metrics,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'DailyRouteController.getCustomer');
     }
   }
 }

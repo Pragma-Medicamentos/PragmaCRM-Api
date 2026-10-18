@@ -462,6 +462,56 @@ La cadena no se mueve con cambios posteriores: reasignar el día (`route_user` b
 
 **Retirado (decisión del PO, 13/10/2026).** La primera versión de PCRM-178 devolvía además unidades de la ruta, posiciones por monto y por unidades, venta por día-ruta (efectividad), clientes visitados / planificados y paradas ejecutadas / planificadas. Las unidades de una ruta suman productos distintos y no se pueden comparar; el resto no aportaba a la vista de cards. Las unidades siguen por producto en `top_products`. No reintroducir sin conversación.
 
+### 12. `GET /sales/comparison` — venta contra el período anterior (PCRM-187)
+
+Venta, pedidos y ticket promedio del período contra el período anterior, para toda la empresa, un cliente, un vendedor o ambos, con desglose opcional por cliente o por vendedor. La vista web es de Gustavo; la ubicación (perfiles, panel o ambos) la decide Web.
+
+**Query.** La común (`from`, `to`) más:
+
+| Param | Formato | Nota |
+|---|---|---|
+| `customer_id` | uuid | Opcional. `404` si no existe (los clientes borrados sí valen: su historia cuenta) |
+| `user_id` | uuid | Opcional. `404` si no existe. Se combina con `customer_id` (AND) |
+| `group_by` | `customer` \| `seller` | Opcional. Sin él, `breakdown` es `null` |
+| `page`, `limit` | entero | Paginación del desglose (20 por defecto, tope 100). Sin `group_by` se ignoran |
+
+**Período anterior.** El mismo de las tarjetas KPI: igual número de días, inmediatamente antes (`previousRange`). 1–30 sep se compara con 2 ago–31 ago.
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" }, "thresholds": { "...": "..." },
+  "previous_period": { "from": "2026-08-02", "to": "2026-08-31" },
+  "filters": { "customer_id": null, "user_id": "…" },
+  "totals": {
+    "current":  { "total_sales": "3031.36", "orders_count": 8, "average_ticket": "378.92" },
+    "previous": { "total_sales": "1757.64", "orders_count": 6, "average_ticket": "292.94" },
+    "variation": {
+      "total_sales":    { "amount": "1273.72", "pct": 72.5 },
+      "orders_count":   { "amount": 2,         "pct": 33.3 },
+      "average_ticket": { "amount": "85.98",   "pct": 29.4 }
+    }
+  },
+  "breakdown": {
+    "group_by": "customer",
+    "items": [
+      { "id": "…", "name": "Farmacia San José",
+        "current": { "...": "..." }, "previous": { "...": "..." }, "variation": { "...": "..." } }
+    ],
+    "page": 1, "page_size": 20, "total": 12, "total_pages": 1
+  }
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `totals` sin filtros | **Cuadra exacto** con `total_sales`, `orders_count` y `average_ticket` de `/kpis/values` para el mismo rango: mismas reglas (`erp_status = 2`, IVA incluido, `erp_created_at`) |
+| `variation.*.amount` | Actual menos anterior. Montos como string; `average_ticket.amount` es `null` si algún período no tiene ventas |
+| `variation.*.pct` | Variación % con un decimal. **`null` si el anterior es 0** (no hay base): la web lo muestra como "Nuevo" o "—" |
+| `breakdown.items` | Un renglón por cliente o vendedor con venta en **cualquiera** de los dos períodos, ordenado por venta actual desc, luego anterior desc y nombre |
+| Fila `id: null` | Ventas sin cliente o sin vendedor (un `id_usuario` de Efactsoft que no mapea a ningún `app_user`, Anexo A.2). Se agrupan en una fila para que **las filas sumen el total** |
+
+Códigos: `400` por query inválida (incluido `group_by` desconocido o rango > 366 días), `404` por `customer_id` o `user_id` inexistente, `403` para Vendedor (todo `/metrics` es solo Administrador).
+
 ---
 
 ## Qué consume cada pantalla
