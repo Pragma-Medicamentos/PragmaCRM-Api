@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { fiscalFields } from './fiscal.schema';
 import { booleanQueryParam, paginationQuerySchema } from './pagination.schema';
 
 export const CUSTOMER_CATEGORIES = ['A', 'B', 'C', 'uncategorized'] as const;
@@ -78,6 +79,21 @@ export const updateCustomerContactSchema = z
   });
 export type UpdateCustomerContactInput = z.infer<
   typeof updateCustomerContactSchema
+>;
+
+// PCRM-185: sanitary registration, NRC, NIT and email, captured by hand —
+// Efactsoft does not export them per customer. Same formats as on prospects
+// (fiscal.schema.ts). Partial: omit = leave unchanged, null or "" = clear.
+// `.strict()` so a field owned by another section answers 400 instead of
+// being dropped silently.
+export const updateCustomerFiscalDataSchema = z
+  .object(fiscalFields)
+  .strict()
+  .refine((data) => Object.values(data).some((value) => value !== undefined), {
+    message: 'At least one field is required',
+  });
+export type UpdateCustomerFiscalDataInput = z.infer<
+  typeof updateCustomerFiscalDataSchema
 >;
 
 // RF-12: communication style as one of four colours and buying potential.
