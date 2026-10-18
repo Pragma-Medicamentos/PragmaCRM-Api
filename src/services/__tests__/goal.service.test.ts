@@ -3,7 +3,6 @@ import { Client } from '../../lib/prisma';
 import {
   currentGoalsBySeller,
   currentYearMonth,
-  deleteSellerGoal,
   listSellerGoals,
   setSellerGoal,
 } from '../goal.service';
@@ -51,7 +50,8 @@ describe('listSellerGoals', () => {
 
   it('resolves the goal in force over every row, apart from the history page', async () => {
     const findFirst = jest.fn().mockResolvedValue(goal(2026, 8, '7000'));
-    const findMany = jest.fn().mockResolvedValue([goal(2026, 8, '7000')]);
+    // The row ahead of the page, then the page itself.
+    const findMany = jest.fn().mockResolvedValue([goal(2026, 12, '9000'), goal(2026, 8, '7000')]);
     const count = jest.fn().mockResolvedValue(3);
 
     const result = await listSellerGoals(buildClient({ findFirst, findMany, count }), SELLER_ID, PAGE, NOW);
@@ -63,10 +63,36 @@ describe('listSellerGoals', () => {
         }),
       })
     );
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 1, take: 1 }));
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 0, take: 2 }));
     expect(result.current).toMatchObject({ year: 2026, month: 8, goal_amount: '7000.00' });
     expect(result.history).toMatchObject({ page: 2, page_size: 1, total: 3, total_pages: 3 });
     expect(result.history.items.map((g) => g.goal_amount)).toEqual(['7000.00']);
+  });
+
+  it('closes each entry the month before the next newer one starts', async () => {
+    // Page 1: no newer row, so the first entry is still in force.
+    const page1 = jest.fn().mockResolvedValue([goal(2026, 7, '3100'), goal(2025, 1, '2700')]);
+    const first = await listSellerGoals(
+      buildClient({ findFirst: jest.fn(), findMany: page1, count: jest.fn().mockResolvedValue(2) }),
+      SELLER_ID,
+      { page: 1, limit: 2 },
+      NOW
+    );
+    expect(page1).toHaveBeenCalledWith(expect.objectContaining({ skip: 0, take: 2 }));
+    expect(first.history.items.map((g) => g.until)).toEqual([null, { year: 2026, month: 6 }]);
+
+    // Page 2 reads the row just before it to close its first entry.
+    const page2 = jest.fn().mockResolvedValue([goal(2025, 1, '2700'), goal(2024, 6, '2000')]);
+    const second = await listSellerGoals(
+      buildClient({ findFirst: jest.fn(), findMany: page2, count: jest.fn().mockResolvedValue(3) }),
+      SELLER_ID,
+      { page: 2, limit: 2 },
+      NOW
+    );
+    expect(page2).toHaveBeenCalledWith(expect.objectContaining({ skip: 1, take: 3 }));
+    expect(second.history.items).toEqual([
+      expect.objectContaining({ year: 2024, month: 6, until: { year: 2024, month: 12 } }),
+    ]);
   });
 
   it('reports no goal when the one in force is 0', async () => {
@@ -113,12 +139,11 @@ describe('setSellerGoal', () => {
     const create = jest.fn().mockResolvedValue(goal(2026, 10, '8000'));
     const findFirst = jest.fn().mockResolvedValue(null);
 
-    const result = await setSellerGoal(buildClient({ create, findFirst }), SELLER_ID, {
-      year: 2026,
-      month: 10,
-      goal_amount: 8000,
-    });
+    const result = await setSellerGoal(buildClient({ create, findFirst }), SELLER_ID, { goal_amount: 8000 }, NOW);
 
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { user_id: SELLER_ID, year: 2026, month: 10, deleted_at: null } })
+    );
     expect(create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: { user_id: SELLER_ID, year: 2026, month: 10, goal_amount: 8000 },
@@ -127,16 +152,22 @@ describe('setSellerGoal', () => {
     expect(result.goal_amount).toBe('8000.00');
   });
 
-  it('updates the goal already loaded for that month', async () => {
+  it('uses the El Salvador month, not UTC', async () => {
+    const create = jest.fn().mockResolvedValue(goal(2026, 10, '8000'));
+    const findFirst = jest.fn().mockResolvedValue(null);
+
+    // 1 November 03:00 UTC is still 31 October in El Salvador.
+    await setSellerGoal(buildClient({ create, findFirst }), SELLER_ID, { goal_amount: 8000 }, new Date('2026-11-01T03:00:00.000Z'));
+
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ year: 2026, month: 10 }) }));
+  });
+
+  it('overwrites the goal already set this month', async () => {
     const update = jest.fn().mockResolvedValue(goal(2026, 10, '8500', GOAL_ID));
     const findFirst = jest.fn().mockResolvedValue({ id: GOAL_ID });
     const create = jest.fn();
 
-    await setSellerGoal(buildClient({ update, findFirst, create }), SELLER_ID, {
-      year: 2026,
-      month: 10,
-      goal_amount: 8500,
-    });
+    await setSellerGoal(buildClient({ update, findFirst, create }), SELLER_ID, { goal_amount: 8500 }, NOW);
 
     expect(create).not.toHaveBeenCalled();
     expect(update).toHaveBeenCalledWith(
@@ -145,28 +176,5 @@ describe('setSellerGoal', () => {
         data: expect.objectContaining({ goal_amount: 8500 }),
       })
     );
-  });
-});
-
-describe('deleteSellerGoal', () => {
-  it('soft-deletes only a live goal of that seller', async () => {
-    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
-
-    await deleteSellerGoal(buildClient({ updateMany }), SELLER_ID, GOAL_ID);
-
-    expect(updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: GOAL_ID, user_id: SELLER_ID, deleted_at: null },
-        data: expect.objectContaining({ deleted_at: expect.any(Date) }),
-      })
-    );
-  });
-
-  it('fails with 404 when the goal is not there', async () => {
-    const updateMany = jest.fn().mockResolvedValue({ count: 0 });
-
-    await expect(
-      deleteSellerGoal(buildClient({ updateMany }), SELLER_ID, GOAL_ID)
-    ).rejects.toMatchObject({ statusCode: 404 });
   });
 });

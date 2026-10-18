@@ -1,7 +1,6 @@
 import { DateTime } from 'luxon';
 import { Prisma } from '../generated/prisma/client';
 import { Client } from '../lib/prisma';
-import { CustomError } from '../domain/errors/CustomError';
 import { ERP_TIMEZONE } from '../lib/parseErpDate';
 import { YearMonth } from '../lib/localDateRange';
 import { SetGoalInput } from '../domain/schemas/goal.schema';
@@ -12,9 +11,12 @@ import { getSellerById } from './seller.service';
 /*
  * Seller goals (PCRM-173). A `goal` row is the seller's monthly goal from its
  * month onward, until a later row replaces it: the goal stays fixed without
- * loading it every month, and changing it never rewrites past months. A goal
- * of 0 means "no goal from that month on". The metrics read the same rule in
- * repositories/metrics/fragments.sql.ts (goalSlicesCte).
+ * loading it every month. A goal is only ever set for the current month, and
+ * rows are never deleted, so a closed month keeps the goal it had: changing
+ * the goal twice in the same month overwrites that month's row, and the first
+ * change of a new month adds a row. A goal of 0 means "no goal from that month
+ * on". The metrics read the same rule in repositories/metrics/fragments.sql.ts
+ * (goalSlicesCte).
  */
 
 export interface GoalRecord {
@@ -26,11 +28,16 @@ export interface GoalRecord {
   updated_at: Date;
 }
 
+/** A history entry with the last month it applied to; null while in force. */
+export interface GoalPeriod extends GoalRecord {
+  until: YearMonth | null;
+}
+
 export interface SellerGoals {
   /** Goal in force this month, or null when there is none (or it is 0). */
   current: GoalRecord | null;
   /** Every change, newest month first. */
-  history: Paginated<GoalRecord>;
+  history: Paginated<GoalPeriod>;
 }
 
 const GOAL_SELECT = {
@@ -59,9 +66,16 @@ const onOrBefore = (month: YearMonth) => ({
 
 const NEWEST_FIRST = [{ year: 'desc' as const }, { month: 'desc' as const }];
 
+const monthBefore = ({ year, month }: YearMonth): YearMonth => {
+  const previous = DateTime.fromObject({ year, month }).minus({ months: 1 });
+  return { year: previous.year, month: previous.month };
+};
+
 /**
  * `current` is resolved over every row, so it does not depend on the history
- * page being read.
+ * page being read. Each entry ends the month before the next newer one
+ * starts, so the page reads one extra row ahead of it to close its first
+ * entry.
  */
 export const listSellerGoals = async (
   client: Client,
@@ -72,6 +86,7 @@ export const listSellerGoals = async (
   await getSellerById(client, sellerId);
 
   const where = { user_id: sellerId, deleted_at: null };
+  const skip = (pagination.page - 1) * pagination.limit;
   const [inForce, rows, total] = await Promise.all([
     client.goal.findFirst({
       where: { ...where, ...onOrBefore(currentYearMonth(now)) },
@@ -82,15 +97,21 @@ export const listSellerGoals = async (
       where,
       select: GOAL_SELECT,
       orderBy: NEWEST_FIRST,
-      skip: (pagination.page - 1) * pagination.limit,
-      take: pagination.limit,
+      skip: skip > 0 ? skip - 1 : 0,
+      take: skip > 0 ? pagination.limit + 1 : pagination.limit,
     }),
     client.goal.count({ where }),
   ]);
 
+  const newer = skip > 0 ? rows.shift() : undefined;
+  const items = rows.map((row, i): GoalPeriod => {
+    const next = i === 0 ? newer : rows[i - 1];
+    return { ...toRecord(row), until: next ? monthBefore(next) : null };
+  });
+
   return {
     current: inForce && inForce.goal_amount.gt(0) ? toRecord(inForce) : null,
-    history: buildPage(rows.map(toRecord), total, pagination.page, pagination.limit),
+    history: buildPage(items, total, pagination.page, pagination.limit),
   };
 };
 
@@ -126,7 +147,7 @@ export const currentGoalsBySeller = async (
 };
 
 /**
- * Sets the goal from `year`/`month` onward. The unique index on (user_id,
+ * Sets the goal from the current month onward. The unique index on (user_id,
  * year, month) is partial (WHERE deleted_at IS NULL), which Prisma's upsert
  * cannot target, so it is a find-then-write; a concurrent insert of the same
  * month hits the index and surfaces as a 409 (P2002).
@@ -134,12 +155,14 @@ export const currentGoalsBySeller = async (
 export const setSellerGoal = async (
   client: Client,
   sellerId: string,
-  input: SetGoalInput
+  input: SetGoalInput,
+  now: Date = new Date()
 ): Promise<GoalRecord> => {
   await getSellerById(client, sellerId);
 
+  const { year, month } = currentYearMonth(now);
   const existing = await client.goal.findFirst({
-    where: { user_id: sellerId, year: input.year, month: input.month, deleted_at: null },
+    where: { user_id: sellerId, year, month, deleted_at: null },
     select: { id: true },
   });
 
@@ -152,31 +175,12 @@ export const setSellerGoal = async (
     : await client.goal.create({
         data: {
           user_id: sellerId,
-          year: input.year,
-          month: input.month,
+          year,
+          month,
           goal_amount: input.goal_amount,
         },
         select: GOAL_SELECT,
       });
 
   return toRecord(row);
-};
-
-/**
- * Soft-deletes one goal change, for undoing a mistake: the previous goal is
- * back in force from that month on.
- */
-export const deleteSellerGoal = async (
-  client: Client,
-  sellerId: string,
-  goalId: string
-): Promise<void> => {
-  await getSellerById(client, sellerId);
-
-  const { count } = await client.goal.updateMany({
-    where: { id: goalId, user_id: sellerId, deleted_at: null },
-    data: { deleted_at: new Date(), updated_at: new Date() },
-  });
-
-  if (count === 0) throw CustomError.notFound('Goal not found');
 };

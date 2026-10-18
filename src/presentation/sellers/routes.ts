@@ -12,7 +12,7 @@ import {
   updateSellerSchema,
   updateSellerStatusSchema,
 } from '../../domain/schemas/seller.schema';
-import { goalParamsSchema, setGoalSchema } from '../../domain/schemas/goal.schema';
+import { setGoalSchema } from '../../domain/schemas/goal.schema';
 import { paginationQuerySchema } from '../../domain/schemas/pagination.schema';
 
 export class SellersRoutes {
@@ -42,7 +42,7 @@ export class SellersRoutes {
       validateParams(sellerParamsSchema),
       controller.resendOtp
     );
-    // PCRM-173: monthly goal in force from a month onward.
+    // PCRM-173: monthly goal, set for the current month only and never deleted.
     router.get(
       '/:id/goals',
       validateParams(sellerParamsSchema),
@@ -54,11 +54,6 @@ export class SellersRoutes {
       validateParams(sellerParamsSchema),
       validateBody(setGoalSchema),
       controller.setGoal
-    );
-    router.delete(
-      '/:id/goals/:goalId',
-      validateParams(goalParamsSchema),
-      controller.deleteGoal
     );
 
     return router;

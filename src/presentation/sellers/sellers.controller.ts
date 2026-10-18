@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
-import { GoalParams, SetGoalInput } from '../../domain/schemas/goal.schema';
+import { SetGoalInput } from '../../domain/schemas/goal.schema';
 import { PaginationQuery } from '../../domain/schemas/pagination.schema';
 import {
   CreateSellerInput,
@@ -20,7 +20,6 @@ import {
 } from '../../services/seller.service';
 import {
   currentGoalsBySeller,
-  deleteSellerGoal,
   GoalRecord,
   listSellerGoals,
   SellerGoals,
@@ -180,21 +179,6 @@ export class SellersController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'SellersController.setGoal');
-    }
-  }
-
-  public async deleteGoal(req: Request, res: Response) {
-    try {
-      const { id, goalId } = req.params as unknown as GoalParams;
-      await deleteSellerGoal(prisma, id, goalId);
-
-      const response: ApiResponse<null> = {
-        success: true,
-        message: 'Seller goal deleted',
-      };
-      res.status(200).json(response);
-    } catch (error) {
-      sendErrorResponse(res, error, 'SellersController.deleteGoal');
     }
   }
 }

@@ -1,10 +1,12 @@
 import request from 'supertest';
+import { DateTime } from 'luxon';
 import { verifyAccessToken } from '../../lib/supabaseJwt';
 import { prisma } from '../../lib/prisma';
 import { AppRoutes } from '../../presentation/routes';
 import { Server } from '../../presentation/server';
 import { envs } from '../../config/envs';
 import { ROLES } from '../../domain/types/auth.types';
+import { currentYearMonth } from '../../services/goal.service';
 
 /**
  * Metrics panel (RF-09) against real Postgres: the raw SQL is only verifiable
@@ -415,60 +417,62 @@ describe('GET /api/v1/metrics/trends (real Postgres)', () => {
 
 describe('Seller goals endpoints (real Postgres, PCRM-173)', () => {
   const goalsPath = () => `/api/v1/sellers/${sellerId}/goals`;
+  const now = currentYearMonth();
+  const previous = DateTime.fromObject(now).minus({ months: 1 });
+  const lastMonth = { year: previous.year, month: previous.month };
 
-  it('sets a goal from a month onward without touching the one in force', async () => {
-    // 2099 is in the future: the March 2020 goal stays in force today.
-    const put = await request(app)
-      .put(goalsPath())
-      .set(HEADERS)
-      .send({ year: 2099, month: 1, goal_amount: 450.5 });
+  it('sets the goal from the current month, keeping the past one for past months', async () => {
+    const put = await request(app).put(goalsPath()).set(HEADERS).send({ goal_amount: 450.5 });
 
     expect(put.status).toBe(200);
-    expect(put.body.data).toMatchObject({ year: 2099, month: 1, goal_amount: '450.50' });
+    expect(put.body.data).toMatchObject({ ...now, goal_amount: '450.50' });
 
     const list = await request(app).get(goalsPath()).set(HEADERS);
 
-    expect(list.body.data.current).toMatchObject({ year: 2020, month: 3, goal_amount: '300.00' });
-    expect(list.body.data.history.items.map((g: { year: number }) => g.year)).toEqual([2099, 2020]);
+    expect(list.body.data.current).toMatchObject({ ...now, goal_amount: '450.50' });
+    expect(list.body.data.history.items).toEqual([
+      expect.objectContaining({ ...now, until: null }),
+      // March 2020 now ends the month before this one.
+      expect.objectContaining({ year: 2020, month: 3, goal_amount: '300.00', until: lastMonth }),
+    ]);
 
-    // current does not depend on the history page.
+    // Page 2 still closes its first entry, and current does not depend on the page.
     const page2 = await request(app).get(goalsPath()).query({ page: 2, limit: 1 }).set(HEADERS);
-    expect(page2.body.data.current).toMatchObject({ year: 2020, month: 3 });
+    expect(page2.body.data.current).toMatchObject(now);
     expect(page2.body.data.history).toMatchObject({ page: 2, page_size: 1, total: 2, total_pages: 2 });
-    expect(page2.body.data.history.items.map((g: { year: number }) => g.year)).toEqual([2020]);
+    expect(page2.body.data.history.items).toEqual([
+      expect.objectContaining({ year: 2020, month: 3, until: lastMonth }),
+    ]);
 
     const sellers = await request(app).get('/api/v1/sellers').set(HEADERS);
     const seller = sellers.body.data.items.find((s: { id: string }) => s.id === sellerId);
-    expect(seller.current_goal).toBe('300.00');
+    expect(seller.current_goal).toBe('450.50');
   });
 
-  it('updates the same month instead of duplicating it', async () => {
-    await request(app).put(goalsPath()).set(HEADERS).send({ year: 2099, month: 1, goal_amount: 500 });
+  it('overwrites the goal when it changes again in the same month', async () => {
+    await request(app).put(goalsPath()).set(HEADERS).send({ goal_amount: 500 });
 
     const list = await request(app).get(goalsPath()).set(HEADERS);
-    const future = list.body.data.history.items.filter((g: { year: number }) => g.year === 2099);
 
-    expect(future).toHaveLength(1);
-    expect(future[0].goal_amount).toBe('500.00');
+    expect(list.body.data.history.total).toBe(2);
+    expect(list.body.data.current).toMatchObject({ ...now, goal_amount: '500.00' });
   });
 
-  it('deletes a goal change once', async () => {
-    const list = await request(app).get(goalsPath()).set(HEADERS);
-    const future = list.body.data.history.items.find((g: { year: number }) => g.year === 2099);
-
-    const first = await request(app).delete(`${goalsPath()}/${future.id}`).set(HEADERS);
-    const second = await request(app).delete(`${goalsPath()}/${future.id}`).set(HEADERS);
-
-    expect(first.status).toBe(200);
-    expect(second.status).toBe(404);
-  });
-
-  it('rejects an invalid month', async () => {
+  it('rejects a month chosen by the client', async () => {
     const res = await request(app)
       .put(goalsPath())
       .set(HEADERS)
-      .send({ year: 2099, month: 13, goal_amount: 100 });
+      .send({ year: 2020, month: 3, goal_amount: 100 });
 
     expect(res.status).toBe(400);
+  });
+
+  it('does not delete goals', async () => {
+    const list = await request(app).get(goalsPath()).set(HEADERS);
+    const res = await request(app)
+      .delete(`${goalsPath()}/${list.body.data.history.items[0].id}`)
+      .set(HEADERS);
+
+    expect(res.status).toBe(404);
   });
 });
