@@ -7,6 +7,7 @@ import {
   ListCustomerCreditsQuery,
   ListCustomerSalesQuery,
   ListCustomersQuery,
+  UpdateCustomerCommercialProfileInput,
   UpdateCustomerContactInput,
   UpdateCustomerLocationInput,
 } from '../../domain/schemas/customer.schema';
@@ -25,6 +26,7 @@ import {
   getCustomerProfile,
   listCustomerSales,
   listCustomers,
+  updateCustomerCommercialProfile,
   updateCustomerContact,
   updateCustomerLocation,
 } from '../../services/customer.service';
@@ -137,6 +139,28 @@ export class CustomersController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'CustomersController.updateContact');
+    }
+  }
+
+  /** RF-12: personality colour and buying potential. */
+  public async updateCommercialProfile(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as CustomerParams;
+      const data = req.body as UpdateCustomerCommercialProfileInput;
+      const customer = await updateCustomerCommercialProfile(prisma, id, data);
+
+      const response: ApiResponse<CustomerCore> = {
+        success: true,
+        message: 'Customer commercial profile updated successfully',
+        data: customer,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(
+        res,
+        error,
+        'CustomersController.updateCommercialProfile'
+      );
     }
   }
 }

@@ -225,6 +225,8 @@ Registrar producto fuera de catálogo
 
 Ejemplo del uso de la personalidad, según el cliente: el color rojo indica un cliente directo que quiere ir al grano.
 
+**RF-12 implementado parcialmente (15/10/2026).** `PATCH /api/v1/customers/:id/commercial-profile` (solo Administrador) guarda `personality` (`rojo|azul|amarillo|verde`) y `potential` (`alto|medio|bajo`); ambos admiten `null` para volver a "sin clasificar". El vocabulario está cerrado con los CHECK `customer_personality_check` y `customer_potential_check`, porque el dashboard también puede escribir esas columnas por supabase-js. **Intereses y afinidad a laboratorios quedan fuera, por decisión del equipo:** no hay columnas para ellos ni tabla de laboratorios, y modelarlos exige una migración que no se aprobó. El endpoint responde 400 si llegan en el body, para que el frontend no los dé por guardados. No reintroducir sin conversación.
+
 ### 4.3 Fuera del MVP (RF-13 y RF-14)
 
 | RF | Descripción | Por qué está fuera |
@@ -518,8 +520,8 @@ app_user
 customer
   PK  id                  uuid
       erp_customer_id     integer  UNIQUE parcial
-      personality         text                   -- RF-12: rojo|azul|verde|amarillo
-      potential           text                   -- RF-12: alto|medio|bajo
+      personality         text  CHECK            -- RF-12: rojo|azul|verde|amarillo, NULL = sin clasificar
+      potential           text  CHECK            -- RF-12: alto|medio|bajo, NULL = sin clasificar
       name                text
       trade_name          text
       establishment_type  text                   -- cadena|independiente|droguería

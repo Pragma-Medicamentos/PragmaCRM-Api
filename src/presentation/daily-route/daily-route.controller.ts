@@ -4,6 +4,7 @@ import { CustomError } from '../../domain/errors/CustomError';
 import {
   DailyRoute,
   StopCustomerLocation,
+  StopCustomerMetrics,
   StopNote,
 } from '../../domain/types/daily-route.types';
 import {
@@ -16,6 +17,7 @@ import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
 import {
   getDailyRoute,
+  getStopCustomerMetrics,
   setStopCustomerLocation,
   setStopNote,
 } from '../../services/daily-route.service';
@@ -112,6 +114,27 @@ export class DailyRouteController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'DailyRouteController.setNote');
+    }
+  }
+
+  /** PCRM-164: commercial figures of the stop's customer. */
+  public async getCustomer(req: Request, res: Response) {
+    try {
+      if (!req.authUser) throw CustomError.unauthorized();
+
+      const { id } = req.params as unknown as StopParams;
+
+      const metrics = await getStopCustomerMetrics(prisma, req.authUser.id, id);
+
+      const response: ApiResponse<StopCustomerMetrics> = {
+        success: true,
+        message: 'Métricas del cliente obtenidas correctamente',
+        data: metrics,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'DailyRouteController.getCustomer');
     }
   }
 }
