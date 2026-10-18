@@ -34,6 +34,7 @@ const buildClient = (goalMocks: Record<string, jest.Mock> = {}, sellerFound = tr
       create: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
+      count: jest.fn(),
       ...goalMocks,
     },
   }) as unknown as Client;
@@ -46,29 +47,40 @@ describe('currentYearMonth', () => {
 });
 
 describe('listSellerGoals', () => {
-  it('returns the latest goal at or before this month as the one in force', async () => {
-    const findMany = jest.fn().mockResolvedValue([
-      goal(2026, 12, '9000'),
-      goal(2026, 8, '7000'),
-      goal(2026, 1, '5000'),
-    ]);
+  const PAGE = { page: 2, limit: 1 };
 
-    const result = await listSellerGoals(buildClient({ findMany }), SELLER_ID, NOW);
+  it('resolves the goal in force over every row, apart from the history page', async () => {
+    const findFirst = jest.fn().mockResolvedValue(goal(2026, 8, '7000'));
+    const findMany = jest.fn().mockResolvedValue([goal(2026, 8, '7000')]);
+    const count = jest.fn().mockResolvedValue(3);
 
+    const result = await listSellerGoals(buildClient({ findFirst, findMany, count }), SELLER_ID, PAGE, NOW);
+
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ year: { lt: 2026 } }, { year: 2026, month: { lte: 10 } }],
+        }),
+      })
+    );
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 1, take: 1 }));
     expect(result.current).toMatchObject({ year: 2026, month: 8, goal_amount: '7000.00' });
-    expect(result.history.map((g) => g.goal_amount)).toEqual(['9000.00', '7000.00', '5000.00']);
+    expect(result.history).toMatchObject({ page: 2, page_size: 1, total: 3, total_pages: 3 });
+    expect(result.history.items.map((g) => g.goal_amount)).toEqual(['7000.00']);
   });
 
   it('reports no goal when the one in force is 0', async () => {
-    const findMany = jest.fn().mockResolvedValue([goal(2026, 9, '0'), goal(2026, 1, '5000')]);
+    const findFirst = jest.fn().mockResolvedValue(goal(2026, 9, '0'));
+    const findMany = jest.fn().mockResolvedValue([]);
+    const count = jest.fn().mockResolvedValue(2);
 
-    const result = await listSellerGoals(buildClient({ findMany }), SELLER_ID, NOW);
+    const result = await listSellerGoals(buildClient({ findFirst, findMany, count }), SELLER_ID, PAGE, NOW);
 
     expect(result.current).toBeNull();
   });
 
   it('fails with 404 when the seller does not exist', async () => {
-    await expect(listSellerGoals(buildClient({}, false), SELLER_ID, NOW)).rejects.toMatchObject({
+    await expect(listSellerGoals(buildClient({}, false), SELLER_ID, PAGE, NOW)).rejects.toMatchObject({
       statusCode: 404,
     });
   });

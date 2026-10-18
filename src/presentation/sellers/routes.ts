@@ -13,6 +13,7 @@ import {
   updateSellerStatusSchema,
 } from '../../domain/schemas/seller.schema';
 import { goalParamsSchema, setGoalSchema } from '../../domain/schemas/goal.schema';
+import { paginationQuerySchema } from '../../domain/schemas/pagination.schema';
 
 export class SellersRoutes {
   static get routes(): Router {
@@ -42,7 +43,12 @@ export class SellersRoutes {
       controller.resendOtp
     );
     // PCRM-173: monthly goal in force from a month onward.
-    router.get('/:id/goals', validateParams(sellerParamsSchema), controller.listGoals);
+    router.get(
+      '/:id/goals',
+      validateParams(sellerParamsSchema),
+      validateQuery(paginationQuerySchema),
+      controller.listGoals
+    );
     router.put(
       '/:id/goals',
       validateParams(sellerParamsSchema),

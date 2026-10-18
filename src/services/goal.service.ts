@@ -5,6 +5,8 @@ import { CustomError } from '../domain/errors/CustomError';
 import { ERP_TIMEZONE } from '../lib/parseErpDate';
 import { YearMonth } from '../lib/localDateRange';
 import { SetGoalInput } from '../domain/schemas/goal.schema';
+import { PaginationQuery } from '../domain/schemas/pagination.schema';
+import { Paginated, buildPage } from '../domain/types/pagination.types';
 import { getSellerById } from './seller.service';
 
 /*
@@ -28,7 +30,7 @@ export interface SellerGoals {
   /** Goal in force this month, or null when there is none (or it is 0). */
   current: GoalRecord | null;
   /** Every change, newest month first. */
-  history: GoalRecord[];
+  history: Paginated<GoalRecord>;
 }
 
 const GOAL_SELECT = {
@@ -50,31 +52,45 @@ export const currentYearMonth = (now: Date = new Date()): YearMonth => {
   return { year: local.year, month: local.month };
 };
 
-const isOnOrBefore = (goal: YearMonth, month: YearMonth): boolean =>
-  goal.year * 100 + goal.month <= month.year * 100 + month.month;
+/** Rows at or before `month`, for a Prisma `where`. */
+const onOrBefore = (month: YearMonth) => ({
+  OR: [{ year: { lt: month.year } }, { year: month.year, month: { lte: month.month } }],
+});
 
-/** Latest goal at or before `month`, from rows sorted newest month first. */
-const inForce = <T extends YearMonth>(rows: T[], month: YearMonth): T | undefined =>
-  rows.find((row) => isOnOrBefore(row, month));
+const NEWEST_FIRST = [{ year: 'desc' as const }, { month: 'desc' as const }];
 
+/**
+ * `current` is resolved over every row, so it does not depend on the history
+ * page being read.
+ */
 export const listSellerGoals = async (
   client: Client,
   sellerId: string,
+  pagination: PaginationQuery,
   now: Date = new Date()
 ): Promise<SellerGoals> => {
   await getSellerById(client, sellerId);
 
-  const rows = await client.goal.findMany({
-    where: { user_id: sellerId, deleted_at: null },
-    select: GOAL_SELECT,
-    orderBy: [{ year: 'desc' }, { month: 'desc' }],
-  });
-  const history = rows.map(toRecord);
-  const current = inForce(history, currentYearMonth(now));
+  const where = { user_id: sellerId, deleted_at: null };
+  const [inForce, rows, total] = await Promise.all([
+    client.goal.findFirst({
+      where: { ...where, ...onOrBefore(currentYearMonth(now)) },
+      select: GOAL_SELECT,
+      orderBy: NEWEST_FIRST,
+    }),
+    client.goal.findMany({
+      where,
+      select: GOAL_SELECT,
+      orderBy: NEWEST_FIRST,
+      skip: (pagination.page - 1) * pagination.limit,
+      take: pagination.limit,
+    }),
+    client.goal.count({ where }),
+  ]);
 
   return {
-    current: current && Number(current.goal_amount) > 0 ? current : null,
-    history,
+    current: inForce && inForce.goal_amount.gt(0) ? toRecord(inForce) : null,
+    history: buildPage(rows.map(toRecord), total, pagination.page, pagination.limit),
   };
 };
 
@@ -92,10 +108,10 @@ export const currentGoalsBySeller = async (
     where: {
       user_id: { in: sellerIds },
       deleted_at: null,
-      OR: [{ year: { lt: month.year } }, { year: month.year, month: { lte: month.month } }],
+      ...onOrBefore(month),
     },
     select: { user_id: true, goal_amount: true },
-    orderBy: [{ year: 'desc' }, { month: 'desc' }],
+    orderBy: NEWEST_FIRST,
   });
 
   const goals = new Map<string, string>();

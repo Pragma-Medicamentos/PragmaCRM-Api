@@ -3,6 +3,7 @@ import { ApiResponse } from '../../domain/interfaces';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
 import { GoalParams, SetGoalInput } from '../../domain/schemas/goal.schema';
+import { PaginationQuery } from '../../domain/schemas/pagination.schema';
 import {
   CreateSellerInput,
   ListSellersQuery,
@@ -10,10 +11,12 @@ import {
   UpdateSellerInput,
   UpdateSellerStatusInput,
 } from '../../domain/schemas/seller.schema';
+import { Paginated } from '../../domain/types/pagination.types';
 import {
   getSellerById,
   listSellers,
   SellerRecord,
+  SellerTotals,
 } from '../../services/seller.service';
 import {
   currentGoalsBySeller,
@@ -49,13 +52,13 @@ const UPDATE_MESSAGES: Record<NonNullable<AccessEmailStatus> | 'none', string> =
 export class SellersController {
   public async list(req: Request, res: Response) {
     try {
-      const { active } = req.query as unknown as ListSellersQuery;
-      const sellers = await withCurrentGoal(await listSellers(prisma, { active }));
+      const query = req.query as unknown as ListSellersQuery;
+      const page = await listSellers(prisma, query);
 
-      const response: ApiResponse<SellerWithGoal[]> = {
+      const response: ApiResponse<Paginated<SellerWithGoal> & { totals: SellerTotals }> = {
         success: true,
         message: 'Vendedores obtenidos correctamente',
-        data: sellers,
+        data: { ...page, items: await withCurrentGoal(page.items) },
       };
       res.status(200).json(response);
     } catch (error) {
@@ -151,7 +154,7 @@ export class SellersController {
   public async listGoals(req: Request, res: Response) {
     try {
       const { id } = req.params as unknown as SellerParams;
-      const goals = await listSellerGoals(prisma, id);
+      const goals = await listSellerGoals(prisma, id, req.query as unknown as PaginationQuery);
 
       const response: ApiResponse<SellerGoals> = {
         success: true,

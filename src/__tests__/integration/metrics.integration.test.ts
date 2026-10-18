@@ -429,10 +429,16 @@ describe('Seller goals endpoints (real Postgres, PCRM-173)', () => {
     const list = await request(app).get(goalsPath()).set(HEADERS);
 
     expect(list.body.data.current).toMatchObject({ year: 2020, month: 3, goal_amount: '300.00' });
-    expect(list.body.data.history.map((g: { year: number }) => g.year)).toEqual([2099, 2020]);
+    expect(list.body.data.history.items.map((g: { year: number }) => g.year)).toEqual([2099, 2020]);
+
+    // current does not depend on the history page.
+    const page2 = await request(app).get(goalsPath()).query({ page: 2, limit: 1 }).set(HEADERS);
+    expect(page2.body.data.current).toMatchObject({ year: 2020, month: 3 });
+    expect(page2.body.data.history).toMatchObject({ page: 2, page_size: 1, total: 2, total_pages: 2 });
+    expect(page2.body.data.history.items.map((g: { year: number }) => g.year)).toEqual([2020]);
 
     const sellers = await request(app).get('/api/v1/sellers').set(HEADERS);
-    const seller = sellers.body.data.find((s: { id: string }) => s.id === sellerId);
+    const seller = sellers.body.data.items.find((s: { id: string }) => s.id === sellerId);
     expect(seller.current_goal).toBe('300.00');
   });
 
@@ -440,7 +446,7 @@ describe('Seller goals endpoints (real Postgres, PCRM-173)', () => {
     await request(app).put(goalsPath()).set(HEADERS).send({ year: 2099, month: 1, goal_amount: 500 });
 
     const list = await request(app).get(goalsPath()).set(HEADERS);
-    const future = list.body.data.history.filter((g: { year: number }) => g.year === 2099);
+    const future = list.body.data.history.items.filter((g: { year: number }) => g.year === 2099);
 
     expect(future).toHaveLength(1);
     expect(future[0].goal_amount).toBe('500.00');
@@ -448,7 +454,7 @@ describe('Seller goals endpoints (real Postgres, PCRM-173)', () => {
 
   it('deletes a goal change once', async () => {
     const list = await request(app).get(goalsPath()).set(HEADERS);
-    const future = list.body.data.history.find((g: { year: number }) => g.year === 2099);
+    const future = list.body.data.history.items.find((g: { year: number }) => g.year === 2099);
 
     const first = await request(app).delete(`${goalsPath()}/${future.id}`).set(HEADERS);
     const second = await request(app).delete(`${goalsPath()}/${future.id}`).set(HEADERS);
