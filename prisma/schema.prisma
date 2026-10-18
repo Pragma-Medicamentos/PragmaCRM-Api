@@ -540,33 +540,37 @@ model balance_snapshot {
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
 model customer {
-  id                 String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  erp_customer_id    Int?                      @unique(where: raw("(deleted_at IS NULL)"))
-  personality        String?
-  potential          String?
-  name               String
-  trade_name         String?
-  establishment_type String?
-  address            String?
-  municipality       String?
-  zone               String?
-  phone              String?
-  mobile             String?
-  location           Unsupported("geography")?
-  place_id           String?
-  attends            String?
-  credit             Boolean                   @default(false)
-  credit_limit       Decimal?                  @db.Decimal(14, 2)
-  origin             String?
-  active             Boolean                   @default(true)
-  created_at         DateTime                  @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime                  @default(now()) @db.Timestamptz(6)
-  deleted_at         DateTime?                 @db.Timestamptz(6)
-  product_request    product_request[]
-  route_customer     route_customer[]
-  sale               sale[]
-  scheduled_visit    scheduled_visit[]
-  visit              visit[]
+  id                    String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  erp_customer_id       Int?                      @unique(where: raw("(deleted_at IS NULL)"))
+  personality           String?
+  potential             String?
+  name                  String
+  trade_name            String?
+  establishment_type    String?
+  address               String?
+  municipality          String?
+  zone                  String?
+  phone                 String?
+  mobile                String?
+  location              Unsupported("geography")?
+  place_id              String?
+  attends               String?
+  credit                Boolean                   @default(false)
+  credit_limit          Decimal?                  @db.Decimal(14, 2)
+  origin                String?
+  active                Boolean                   @default(true)
+  created_at            DateTime                  @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime                  @default(now()) @db.Timestamptz(6)
+  deleted_at            DateTime?                 @db.Timestamptz(6)
+  sanitary_registration String?
+  nrc                   String?
+  nit                   String?
+  email                 String?
+  product_request       product_request[]
+  route_customer        route_customer[]
+  sale                  sale[]
+  scheduled_visit       scheduled_visit[]
+  visit                 visit[]
 
   @@schema("public")
 }
