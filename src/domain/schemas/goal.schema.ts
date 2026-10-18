@@ -19,3 +19,10 @@ export const setGoalSchema = z.object({
 }).strict();
 
 export type SetGoalInput = z.infer<typeof setGoalSchema>;
+
+/** GET /api/v1/sellers/:id/goals/history (PCRM-198): the last `months` months. */
+export const goalHistoryQuerySchema = z.object({
+  months: z.coerce.number().int().min(1).max(24).default(12),
+});
+
+export type GoalHistoryQuery = z.infer<typeof goalHistoryQuerySchema>;

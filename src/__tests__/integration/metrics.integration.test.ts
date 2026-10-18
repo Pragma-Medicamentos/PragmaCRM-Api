@@ -467,6 +467,33 @@ describe('Seller goals endpoints (real Postgres, PCRM-173)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('returns the goal and sales of each of the last months (PCRM-198)', async () => {
+    const res = await request(app).get(`${goalsPath()}/history`).query({ months: 3 }).set(HEADERS);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(3);
+    // Oldest first, ending with this month; the earlier months still run on
+    // the March 2020 goal, and the seller sold nothing in them.
+    const twoAgo = DateTime.fromObject(now).minus({ months: 2 });
+    expect(res.body.data[0]).toEqual({
+      year: twoAgo.year,
+      month: twoAgo.month,
+      goal_amount: '300.00',
+      total_sales: '0.00',
+      goal_compliance: 0,
+    });
+    expect(res.body.data[2]).toMatchObject({ ...now, goal_amount: '500.00', total_sales: '0.00' });
+
+    const defaults = await request(app).get(`${goalsPath()}/history`).set(HEADERS);
+    expect(defaults.body.data).toHaveLength(12);
+  });
+
+  it('rejects more than 24 months of history', async () => {
+    const res = await request(app).get(`${goalsPath()}/history`).query({ months: 25 }).set(HEADERS);
+
+    expect(res.status).toBe(400);
+  });
+
   it('does not delete goals', async () => {
     const list = await request(app).get(goalsPath()).set(HEADERS);
     const res = await request(app)

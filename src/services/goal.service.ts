@@ -2,8 +2,9 @@ import { DateTime } from 'luxon';
 import { Prisma } from '../generated/prisma/client';
 import { Client } from '../lib/prisma';
 import { ERP_TIMEZONE } from '../lib/parseErpDate';
-import { YearMonth } from '../lib/localDateRange';
-import { SetGoalInput } from '../domain/schemas/goal.schema';
+import { YearMonth, resolveRange } from '../lib/localDateRange';
+import { GoalHistoryQuery, SetGoalInput } from '../domain/schemas/goal.schema';
+import { GoalHistoryMonth, findGoalHistory } from '../repositories/metrics.repository';
 import { PaginationQuery } from '../domain/schemas/pagination.schema';
 import { Paginated, buildPage } from '../domain/types/pagination.types';
 import { getSellerById } from './seller.service';
@@ -183,4 +184,26 @@ export const setSellerGoal = async (
       });
 
   return toRecord(row);
+};
+
+/**
+ * The seller's goal, sales and compliance per month (PCRM-198): the last
+ * `months` whole months, ending with the current one, oldest first. The
+ * current month counts its sales so far against the full month's goal.
+ */
+export const getSellerGoalHistory = async (
+  client: Client,
+  sellerId: string,
+  query: GoalHistoryQuery,
+  now: Date = new Date()
+): Promise<GoalHistoryMonth[]> => {
+  await getSellerById(client, sellerId);
+
+  const thisMonth = DateTime.fromJSDate(now, { zone: ERP_TIMEZONE }).startOf('month');
+  const range = resolveRange(
+    thisMonth.minus({ months: query.months - 1 }).toISODate() as string,
+    thisMonth.endOf('month').toISODate() as string
+  );
+
+  return findGoalHistory(client, range, sellerId);
 };

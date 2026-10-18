@@ -12,7 +12,7 @@ import {
   updateSellerSchema,
   updateSellerStatusSchema,
 } from '../../domain/schemas/seller.schema';
-import { setGoalSchema } from '../../domain/schemas/goal.schema';
+import { goalHistoryQuerySchema, setGoalSchema } from '../../domain/schemas/goal.schema';
 import { paginationQuerySchema } from '../../domain/schemas/pagination.schema';
 
 export class SellersRoutes {
@@ -48,6 +48,12 @@ export class SellersRoutes {
       validateParams(sellerParamsSchema),
       validateQuery(paginationQuerySchema),
       controller.listGoals
+    );
+    router.get(
+      '/:id/goals/history',
+      validateParams(sellerParamsSchema),
+      validateQuery(goalHistoryQuerySchema),
+      controller.goalHistory
     );
     router.put(
       '/:id/goals',

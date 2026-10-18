@@ -2,8 +2,9 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
-import { SetGoalInput } from '../../domain/schemas/goal.schema';
+import { GoalHistoryQuery, SetGoalInput } from '../../domain/schemas/goal.schema';
 import { PaginationQuery } from '../../domain/schemas/pagination.schema';
+import { GoalHistoryMonth } from '../../repositories/metrics.repository';
 import {
   CreateSellerInput,
   ListSellersQuery,
@@ -20,6 +21,7 @@ import {
 } from '../../services/seller.service';
 import {
   currentGoalsBySeller,
+  getSellerGoalHistory,
   GoalRecord,
   listSellerGoals,
   SellerGoals,
@@ -163,6 +165,22 @@ export class SellersController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'SellersController.listGoals');
+    }
+  }
+
+  public async goalHistory(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as SellerParams;
+      const months = await getSellerGoalHistory(prisma, id, req.query as unknown as GoalHistoryQuery);
+
+      const response: ApiResponse<GoalHistoryMonth[]> = {
+        success: true,
+        message: 'Seller goal history retrieved',
+        data: months,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'SellersController.goalHistory');
     }
   }
 

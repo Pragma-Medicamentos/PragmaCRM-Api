@@ -3,6 +3,7 @@ import { Client } from '../../lib/prisma';
 import {
   currentGoalsBySeller,
   currentYearMonth,
+  getSellerGoalHistory,
   listSellerGoals,
   setSellerGoal,
 } from '../goal.service';
@@ -24,6 +25,7 @@ const goal = (year: number, month: number, amount: string, id = `${year}-${month
 
 const buildClient = (goalMocks: Record<string, jest.Mock> = {}, sellerFound = true) =>
   ({
+    $queryRaw: jest.fn(),
     app_user: {
       findFirst: jest.fn().mockResolvedValue(sellerFound ? { id: SELLER_ID } : null),
     },
@@ -176,5 +178,29 @@ describe('setSellerGoal', () => {
         data: expect.objectContaining({ goal_amount: 8500 }),
       })
     );
+  });
+});
+
+describe('getSellerGoalHistory', () => {
+  it('reads whole months ending with the current one', async () => {
+    const rows = [{ year: 2026, month: 10, goal_amount: '3100.00', total_sales: '974.00', goal_compliance: 31.4 }];
+    const client = buildClient();
+    (client.$queryRaw as unknown as jest.Mock).mockResolvedValue(rows);
+
+    const result = await getSellerGoalHistory(client, SELLER_ID, { months: 3 }, NOW);
+
+    expect(result).toBe(rows);
+    // August 1st to November 1st 2026, local midnights (UTC-6).
+    const sql = (client.$queryRaw as unknown as jest.Mock).mock.calls[0][0];
+    const instants = sql.values.filter((v: unknown) => v instanceof Date).map((d: Date) => d.toISOString());
+    expect(instants[0]).toBe('2026-08-01T06:00:00.000Z');
+    expect(instants[instants.length - 1]).toBe('2026-11-01T06:00:00.000Z');
+    expect(sql.values.filter((v: unknown) => v === 2026)).toHaveLength(3);
+  });
+
+  it('fails with 404 when the seller does not exist', async () => {
+    await expect(getSellerGoalHistory(buildClient({}, false), SELLER_ID, { months: 12 }, NOW)).rejects.toMatchObject({
+      statusCode: 404,
+    });
   });
 });
