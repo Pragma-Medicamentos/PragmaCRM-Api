@@ -8,6 +8,7 @@ import {
   ListCustomerSalesQuery,
   ListCustomersQuery,
   UpdateCustomerCommercialProfileInput,
+  UpdateCustomerFiscalDataInput,
   UpdateCustomerContactInput,
   UpdateCustomerLocationInput,
 } from '../../domain/schemas/customer.schema';
@@ -27,6 +28,7 @@ import {
   listCustomerSales,
   listCustomers,
   updateCustomerCommercialProfile,
+  updateCustomerFiscalData,
   updateCustomerContact,
   updateCustomerLocation,
 } from '../../services/customer.service';
@@ -161,6 +163,24 @@ export class CustomersController {
         error,
         'CustomersController.updateCommercialProfile'
       );
+    }
+  }
+
+  /** PCRM-185: sanitary registration, NRC, NIT and email of the profile. */
+  public async updateFiscalData(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as CustomerParams;
+      const data = req.body as UpdateCustomerFiscalDataInput;
+      const customer = await updateCustomerFiscalData(prisma, id, data);
+
+      const response: ApiResponse<CustomerCore> = {
+        success: true,
+        message: 'Customer fiscal data updated successfully',
+        data: customer,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'CustomersController.updateFiscalData');
     }
   }
 }

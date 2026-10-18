@@ -12,6 +12,7 @@ import {
   listCustomersQuerySchema,
   updateCustomerCommercialProfileSchema,
   updateCustomerContactSchema,
+  updateCustomerFiscalDataSchema,
   updateCustomerLocationSchema,
 } from '../../domain/schemas/customer.schema';
 
@@ -60,6 +61,13 @@ export class CustomersRoutes {
       validateParams(customerParamsSchema),
       validateBody(updateCustomerCommercialProfileSchema),
       controller.updateCommercialProfile
+    );
+    // PCRM-185: sanitary registration, NRC, NIT and email, captured by hand.
+    router.patch(
+      '/:id/fiscal-data',
+      validateParams(customerParamsSchema),
+      validateBody(updateCustomerFiscalDataSchema),
+      controller.updateFiscalData
     );
 
     return router;

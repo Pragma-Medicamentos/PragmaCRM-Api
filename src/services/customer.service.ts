@@ -7,6 +7,7 @@ import {
   ListCustomersQuery,
   UpdateCustomerCommercialProfileInput,
   UpdateCustomerContactInput,
+  UpdateCustomerFiscalDataInput,
   UpdateCustomerLocationInput,
 } from '../domain/schemas/customer.schema';
 import { PaginationQuery } from '../domain/schemas/pagination.schema';
@@ -55,6 +56,7 @@ import {
  *      PATCH /api/v1/customers/:id/contact  -> updateCustomerContact
  *      PATCH /api/v1/customers/:id/commercial-profile
  *                                           -> updateCustomerCommercialProfile
+ *      PATCH /api/v1/customers/:id/fiscal-data -> updateCustomerFiscalData
  * ============================================================================
  */
 
@@ -341,6 +343,32 @@ export const updateCustomerCommercialProfile = async (
         ? { personality: data.personality }
         : {}),
       ...(data.potential !== undefined ? { potential: data.potential } : {}),
+      updated_at: new Date(),
+    },
+  });
+
+  return getCustomerCore(client, id);
+};
+
+/**
+ * PCRM-185: sanitary registration, NRC, NIT and email, set by hand. Partial
+ * update: an omitted field is left untouched and null clears it. The import
+ * never writes these columns, so a later JSON upload does not undo the edit.
+ */
+export const updateCustomerFiscalData = async (
+  client: Client,
+  id: string,
+  data: UpdateCustomerFiscalDataInput
+): Promise<CustomerCore> => {
+  await assertCustomerExists(client, id);
+
+  await client.customer.update({
+    where: { id },
+    data: {
+      sanitary_registration: data.sanitary_registration,
+      nrc: data.nrc,
+      nit: data.nit,
+      email: data.email,
       updated_at: new Date(),
     },
   });
