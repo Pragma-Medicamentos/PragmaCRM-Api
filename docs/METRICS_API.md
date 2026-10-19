@@ -181,7 +181,7 @@ Cada KPI viene como `{ value, previous_value }`. `previous_value` es la misma KP
 - Ordenado por `total_sales` descendente.
 - La **venta** se acredita al vendedor del ERP (`sale.user_id`); las **paradas**, a quien las ejecutó (`visit.user_id`).
 - `dispatches_for_others`: despachos que ejecutó este vendedor cuya venta pertenece a otro (nota de `1f`).
-- `portfolio_customers`: clientes de las rutas asignadas **hoy** ("18 clientes en cartera").
+- `portfolio_customers`: clientes distintos a los que el vendedor les vendió en el período (`sale.user_id`, `erp_status = 2`), es decir, quién le vende a quién ("18 clientes en cartera"). No depende de las rutas asignadas (PCRM-154).
 - Aparecen los vendedores activos, y los inactivos solo si tuvieron actividad en el período.
 
 ### 3. `GET /sellers/:id` — fila expandida de `1f`

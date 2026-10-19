@@ -82,7 +82,7 @@ export const SELLER_COLUMNS: ReportColumn[] = [
     width: 12,
     pdf: false,
   },
-  { key: 'portfolio_customers', header: 'Cartera asignada', type: 'integer', width: 12 },
+  { key: 'portfolio_customers', header: 'Cartera de clientes', type: 'integer', width: 12 },
 ];
 
 /** `pragma-crm_kpis_2026-09-01_2026-09-30.xlsx` */
