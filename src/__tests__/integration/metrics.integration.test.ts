@@ -1,10 +1,12 @@
 import request from 'supertest';
+import { DateTime } from 'luxon';
 import { verifyAccessToken } from '../../lib/supabaseJwt';
 import { prisma } from '../../lib/prisma';
 import { AppRoutes } from '../../presentation/routes';
 import { Server } from '../../presentation/server';
 import { envs } from '../../config/envs';
 import { ROLES } from '../../domain/types/auth.types';
+import { currentYearMonth } from '../../services/goal.service';
 
 /**
  * Metrics panel (RF-09) against real Postgres: the raw SQL is only verifiable
@@ -308,6 +310,30 @@ describe('GET /api/v1/metrics/kpis/:name (real Postgres)', () => {
     });
   });
 
+  it('keeps a goal in force in the following months (PCRM-173)', async () => {
+    // Only March has a goal row; April inherits it and sold nothing. The
+    // previous period (2-31 March) weighs 30/31 of the goal: 150 / 290.32.
+    const res = await get('/kpis/goal_compliance?from=2020-04-01&to=2020-04-30');
+
+    expect(res.body.data).toMatchObject({ value: 0, previous_value: 51.7 });
+  });
+
+  it('prorates the goal to a partial month', async () => {
+    // 1-15 March: 15/31 of 300 = 145.16, against the 100 sold on the 2nd.
+    const res = await get('/kpis/goal_compliance?from=2020-03-01&to=2020-03-15');
+
+    expect(res.body.data.value).toBe(68.9);
+    // The goal starts in March: nothing in force in February.
+    expect(res.body.data.previous_value).toBeNull();
+  });
+
+  it('leaves sales of months without goal out of the compliance', async () => {
+    // The 30 sold in January has no goal to count against: 150 / 300.
+    const res = await get('/kpis/goal_compliance?from=2020-01-01&to=2020-03-31');
+
+    expect(res.body.data.value).toBe(50);
+  });
+
   it('answers 404 for an unknown KPI', async () => {
     const res = await get(`/kpis/monto_cobrado?${RANGE}`);
 
@@ -347,6 +373,13 @@ describe('GET /api/v1/metrics/sellers (real Postgres)', () => {
     });
   });
 
+  it('prorates the seller goal to the period', async () => {
+    const res = await get('/sellers?from=2020-03-01&to=2020-03-15');
+    const seller = res.body.data.sellers.find((s: { user_id: string }) => s.user_id === sellerId);
+
+    expect(seller).toMatchObject({ goal_amount: '145.16', goal_compliance: 68.9 });
+  });
+
   it('returns the detail with forgotten customers of the portfolio', async () => {
     const res = await get(`/sellers/${sellerId}?${RANGE}&inactivity_days=10`);
 
@@ -379,5 +412,94 @@ describe('GET /api/v1/metrics/trends (real Postgres)', () => {
         average_ticket: '56.67',
       },
     ]);
+  });
+});
+
+describe('Seller goals endpoints (real Postgres, PCRM-173)', () => {
+  const goalsPath = () => `/api/v1/sellers/${sellerId}/goals`;
+  const now = currentYearMonth();
+  const previous = DateTime.fromObject(now).minus({ months: 1 });
+  const lastMonth = { year: previous.year, month: previous.month };
+
+  it('sets the goal from the current month, keeping the past one for past months', async () => {
+    const put = await request(app).put(goalsPath()).set(HEADERS).send({ goal_amount: 450.5 });
+
+    expect(put.status).toBe(200);
+    expect(put.body.data).toMatchObject({ ...now, goal_amount: '450.50' });
+
+    const list = await request(app).get(goalsPath()).set(HEADERS);
+
+    expect(list.body.data.current).toMatchObject({ ...now, goal_amount: '450.50' });
+    expect(list.body.data.history.items).toEqual([
+      expect.objectContaining({ ...now, until: null }),
+      // March 2020 now ends the month before this one.
+      expect.objectContaining({ year: 2020, month: 3, goal_amount: '300.00', until: lastMonth }),
+    ]);
+
+    // Page 2 still closes its first entry, and current does not depend on the page.
+    const page2 = await request(app).get(goalsPath()).query({ page: 2, limit: 1 }).set(HEADERS);
+    expect(page2.body.data.current).toMatchObject(now);
+    expect(page2.body.data.history).toMatchObject({ page: 2, page_size: 1, total: 2, total_pages: 2 });
+    expect(page2.body.data.history.items).toEqual([
+      expect.objectContaining({ year: 2020, month: 3, until: lastMonth }),
+    ]);
+
+    const sellers = await request(app).get('/api/v1/sellers').set(HEADERS);
+    const seller = sellers.body.data.items.find((s: { id: string }) => s.id === sellerId);
+    expect(seller.current_goal).toBe('450.50');
+  });
+
+  it('overwrites the goal when it changes again in the same month', async () => {
+    await request(app).put(goalsPath()).set(HEADERS).send({ goal_amount: 500 });
+
+    const list = await request(app).get(goalsPath()).set(HEADERS);
+
+    expect(list.body.data.history.total).toBe(2);
+    expect(list.body.data.current).toMatchObject({ ...now, goal_amount: '500.00' });
+  });
+
+  it('rejects a month chosen by the client', async () => {
+    const res = await request(app)
+      .put(goalsPath())
+      .set(HEADERS)
+      .send({ year: 2020, month: 3, goal_amount: 100 });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('returns the goal and sales of each of the last months (PCRM-198)', async () => {
+    const res = await request(app).get(`${goalsPath()}/history`).query({ months: 3 }).set(HEADERS);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toHaveLength(3);
+    // Oldest first, ending with this month; the earlier months still run on
+    // the March 2020 goal, and the seller sold nothing in them.
+    const twoAgo = DateTime.fromObject(now).minus({ months: 2 });
+    expect(res.body.data[0]).toEqual({
+      year: twoAgo.year,
+      month: twoAgo.month,
+      goal_amount: '300.00',
+      total_sales: '0.00',
+      goal_compliance: 0,
+    });
+    expect(res.body.data[2]).toMatchObject({ ...now, goal_amount: '500.00', total_sales: '0.00' });
+
+    const defaults = await request(app).get(`${goalsPath()}/history`).set(HEADERS);
+    expect(defaults.body.data).toHaveLength(12);
+  });
+
+  it('rejects more than 24 months of history', async () => {
+    const res = await request(app).get(`${goalsPath()}/history`).query({ months: 25 }).set(HEADERS);
+
+    expect(res.status).toBe(400);
+  });
+
+  it('does not delete goals', async () => {
+    const list = await request(app).get(goalsPath()).set(HEADERS);
+    const res = await request(app)
+      .delete(`${goalsPath()}/${list.body.data.history.items[0].id}`)
+      .set(HEADERS);
+
+    expect(res.status).toBe(404);
   });
 });

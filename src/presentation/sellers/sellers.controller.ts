@@ -2,6 +2,9 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
+import { GoalHistoryQuery, SetGoalInput } from '../../domain/schemas/goal.schema';
+import { PaginationQuery } from '../../domain/schemas/pagination.schema';
+import { GoalHistoryMonth } from '../../repositories/metrics.repository';
 import {
   CreateSellerInput,
   ListSellersQuery,
@@ -9,11 +12,21 @@ import {
   UpdateSellerInput,
   UpdateSellerStatusInput,
 } from '../../domain/schemas/seller.schema';
+import { Paginated } from '../../domain/types/pagination.types';
 import {
   getSellerById,
   listSellers,
   SellerRecord,
+  SellerTotals,
 } from '../../services/seller.service';
+import {
+  currentGoalsBySeller,
+  getSellerGoalHistory,
+  GoalRecord,
+  listSellerGoals,
+  SellerGoals,
+  setSellerGoal,
+} from '../../services/goal.service';
 import { createSeller } from '../../use-cases/create-seller.use-case';
 import { resendSellerOtp } from '../../use-cases/resend-seller-otp.use-case';
 import {
@@ -21,6 +34,14 @@ import {
   updateSellerEverywhere,
 } from '../../use-cases/update-seller.use-case';
 import { setSellerStatusEverywhere } from '../../use-cases/set-seller-status.use-case';
+
+// PCRM-173: the list and the detail carry the monthly goal in force today.
+type SellerWithGoal = SellerRecord & { current_goal: string | null };
+
+const withCurrentGoal = async (sellers: SellerRecord[]): Promise<SellerWithGoal[]> => {
+  const goals = await currentGoalsBySeller(prisma, sellers.map((seller) => seller.id));
+  return sellers.map((seller) => ({ ...seller, current_goal: goals.get(seller.id) ?? null }));
+};
 
 const UPDATE_MESSAGES: Record<NonNullable<AccessEmailStatus> | 'none', string> = {
   none: 'Vendedor actualizado correctamente',
@@ -32,13 +53,13 @@ const UPDATE_MESSAGES: Record<NonNullable<AccessEmailStatus> | 'none', string> =
 export class SellersController {
   public async list(req: Request, res: Response) {
     try {
-      const { active } = req.query as unknown as ListSellersQuery;
-      const sellers = await listSellers(prisma, { active });
+      const query = req.query as unknown as ListSellersQuery;
+      const page = await listSellers(prisma, query);
 
-      const response: ApiResponse<SellerRecord[]> = {
+      const response: ApiResponse<Paginated<SellerWithGoal> & { totals: SellerTotals }> = {
         success: true,
         message: 'Vendedores obtenidos correctamente',
-        data: sellers,
+        data: { ...page, items: await withCurrentGoal(page.items) },
       };
       res.status(200).json(response);
     } catch (error) {
@@ -49,9 +70,9 @@ export class SellersController {
   public async getById(req: Request, res: Response) {
     try {
       const { id } = req.params as unknown as SellerParams;
-      const seller = await getSellerById(prisma, id);
+      const [seller] = await withCurrentGoal([await getSellerById(prisma, id)]);
 
-      const response: ApiResponse<SellerRecord> = {
+      const response: ApiResponse<SellerWithGoal> = {
         success: true,
         message: 'Vendedor obtenido correctamente',
         data: seller,
@@ -128,6 +149,54 @@ export class SellersController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'SellersController.updateStatus');
+    }
+  }
+
+  public async listGoals(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as SellerParams;
+      const goals = await listSellerGoals(prisma, id, req.query as unknown as PaginationQuery);
+
+      const response: ApiResponse<SellerGoals> = {
+        success: true,
+        message: 'Seller goals retrieved',
+        data: goals,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'SellersController.listGoals');
+    }
+  }
+
+  public async goalHistory(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as SellerParams;
+      const months = await getSellerGoalHistory(prisma, id, req.query as unknown as GoalHistoryQuery);
+
+      const response: ApiResponse<GoalHistoryMonth[]> = {
+        success: true,
+        message: 'Seller goal history retrieved',
+        data: months,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'SellersController.goalHistory');
+    }
+  }
+
+  public async setGoal(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as SellerParams;
+      const goal = await setSellerGoal(prisma, id, req.body as SetGoalInput);
+
+      const response: ApiResponse<GoalRecord> = {
+        success: true,
+        message: 'Seller goal saved',
+        data: goal,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'SellersController.setGoal');
     }
   }
 }

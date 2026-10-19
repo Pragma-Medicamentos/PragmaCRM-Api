@@ -140,8 +140,6 @@ export class AppRoutes {
     // (SELLER POST, ADMIN GET) so PCRM-64 can list without a second mount.
     router.use('/api/v1/prospects', requireAuth, ProspectsRoutes.routes);
 
-    // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
-
     return router;
   }
 }

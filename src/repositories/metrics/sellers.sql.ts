@@ -7,7 +7,7 @@ import {
   VISIT_AT,
   SALE_AT,
   inRange,
-  goalsCte,
+  goalSlicesCte,
 } from './fragments.sql';
 
 /**
@@ -23,7 +23,16 @@ export const sellerPerformanceSql = (
 
   return Prisma.sql`
     WITH
-    ${goalsCte(range)},
+    ${goalSlicesCte(range, 'goal_slices')},
+    goals AS (
+      -- Goal prorated to the period and the sales inside the months that
+      -- carry it (PCRM-173, see goalSlicesCte).
+      SELECT gs.user_id,
+             SUM(gs.goal_amount) AS goal_amount,
+             SUM(gs.sales)       AS goal_sales
+      FROM   goal_slices gs
+      GROUP  BY gs.user_id
+    ),
     vs AS (
       SELECT v.user_id,
              COUNT(*)                                             AS stops,
@@ -100,7 +109,7 @@ export const sellerPerformanceSql = (
            COALESCE(ss.sales, 0)::numeric(14,2)::text AS total_sales,
            ss.ticket::numeric(14,2)::text         AS average_ticket,
            g.goal_amount::numeric(14,2)::text     AS goal_amount,
-           ROUND(100.0 * COALESCE(ss.sales, 0)
+           ROUND(100.0 * g.goal_sales
                  / NULLIF(g.goal_amount, 0), 1)::float8 AS goal_compliance,
            COALESCE(ss.route_sales, 0)::numeric(14,2)::text AS route_sales,
            COALESCE(vs.route_days, 0)::int        AS executed_route_days,

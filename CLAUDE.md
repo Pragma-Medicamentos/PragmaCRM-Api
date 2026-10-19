@@ -347,6 +347,7 @@ Estas no viven en el modelo de datos y **deben quedar en el manual técnico**, n
 |---|---|---|
 | Plazo de crédito | 60 días | Recálculo retroactivo de cartera vencida y mora |
 | **Umbral de inactividad** | **30 días, provisional** (wireframe `1f`). Configurable con `INACTIVITY_THRESHOLD_DAYS` y por petición con `?inactivity_days=`; las respuestas de métricas lo devuelven en `thresholds`. **Pendiente de firma del cliente** | Determina clientes inactivos, recuperados y "clientes sin visita". La especificación menciona cortes de 30/60/90 días para reportes pero no fija cuál usan los KPIs |
+| **Meta prorrateada** | Un periodo que no es mes completo se compara contra la meta prorrateada por días (7 días de octubre = 7/31 de la meta). Decidido el 16/10/2026 (PCRM-173) | Cumplimiento de meta global y por vendedor. El global cuenta a todo vendedor con meta vigente, esté habilitado o no: si no vendió, su venta es 0 |
 | Radio de validación GPS | 80 metros | Recálculo retroactivo del histórico de alertas fuera de radio |
 | Zona horaria | `America/El_Salvador`, en `BUSINESS_TIMEZONE` | Ver 5.7. Recalcula a qué día local pertenece todo el histórico |
 | Estado de venta válido | `erp_status = 2` | Excluye cotizaciones de todo cálculo |
@@ -703,6 +704,8 @@ goal                               -- meta mensual de venta por vendedor
       goal_amount  numeric(14,2)
   UQ  (user_id, year, month) WHERE deleted_at IS NULL
 ```
+
+**Semántica de `goal` (PCRM-173, decidido por el equipo el 16/10/2026).** La meta es fija por vendedor: una fila `(user_id, year, month)` vale **desde ese mes en adelante**, hasta que otra fila posterior la reemplace. La meta de un mes M es la fila no borrada más reciente con `(year, month) <= M`; `goal_amount = 0` es "sin meta desde ese mes". **La meta solo se fija para el mes en curso y no se elimina (decidido el 18/10/2026):** cambiarla otra vez en el mismo mes sobrescribe la fila de ese mes; el primer cambio de un mes nuevo agrega una fila, así que los meses cerrados conservan la suya y su cumplimiento no cambia. Se administra con `GET/PUT /api/v1/sellers/:id/goals` (solo Administrador). El PUT recibe solo `goal_amount` (el mes lo pone el servidor, en `America/El_Salvador`); no hay DELETE. El GET pagina `history`, con el último mes de cada meta en `until` (`null` la vigente), y calcula `current` sobre todas las filas. `GET /api/v1/sellers/:id/goals/history?months=12` (PCRM-198, máx. 24) devuelve por mes, del más antiguo al en curso, la meta vigente (`null` sin meta), la venta y el % (`goal_compliance`, `null` sin meta), sin prorrateo: el mes en curso compara la venta hasta hoy contra la meta completa; las métricas leen la misma regla en `goalSlicesCte` (`src/repositories/metrics/fragments.sql.ts`). Sin migración: el índice único parcial existente basta.
 
 **⚠ `goal` no tiene RF asociado.** Sostiene dos KPIs marcados como Esenciales (cumplimiento de meta gerencial y del vendedor) pero no aparece en el GPI. Requiere un RF nuevo o una excepción documentada. **Sin resolver.**
 
