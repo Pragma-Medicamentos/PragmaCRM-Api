@@ -367,6 +367,8 @@ describe('GET /api/v1/metrics/sellers (real Postgres)', () => {
       stops_executed: 0,
       orders_count: 1,
       total_sales: '20.00',
+      // Sold to customer B without owning any route (PCRM-154).
+      portfolio_customers: 1,
       goal_amount: null,
       goal_compliance: null,
       sales_per_route: null,
