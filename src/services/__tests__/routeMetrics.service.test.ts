@@ -1,7 +1,11 @@
 import { Prisma } from '../../generated/prisma/client';
 import { Client } from '../../lib/prisma';
 import { ROUTE_TOP_LIMIT } from '../../domain/schemas/routeMetrics.schema';
-import { getRouteMetricsDetail, listRouteMetrics } from '../routeMetrics.service';
+import {
+  getRouteMetricsDetail,
+  getRouteWorkdayComparison,
+  listRouteMetrics,
+} from '../routeMetrics.service';
 
 const NOW = new Date('2026-09-22T18:00:00Z');
 const ROUTE_ID = '22222222-2222-2222-2222-222222222201';
@@ -204,6 +208,123 @@ describe('getRouteMetricsDetail', () => {
 
     await expect(
       getRouteMetricsDetail(buildClient(queryRaw), ROUTE_ID, SEPTEMBER, NOW)
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+});
+
+/** A workday as the query returns it. */
+const workdayRow = (date: string, overrides: Record<string, unknown> = {}) => ({
+  date,
+  sellers: [{ user_id: 'u1', name: 'Carlos Martínez' }],
+  amount: '1000.00',
+  orders_count: 8,
+  planned_stops: 12,
+  executed_stops: 10,
+  stops_with_order: 8,
+  visit_coverage_rate: 83.3,
+  order_rate: 80.0,
+  ...overrides,
+});
+
+const workdayHeader = (latestDay: number | null = 2) => ({
+  route_id: ROUTE_ID,
+  name: 'Zona Escalón',
+  active: true,
+  latest_day: latestDay,
+});
+
+describe('getRouteWorkdayComparison', () => {
+  // NOW is Tuesday 22 September 2026, 12:00 in El Salvador.
+  const TUESDAYS = ['2026-09-22', '2026-09-15', '2026-09-08'];
+
+  it('compares the latest workday against the average of the previous ones', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([workdayHeader()])
+      .mockResolvedValueOnce(TUESDAYS.map((date) => ({ date })))
+      .mockResolvedValueOnce([
+        workdayRow('2026-09-22', { amount: '1500.00', orders_count: 12, order_rate: 90.0 }),
+        workdayRow('2026-09-15', { amount: '1000.00', orders_count: 8, visit_coverage_rate: null }),
+        workdayRow('2026-09-08', { amount: '500.00', orders_count: 5, order_rate: null }),
+      ]);
+
+    const result = await getRouteWorkdayComparison(buildClient(queryRaw), ROUTE_ID, { limit: 5 }, NOW);
+
+    expect(result.route).toEqual({ route_id: ROUTE_ID, name: 'Zona Escalón', active: true });
+    expect(result.workdays.map((workday) => workday.date)).toEqual(TUESDAYS);
+    expect(result.baseline).toEqual({
+      workdays: 2,
+      amount: '750.00',
+      orders_count: 6.5,
+      visit_coverage_rate: 83.3,
+      order_rate: 80.0,
+    });
+    expect(result.change_rate).toBe(100);
+  });
+
+  it('defaults the day to the weekday of the latest workday and passes the limit', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([workdayHeader(5)]).mockResolvedValueOnce([]);
+
+    const result = await getRouteWorkdayComparison(buildClient(queryRaw), ROUTE_ID, { limit: 4 }, NOW);
+
+    expect(result.day).toBe(5);
+    expect(sqlOf(queryRaw, 1).values).toEqual(expect.arrayContaining([ROUTE_ID, '2026-09-22', 5, 4]));
+  });
+
+  it('honours an explicit day over the latest workday', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([workdayHeader(5)]).mockResolvedValueOnce([]);
+
+    const result = await getRouteWorkdayComparison(
+      buildClient(queryRaw),
+      ROUTE_ID,
+      { day: 1, limit: 5 },
+      NOW
+    );
+
+    expect(result.day).toBe(1);
+  });
+
+  it('falls back to today’s weekday and answers empty when the route never had an agenda', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([workdayHeader(null)]).mockResolvedValueOnce([]);
+
+    const result = await getRouteWorkdayComparison(buildClient(queryRaw), ROUTE_ID, { limit: 5 }, NOW);
+
+    expect(result).toMatchObject({ day: 2, workdays: [], baseline: null, change_rate: null });
+    expect(queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it('has no baseline nor variation with a single workday', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([workdayHeader()])
+      .mockResolvedValueOnce([{ date: '2026-09-22' }])
+      .mockResolvedValueOnce([workdayRow('2026-09-22')]);
+
+    const result = await getRouteWorkdayComparison(buildClient(queryRaw), ROUTE_ID, { limit: 5 }, NOW);
+
+    expect(result.baseline).toBeNull();
+    expect(result.change_rate).toBeNull();
+  });
+
+  it('reads sales from the oldest workday up to the end of today', async () => {
+    const queryRaw = jest
+      .fn()
+      .mockResolvedValueOnce([workdayHeader()])
+      .mockResolvedValueOnce(TUESDAYS.map((date) => ({ date })))
+      .mockResolvedValueOnce(TUESDAYS.map((date) => workdayRow(date)));
+
+    await getRouteWorkdayComparison(buildClient(queryRaw), ROUTE_ID, { limit: 5 }, NOW);
+
+    const metricsSql = sqlOf(queryRaw, 2);
+    expect(isoInstants(metricsSql)).toEqual(['2026-09-08T06:00:00.000Z', '2026-09-23T06:00:00.000Z']);
+    expect(metricsSql.values).toContainEqual(TUESDAYS);
+  });
+
+  it('404s when the route does not exist or is deleted', async () => {
+    const queryRaw = jest.fn().mockResolvedValueOnce([]);
+
+    await expect(
+      getRouteWorkdayComparison(buildClient(queryRaw), ROUTE_ID, { limit: 5 }, NOW)
     ).rejects.toMatchObject({ statusCode: 404 });
   });
 });

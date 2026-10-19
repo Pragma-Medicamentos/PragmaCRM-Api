@@ -12,7 +12,10 @@ import {
   metricsTrendsQuerySchema,
 } from '../../domain/schemas/metrics.schema';
 import { metricsProductParamsSchema } from '../../domain/schemas/productMetrics.schema';
-import { metricsRouteParamsSchema } from '../../domain/schemas/routeMetrics.schema';
+import {
+  metricsRouteParamsSchema,
+  metricsRouteWorkdaysQuerySchema,
+} from '../../domain/schemas/routeMetrics.schema';
 import { ProductMetricsController } from './productMetrics.controller';
 import { SalesComparisonController } from './salesComparison.controller';
 import { salesComparisonQuerySchema } from '../../domain/schemas/salesComparison.schema';
@@ -91,6 +94,13 @@ export class MetricsRoutes {
       validateParams(metricsRouteParamsSchema),
       validateQuery(metricsRangeQuerySchema),
       routeController.routeDetail
+    );
+    // Workday comparison of one route (PCRM-188).
+    router.get(
+      '/routes/:id/workdays',
+      validateParams(metricsRouteParamsSchema),
+      validateQuery(metricsRouteWorkdaysQuerySchema),
+      routeController.routeWorkdays
     );
 
     return router;

@@ -512,6 +512,51 @@ Venta, pedidos y ticket promedio del período contra el período anterior, para 
 
 Códigos: `400` por query inválida (incluido `group_by` desconocido o rango > 366 días), `404` por `customer_id` o `user_id` inexistente, `403` para Vendedor (todo `/metrics` es solo Administrador).
 
+### 13. `GET /routes/:id/workdays` — la ruta contra sus jornadas anteriores (PCRM-188)
+
+Compara una ruta contra sí misma en el mismo día de la semana: la última jornada (ej. ruta SA de este martes) contra el promedio de las anteriores (los martes previos). La vista web va en el detalle de ruta.
+
+**Query.** No usa `from` / `to`:
+
+| Param | Valores | Default |
+|---|---|---|
+| `day` | `1`–`7`, día ISO como `route_user.day` (1 lunes … 7 domingo) | El día de la jornada más reciente de la ruta; sin jornadas, el día de hoy |
+| `limit` | `2`–`12`, jornadas devueltas **incluida la última** | `5` (la última + 4 anteriores) |
+
+```json
+{
+  "route": { "route_id": "…", "name": "Zona Escalón", "active": true },
+  "day": 2,
+  "limit": 5,
+  "workdays": [
+    { "date": "2026-10-13", "sellers": [{ "user_id": "…", "name": "Carlos Martínez" }],
+      "amount": "1500.00", "orders_count": 12, "planned_stops": 14, "executed_stops": 12,
+      "stops_with_order": 10, "visit_coverage_rate": 85.7, "order_rate": 83.3 },
+    { "date": "2026-10-06", "…": "…" }
+  ],
+  "baseline": { "workdays": 4, "amount": "750.00", "orders_count": 6.5,
+                "visit_coverage_rate": 80.0, "order_rate": 70.0 },
+  "change_rate": 100.0
+}
+```
+
+| Campo | Notas |
+|---|---|
+| Jornada | Cada `scheduled_visit.visit_date` (hasta hoy) de las paradas generadas por cualquier `route_user` de la ruta, con `ISODOW(visit_date) = day`. Sale de la agenda que la app congeló ese día, no de la asignación vigente: una reasignación posterior no reescribe la historia. Las paradas sobre prospectos no cuentan (igual que la agenda del endpoint 11) |
+| `workdays` | De la más reciente a la más vieja. La primera es la que se compara |
+| `sellers` | Dueños de las asignaciones que generaron las paradas del día. **La ruta se compara aunque haya cambiado de vendedor**; la web lo marca. Un vendedor borrado sigue apareciendo en las jornadas que trabajó |
+| `amount`, `orders_count` | Venta atribuida (regla del endpoint 11) acreditada a la jornada **de la parada** cuya visita la generó, no al día de facturación. Las ventas se leen desde la jornada más vieja hasta el fin de hoy, para no perder una venta facturada al día siguiente |
+| `visit_coverage_rate` | Clientes agendados con parada ejecutada ÷ clientes agendados × 100, la misma fórmula del endpoint 11. `null` sin agenda |
+| `order_rate` | Efectividad: paradas ejecutadas con al menos una venta atribuida ÷ paradas ejecutadas × 100. Se mide con la venta, no con el `visit.successful` que declara el vendedor. `null` sin paradas ejecutadas |
+| `baseline` | Promedio de las jornadas **anteriores** a la primera. Las tasas promedian solo las jornadas que tienen tasa. `null` con menos de dos jornadas |
+| `change_rate` | Venta de la última jornada contra `baseline.amount`, en %. `null` sin `baseline` o si el promedio es 0 |
+
+**Alcance frente a la decisión del 13/10.** El PO retiró de las cards de PCRM-178 la venta por día-ruta (efectividad) y las paradas ejecutadas / planificadas. PCRM-188 (creada el 14/10) las pide explícitamente para esta comparación. Viven solo en este endpoint: las cards del endpoint 11 no cambian.
+
+**Decisiones por defecto de los "Por definir" del ticket**, pendientes de confirmar con el PO: se comparan las últimas 5 jornadas (configurable con `limit`) y la ruta se compara aunque cambie de vendedor.
+
+Códigos: `400` por `day` o `limit` fuera de rango o id que no es uuid, `404` por ruta inexistente o borrada, `403` para Vendedor.
+
 ---
 
 ## Qué consume cada pantalla

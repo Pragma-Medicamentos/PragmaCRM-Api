@@ -52,6 +52,10 @@ export const resolveRange = (
   return build(first, last);
 };
 
+/** Today's local day in El Salvador, `YYYY-MM-DD`. */
+export const localToday = (now: Date = new Date()): string =>
+  DateTime.fromJSDate(now, { zone: ERP_TIMEZONE }).toISODate() as string;
+
 /** Number of local days covered by the range, both ends included. */
 export const rangeDays = (range: LocalDateRange): number =>
   Math.round(localDay(range.to).diff(localDay(range.from), 'days').days) + 1;
