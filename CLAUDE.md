@@ -225,6 +225,8 @@ Registrar producto fuera de catálogo
 
 Ejemplo del uso de la personalidad, según el cliente: el color rojo indica un cliente directo que quiere ir al grano.
 
+**RF-12 implementado parcialmente (15/10/2026).** `PATCH /api/v1/customers/:id/commercial-profile` (solo Administrador) guarda `personality` (`rojo|azul|amarillo|verde`) y `potential` (`alto|medio|bajo`); ambos admiten `null` para volver a "sin clasificar". El vocabulario está cerrado con los CHECK `customer_personality_check` y `customer_potential_check`, porque el dashboard también puede escribir esas columnas por supabase-js. **Intereses y afinidad a laboratorios quedan fuera, por decisión del equipo:** no hay columnas para ellos ni tabla de laboratorios, y modelarlos exige una migración que no se aprobó. El endpoint responde 400 si llegan en el body, para que el frontend no los dé por guardados. No reintroducir sin conversación.
+
 ### 4.3 Fuera del MVP (RF-13 y RF-14)
 
 | RF | Descripción | Por qué está fuera |
@@ -272,6 +274,8 @@ Es el punto donde más errores de interpretación ocurren. Los cuatro son entida
 **Regla mental:** la composición de ruta es planeación, `visit` es ejecución de esa planeación.
 
 **Consecuencia de que la asignación sea recurrente:** las jornadas concretas no están almacenadas. Se **generan en runtime** con `generate_series` sobre el día de la semana, uniendo la composición vigente a esa fecha. Esto sostiene tanto "próximas visitas" como "cobertura de ruta".
+
+**Ruta semanal del vendedor (PCRM-170).** `GET /api/v1/me/route/week` devuelve la semana en curso (lunes a domingo, zona de negocio), con los 7 días siempre presentes, leyendo la asignación **viva**: `route_user` + `route_customer` más las paradas extra (`scheduled_visit.is_extra`) de esas fechas. Es de solo lectura y **nunca** genera días: `ensureDailyStops` congela el plan del día que genera, y esta vista existe justamente para que una reasignación (miércoles de Santa Ana a San Salvador) se vea al refrescar. Las paradas tienen el mismo shape que las de `/me/route`; las de plantilla llevan `route_customer.id` como `id`.
 
 **✅ Discrepancia resuelta en el esquema aplicado.** El DER dibujaba `ruta_usuario.fecha date`; la decisión confirmada pedía día de la semana con vigencia. **La base implementada le dio la razón a la decisión:** `route_user.day smallint` + `created_at` / `deleted_at`, con índice único parcial `(route_id, user_id, day) WHERE deleted_at IS NULL`. El punto 1 del Anexo B queda cerrado.
 
@@ -343,6 +347,7 @@ Estas no viven en el modelo de datos y **deben quedar en el manual técnico**, n
 |---|---|---|
 | Plazo de crédito | 60 días | Recálculo retroactivo de cartera vencida y mora |
 | **Umbral de inactividad** | **30 días, provisional** (wireframe `1f`). Configurable con `INACTIVITY_THRESHOLD_DAYS` y por petición con `?inactivity_days=`; las respuestas de métricas lo devuelven en `thresholds`. **Pendiente de firma del cliente** | Determina clientes inactivos, recuperados y "clientes sin visita". La especificación menciona cortes de 30/60/90 días para reportes pero no fija cuál usan los KPIs |
+| **Meta prorrateada** | Un periodo que no es mes completo se compara contra la meta prorrateada por días (7 días de octubre = 7/31 de la meta). Decidido el 16/10/2026 (PCRM-173) | Cumplimiento de meta global y por vendedor. El global cuenta a todo vendedor con meta vigente, esté habilitado o no: si no vendió, su venta es 0 |
 | Radio de validación GPS | 80 metros | Recálculo retroactivo del histórico de alertas fuera de radio |
 | Zona horaria | `America/El_Salvador`, en `BUSINESS_TIMEZONE` | Ver 5.7. Recalcula a qué día local pertenece todo el histórico |
 | Estado de venta válido | `erp_status = 2` | Excluye cotizaciones de todo cálculo |
@@ -516,8 +521,9 @@ app_user
 customer
   PK  id                  uuid
       erp_customer_id     integer  UNIQUE parcial
-      personality         text                   -- RF-12: rojo|azul|verde|amarillo
-      potential           text                   -- RF-12: alto|medio|bajo
+      personality         text  CHECK            -- RF-12: rojo|azul|verde|amarillo, NULL = sin clasificar
+      potential           text  CHECK            -- RF-12: alto|medio|bajo, NULL = sin clasificar
+      sanitary_registration / nrc / nit / email  text  -- PCRM-185, opcionales, captura manual
       name                text
       trade_name          text
       establishment_type  text                   -- cadena|independiente|droguería
@@ -540,8 +546,16 @@ prospect
       name / trade_name / address / phone
       location     geography(Point,4326)
       status       text
+      sanitary_registration / nrc / nit / email  text  -- PCRM-185, opcionales
       created_at / updated_at / deleted_at
 ```
+
+**Datos fiscales de clientes y prospectos (PCRM-185).** `sanitary_registration` (registro sanitario, texto libre sin formato conocido), `nrc`, `nit` y `email`, todos opcionales, en `prospect` (16/10/2026) y en `customer` (confirmado por el PO el 18/10/2026). El formato lo valida la API con un solo esquema compartido (`domain/schemas/fiscal.schema.ts`), no un CHECK: NRC `230204-4`, NIT de 14 dígitos (`0614-250621-108-6`) **o** el DUI homologado como NIT de persona natural (`01234567-8`), y correo guardado en minúsculas. Un string vacío del formulario se guarda como `NULL`.
+
+- Prospectos: se aceptan al crear (vendedor y admin) y `PATCH /api/v1/prospects/:id` (solo Administrador) edita nombre, teléfono y estos cuatro campos de forma parcial.
+- Clientes: `PATCH /api/v1/customers/:id/fiscal-data` (solo Administrador), parcial y `strict`, como las otras secciones del perfil (`/contact`, `/location`, `/commercial-profile`). Se leen en `GET /api/v1/customers/:id`; el listado y la ruta móvil no los traen.
+
+**En `customer` son captura manual: el importador no los toca.** El JSON de Efactsoft no trae NRC, NIT ni correo del cliente: las llaves `nrc`, `nif`, `email`, `telefono` y `razon_social` del payload son del **emisor** (Pragma), con un único valor en todas las ventas. `upsertCustomer` (`salesSync.service.ts`) solo escribe nombre y crédito, así que una carga posterior no borra lo capturado.
 
 ### 7.4 Rutas
 
@@ -690,6 +704,8 @@ goal                               -- meta mensual de venta por vendedor
       goal_amount  numeric(14,2)
   UQ  (user_id, year, month) WHERE deleted_at IS NULL
 ```
+
+**Semántica de `goal` (PCRM-173, decidido por el equipo el 16/10/2026).** La meta es fija por vendedor: una fila `(user_id, year, month)` vale **desde ese mes en adelante**, hasta que otra fila posterior la reemplace. La meta de un mes M es la fila no borrada más reciente con `(year, month) <= M`; `goal_amount = 0` es "sin meta desde ese mes". **La meta solo se fija para el mes en curso y no se elimina (decidido el 18/10/2026):** cambiarla otra vez en el mismo mes sobrescribe la fila de ese mes; el primer cambio de un mes nuevo agrega una fila, así que los meses cerrados conservan la suya y su cumplimiento no cambia. Se administra con `GET/PUT /api/v1/sellers/:id/goals` (solo Administrador). El PUT recibe solo `goal_amount` (el mes lo pone el servidor, en `America/El_Salvador`); no hay DELETE. El GET pagina `history`, con el último mes de cada meta en `until` (`null` la vigente), y calcula `current` sobre todas las filas. `GET /api/v1/sellers/:id/goals/history?months=12` (PCRM-198, máx. 24) devuelve por mes, del más antiguo al en curso, la meta vigente (`null` sin meta), la venta y el % (`goal_compliance`, `null` sin meta), sin prorrateo: el mes en curso compara la venta hasta hoy contra la meta completa; las métricas leen la misma regla en `goalSlicesCte` (`src/repositories/metrics/fragments.sql.ts`). Sin migración: el índice único parcial existente basta.
 
 **⚠ `goal` no tiene RF asociado.** Sostiene dos KPIs marcados como Esenciales (cumplimiento de meta gerencial y del vendedor) pero no aparece en el GPI. Requiere un RF nuevo o una excepción documentada. **Sin resolver.**
 

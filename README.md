@@ -403,6 +403,15 @@ Alimentan las pantallas `1n` (listado) y `1o` (perfil) del dashboard web.
 | `/api/v1/customers/:id/sales` | `1o` · pestaña Historial |
 | `/api/v1/customers/:id/credits` | `1o` · pestaña Créditos y cobros |
 
+El perfil se edita por secciones, cada una con su `PATCH` parcial (omitir = no cambia, `null` = limpiar) y el mismo guard:
+
+| Endpoint | Campos |
+|---|---|
+| `PATCH /api/v1/customers/:id/contact` | `phone`, `trade_name` |
+| `PATCH /api/v1/customers/:id/location` | `latitude`, `longitude` |
+| `PATCH /api/v1/customers/:id/commercial-profile` | `personality`, `potential` (RF-12) |
+| `PATCH /api/v1/customers/:id/fiscal-data` | `sanitary_registration`, `nrc`, `nit`, `email` (PCRM-185) |
+
 ### Ventas y créditos
 
 El módulo maneja dos cosas y solo dos. Juntas son una **partición exacta** de

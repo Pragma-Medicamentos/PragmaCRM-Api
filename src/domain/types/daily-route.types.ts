@@ -1,5 +1,10 @@
+import { CustomerCategory } from '../schemas/customer.schema';
 import { StopType } from '../schemas/daily-route.schema';
-import { GeoPoint } from './customer.types';
+import {
+  CustomerSummary,
+  CustomerVisitNote,
+  GeoPoint,
+} from './customer.types';
 
 /**
  * Which table the stop points at.
@@ -50,7 +55,7 @@ export interface DailyRouteStop {
   phone: string | null;
   /**
    * RF-12 communication style as a lowercase colour (`rojo`, `amarillo`,
-   * `verde`, `azul`). Free text in the database, so the client normalises it.
+   * `verde`, `azul`), enforced by customer_personality_check.
    * Always null when `target_kind` is 'prospect': the table has no such column.
    */
   personality: string | null;
@@ -93,6 +98,11 @@ export interface DailyRouteStop {
    * only cost the next consumer a reparse.
    */
   completed_at: Date | null;
+  /**
+   * RF-07 `visit.notes` of that same execution. Null while the stop is
+   * pending or when the seller left no note.
+   */
+  notes: string | null;
 }
 
 export interface DailyRoute {
@@ -120,4 +130,31 @@ export interface DailyRoute {
 export interface StopCustomerLocation {
   customer_id: string;
   location: GeoPoint;
+}
+
+/**
+ * Result of PATCH /api/v1/me/route/stops/:id/note: the visit that executed
+ * the stop, with the note now stored on it.
+ */
+export interface StopNote {
+  /** `scheduled_visit.id`, the same id the request was addressed to. */
+  id: string;
+  visit_id: string;
+  notes: string;
+  updated_at: Date;
+}
+
+/**
+ * Result of GET /api/v1/me/route/stops/:id/customer (PCRM-164): the commercial
+ * figures of the stop's customer, for the seller standing at it.
+ *
+ * The identity fields are not repeated: the stop in GET /me/route already
+ * carries them. The same `summary` and `category` as the admin profile
+ * (GET /customers/:id), so both screens can never disagree on a number.
+ */
+export interface StopCustomerMetrics {
+  customer_id: string;
+  category: CustomerCategory;
+  summary: CustomerSummary;
+  recent_notes: CustomerVisitNote[];
 }

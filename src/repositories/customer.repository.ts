@@ -1,5 +1,10 @@
 import { Client } from '../lib/prisma';
-import { CustomerCategory, ListCustomersQuery } from '../domain/schemas/customer.schema';
+import {
+  CustomerCategory,
+  CustomerPersonality,
+  CustomerPotential,
+  ListCustomersQuery,
+} from '../domain/schemas/customer.schema';
 import {
   creditTotalsSql,
   customerCoreSql,
@@ -71,8 +76,12 @@ export interface CustomerCoreRow {
   phone: string | null;
   mobile: string | null;
   attends: string | null;
-  personality: string | null;
-  potential: string | null;
+  personality: CustomerPersonality | null;
+  potential: CustomerPotential | null;
+  sanitary_registration: string | null;
+  nrc: string | null;
+  nit: string | null;
+  email: string | null;
   credit: boolean;
   credit_limit: string | null;
   origin: string | null;

@@ -7,6 +7,7 @@ import {
   CreateProspectInput,
   ListProspectsQuery,
   ProspectParams,
+  UpdateProspectInput,
   UpdateProspectLocationInput,
 } from '../../domain/schemas/prospect.schema';
 import {
@@ -18,6 +19,7 @@ import {
   createProspect,
   createProspectAsAdmin,
   listProspects,
+  updateProspect,
   updateProspectLocation,
 } from '../../services/prospect.service';
 
@@ -104,6 +106,24 @@ export class ProspectsController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'ProspectsController.updateLocation');
+    }
+  }
+
+  /** PCRM-185: edit a prospect's name, phone and fiscal data. */
+  public async update(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as ProspectParams;
+      const data = req.body as UpdateProspectInput;
+      const prospect = await updateProspect(prisma, id, data);
+
+      const response: ApiResponse<ProspectListItem> = {
+        success: true,
+        message: 'Prospect updated successfully',
+        data: prospect,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProspectsController.update');
     }
   }
 }

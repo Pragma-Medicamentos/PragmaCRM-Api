@@ -35,8 +35,9 @@
 --     verify no endpoint ever surfaces them.
 --   * A handful of soft-deleted rows in route_customer, visit and sale, to
 --     verify every query's `deleted_at IS NULL` predicate.
---   * Metrics panel (PCRM-13): monthly goals per seller for the last 12
---     months plus the current one, ~25 prospects over the last 90 days, and
+--   * Metrics panel (PCRM-13): a fixed monthly goal per seller (PCRM-173:
+--     in force from its month onward; two sellers with a later raise, Diana
+--     Reyes without goal), ~25 prospects over the last 90 days, and
 --     visits linked to the seller's route assignment, so goal_compliance,
 --     new_prospects and route_effectiveness return real figures.
 --   * A daily route for today (PCRM-46/47, computed from `now()` in
@@ -560,30 +561,44 @@ BEGIN
     AND  ru.deleted_at IS NULL
     AND  rc.customer_id = v.customer_id;
 
-  -- Goals around each seller's real monthly sales (80%-120%), so compliance
-  -- spreads above and below 100%. Months with no sales get a flat goal.
+  -- Goals (PCRM-173): a row is the seller's monthly goal from its month
+  -- onward, until a later row replaces it. Each seller gets one fixed goal
+  -- since 12 months ago, around its real average monthly sale (90%-110%), so
+  -- compliance spreads above and below 100%. Rosa and Carlos get a raise 3
+  -- months ago, to show a goal change keeping the older months intact.
+  -- Diana Reyes has no goal, to exercise "Sin meta".
   INSERT INTO goal (user_id, year, month, goal_amount)
   SELECT u.id,
          EXTRACT(YEAR  FROM m.month_start)::smallint,
          EXTRACT(MONTH FROM m.month_start)::smallint,
-         -- random() is float8; round(float8, int) does not exist, only round(numeric, int).
-         round((COALESCE(NULLIF(sales.amount, 0), 1500) * (0.8 + random() * 0.4))::numeric, -1)
+         round(base.amount * m.raise, -2)
   FROM   app_user u
-  CROSS  JOIN generate_series(
-           date_trunc('month', now() AT TIME ZONE 'America/El_Salvador') - interval '12 months',
-           date_trunc('month', now() AT TIME ZONE 'America/El_Salvador'),
-           interval '1 month'
-         ) AS m(month_start)
   LEFT   JOIN LATERAL (
            SELECT SUM(s.total) AS amount
            FROM   sale s
            WHERE  s.user_id = u.id
              AND  s.deleted_at IS NULL
              AND  s.erp_status = 2
-             AND  s.erp_created_at >= m.month_start AT TIME ZONE 'America/El_Salvador'
-             AND  s.erp_created_at <  (m.month_start + interval '1 month') AT TIME ZONE 'America/El_Salvador'
+             AND  s.erp_created_at >= now() - interval '12 months'
          ) sales ON true
-  WHERE  u.role = 'Vendedor';
+  -- The random factor is drawn once per seller, so the raise row is always
+  -- 15% above the base row. random() is float8; round(float8, int) does not
+  -- exist, only round(numeric, int).
+  CROSS  JOIN LATERAL (
+           SELECT (COALESCE(NULLIF(sales.amount, 0) / 12, 1500)
+                   * (0.9 + random() * 0.2))::numeric AS amount
+         ) AS base
+  CROSS  JOIN LATERAL (
+           SELECT date_trunc('month', now() AT TIME ZONE 'America/El_Salvador')
+                  - interval '12 months' AS month_start, 1.0 AS raise
+           UNION ALL
+           SELECT date_trunc('month', now() AT TIME ZONE 'America/El_Salvador')
+                  - interval '3 months', 1.15
+           WHERE  u.id IN ('11111111-1111-1111-8111-111111111101',
+                           '11111111-1111-1111-8111-111111111102')
+         ) AS m
+  WHERE  u.role = 'Vendedor'
+    AND  u.id <> '11111111-1111-1111-8111-111111111105';
 
   INSERT INTO prospect (user_id, name, trade_name, phone, status, created_at)
   SELECT (ARRAY(SELECT id FROM app_user WHERE role = 'Vendedor' ORDER BY id))[1 + (n % 5)],

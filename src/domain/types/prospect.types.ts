@@ -7,6 +7,10 @@ export interface CreatedProspect {
   created_at: string;
   captured_at: string;
   status: string | null;
+  sanitary_registration: string | null;
+  nrc: string | null;
+  nit: string | null;
+  email: string | null;
 }
 
 export interface ProspectListItem {
@@ -18,4 +22,8 @@ export interface ProspectListItem {
   location: { lat: number; lng: number } | null;
   created_at: string;
   status: string | null;
+  sanitary_registration: string | null;
+  nrc: string | null;
+  nit: string | null;
+  email: string | null;
 }

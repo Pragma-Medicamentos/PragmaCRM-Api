@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { visitNotes } from './visit.schema';
 
 /**
  * Stop classification (CLAUDE.md 5.2): commercial call, order delivery, or
@@ -27,7 +28,7 @@ export const dailyRouteQuerySchema = z.object({
 });
 export type DailyRouteQuery = z.infer<typeof dailyRouteQuerySchema>;
 
-/** Path params of PATCH /api/v1/me/route/stops/:id/location. */
+/** Path params of the /api/v1/me/route/stops/:id/* routes. */
 export const stopParamsSchema = z.object({
   id: z.string().uuid('Invalid scheduled visit id'),
 });
@@ -46,3 +47,14 @@ export const setStopLocationSchema = z.object({
   accuracy_meters: z.number().nonnegative(),
 });
 export type SetStopLocationInput = z.infer<typeof setStopLocationSchema>;
+
+/**
+ * Body of PATCH /api/v1/me/route/stops/:id/note (RF-07).
+ *
+ * The note replaces whatever the visit had: a retry from an offline client
+ * then lands on the same text instead of appending it twice.
+ */
+export const setStopNoteSchema = z.object({
+  notes: visitNotes,
+});
+export type SetStopNoteInput = z.infer<typeof setStopNoteSchema>;

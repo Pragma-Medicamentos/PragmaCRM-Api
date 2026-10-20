@@ -10,7 +10,9 @@ import {
   listCustomerCreditsQuerySchema,
   listCustomerSalesQuerySchema,
   listCustomersQuerySchema,
+  updateCustomerCommercialProfileSchema,
   updateCustomerContactSchema,
+  updateCustomerFiscalDataSchema,
   updateCustomerLocationSchema,
 } from '../../domain/schemas/customer.schema';
 
@@ -52,6 +54,20 @@ export class CustomersRoutes {
       validateParams(customerParamsSchema),
       validateBody(updateCustomerContactSchema),
       controller.updateContact
+    );
+    // RF-12: colour and buying potential, from the selector in the profile.
+    router.patch(
+      '/:id/commercial-profile',
+      validateParams(customerParamsSchema),
+      validateBody(updateCustomerCommercialProfileSchema),
+      controller.updateCommercialProfile
+    );
+    // PCRM-185: sanitary registration, NRC, NIT and email, captured by hand.
+    router.patch(
+      '/:id/fiscal-data',
+      validateParams(customerParamsSchema),
+      validateBody(updateCustomerFiscalDataSchema),
+      controller.updateFiscalData
     );
 
     return router;

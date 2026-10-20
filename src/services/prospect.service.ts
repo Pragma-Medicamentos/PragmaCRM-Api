@@ -6,6 +6,7 @@ import {
   CreateProspectAdminInput,
   CreateProspectInput,
   ListProspectsQuery,
+  UpdateProspectInput,
   UpdateProspectLocationInput,
 } from '../domain/schemas/prospect.schema';
 import {
@@ -22,6 +23,7 @@ import { Paginated, buildPage } from '../domain/types/pagination.types';
  *      GET   /api/v1/prospects           -> listProspects
  *      POST  /api/v1/prospects/admin     -> createProspectAsAdmin
  *      PATCH /api/v1/prospects/:id/location -> updateProspectLocation
+ *      PATCH /api/v1/prospects/:id        -> updateProspect
  * ============================================================================
  */
 
@@ -42,6 +44,7 @@ export const createProspect = async (
       user_id: sellerId,
       name: input.name,
       phone: input.phone,
+      ...fiscalData(input),
     },
     select: {
       id: true,
@@ -50,6 +53,10 @@ export const createProspect = async (
       user_id: true,
       created_at: true,
       status: true,
+      sanitary_registration: true,
+      nrc: true,
+      nit: true,
+      email: true,
     },
   });
 
@@ -73,6 +80,10 @@ export const createProspect = async (
     created_at: row.created_at.toISOString(),
     captured_at: input.captured_at.toISOString(),
     status: row.status,
+    sanitary_registration: row.sanitary_registration,
+    nrc: row.nrc,
+    nit: row.nit,
+    email: row.email,
   };
 };
 
@@ -103,6 +114,10 @@ export const listProspects = async (
     lng: number | null;
     created_at: Date;
     status: string | null;
+    sanitary_registration: string | null;
+    nrc: string | null;
+    nit: string | null;
+    email: string | null;
     total_count: bigint;
   };
 
@@ -117,6 +132,10 @@ export const listProspects = async (
       extensions.st_x(p.location::extensions.geometry)::float8 AS lng,
       p.created_at,
       p.status,
+      p.sanitary_registration,
+      p.nrc,
+      p.nit,
+      p.email,
       COUNT(*) OVER()::bigint AS total_count
     FROM prospect p
     INNER JOIN app_user u ON u.id = p.user_id
@@ -139,6 +158,10 @@ export const listProspects = async (
         : null,
     created_at: row.created_at.toISOString(),
     status: row.status,
+    sanitary_registration: row.sanitary_registration,
+    nrc: row.nrc,
+    nit: row.nit,
+    email: row.email,
   }));
 
   return buildPage(items, total, query.page, query.limit);
@@ -163,6 +186,10 @@ export const getProspectById = async (
     lng: number | null;
     created_at: Date;
     status: string | null;
+    sanitary_registration: string | null;
+    nrc: string | null;
+    nit: string | null;
+    email: string | null;
   };
 
   const rows = await client.$queryRaw<Row[]>`
@@ -175,7 +202,11 @@ export const getProspectById = async (
       extensions.st_y(p.location::extensions.geometry)::float8 AS lat,
       extensions.st_x(p.location::extensions.geometry)::float8 AS lng,
       p.created_at,
-      p.status
+      p.status,
+      p.sanitary_registration,
+      p.nrc,
+      p.nit,
+      p.email
     FROM prospect p
     INNER JOIN app_user u ON u.id = p.user_id
     WHERE p.id = ${id}::uuid AND p.deleted_at IS NULL
@@ -197,8 +228,28 @@ export const getProspectById = async (
         : null,
     created_at: row.created_at.toISOString(),
     status: row.status,
+    sanitary_registration: row.sanitary_registration,
+    nrc: row.nrc,
+    nit: row.nit,
+    email: row.email,
   };
 };
+
+type FiscalFields = Pick<
+  UpdateProspectInput,
+  'sanitary_registration' | 'nrc' | 'nit' | 'email'
+>;
+
+/**
+ * PCRM-185: the fiscal columns of a prospect write. Prisma skips undefined
+ * keys, so an omitted field is left untouched and null clears it.
+ */
+const fiscalData = (input: FiscalFields) => ({
+  sanitary_registration: input.sanitary_registration,
+  nrc: input.nrc,
+  nit: input.nit,
+  email: input.email,
+});
 
 /**
  * Guards createProspectAsAdmin against attributing a prospect to an
@@ -238,6 +289,7 @@ export const createProspectAsAdmin = async (
       user_id: input.user_id,
       name: input.name,
       phone: input.phone,
+      ...fiscalData(input),
     },
     select: { id: true },
   });
@@ -276,6 +328,31 @@ export const updateProspectLocation = async (
       updated_at = now()
     WHERE id = ${id}::uuid AND deleted_at IS NULL
   `;
+
+  return getProspectById(client, id);
+};
+
+/**
+ * PCRM-185: admin edits a prospect's name, phone and fiscal data. Partial
+ * update (see updateProspectSchema); the response re-reads the row so it has
+ * the same shape as the list.
+ */
+export const updateProspect = async (
+  client: Client,
+  id: string,
+  data: UpdateProspectInput
+): Promise<ProspectListItem> => {
+  await getProspectById(client, id);
+
+  await client.prospect.update({
+    where: { id },
+    data: {
+      name: data.name,
+      phone: data.phone,
+      ...fiscalData(data),
+      updated_at: new Date(),
+    },
+  });
 
   return getProspectById(client, id);
 };

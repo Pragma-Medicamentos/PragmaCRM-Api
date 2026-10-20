@@ -99,3 +99,50 @@ export interface MetricsRouteDetailResponse extends MetricsContext {
   sales_by_weekday: RouteWeekdaySales[];
   seller_performance: RouteSellerPerformance[];
 }
+
+/**
+ * One workday of the route (PCRM-188): its agenda on one local day and what
+ * came out of it. Sale is credited to the workday of the stop its visit
+ * executed.
+ */
+export interface RouteWorkday {
+  /** Agenda day, `YYYY-MM-DD`. */
+  date: string;
+  /** Sellers whose assignment generated the day's stops. */
+  sellers: RouteSeller[];
+  amount: Money;
+  orders_count: number;
+  planned_stops: number;
+  executed_stops: number;
+  /** Executed stops whose visit has at least one attributed sale. */
+  stops_with_order: number;
+  /** Agenda customers with an executed stop over agenda customers, × 100. Null without agenda. */
+  visit_coverage_rate: number | null;
+  /** `stops_with_order / executed_stops × 100`. Null when no stop was executed. */
+  order_rate: number | null;
+}
+
+/** Average of the workdays before the latest one: what it is compared against. */
+export interface RouteWorkdayBaseline {
+  /** How many workdays the average covers. */
+  workdays: number;
+  amount: Money;
+  /** Average orders per workday, one decimal. */
+  orders_count: number;
+  /** Average of the workdays that have a rate; null when none has. */
+  visit_coverage_rate: number | null;
+  order_rate: number | null;
+}
+
+export interface MetricsRouteWorkdaysResponse {
+  route: Pick<RouteMetrics, 'route_id' | 'name' | 'active'>;
+  /** ISO weekday compared, 1 Monday … 7 Sunday, like `route_user.day`. */
+  day: number;
+  limit: number;
+  /** Newest first; the first one is the workday being compared. */
+  workdays: RouteWorkday[];
+  /** Null with fewer than two workdays. */
+  baseline: RouteWorkdayBaseline | null;
+  /** Percentage change of the latest workday's amount against `baseline.amount`. Null when there is no baseline or it sold nothing. */
+  change_rate: number | null;
+}

@@ -5,9 +5,20 @@ import { TargetKind } from '../../domain/types/daily-route.types';
 import {
   ensureDailyStops,
   getDailyRoute,
+  getStopCustomerMetrics,
   setStopCustomerLocation,
+  setStopNote,
 } from '../daily-route.service';
+import { getCustomerSummary, getRecentVisitNotes } from '../customer.service';
 import { CustomError } from '../../domain/errors/CustomError';
+
+// The profile readers have their own tests and their own SQL; here they only
+// need to answer, so getStopCustomerMetrics can be checked for what it adds:
+// the ownership gate and the shape of the response.
+jest.mock('../customer.service', () => ({
+  getCustomerSummary: jest.fn(),
+  getRecentVisitNotes: jest.fn(),
+}));
 
 const SELLER_ID = '11111111-1111-1111-1111-111111111101';
 const ROUTE_ID = '22222222-2222-2222-2222-222222222201';
@@ -60,6 +71,7 @@ interface StopRow {
   is_extra: boolean;
   reason: string | null;
   completed_at: Date | null;
+  notes: string | null;
 }
 
 /** A planned customer stop with GPS, still pending. The seed's "stop A". */
@@ -89,6 +101,7 @@ const stopRow = (overrides: Partial<StopRow> = {}): StopRow => ({
   is_extra: false,
   reason: null,
   completed_at: null,
+  notes: null,
   ...overrides,
 });
 
@@ -715,6 +728,170 @@ describe('setStopCustomerLocation', () => {
   });
 });
 
+describe('setStopNote', () => {
+  const STOP_ID = '69b10917-fcbb-4450-b909-73963b7534d8';
+  const VISIT_ID = '5d0c8a64-3f0e-4c55-9f35-2a8d4c7b9e01';
+  const UPDATED_AT = new Date('2026-09-20T03:30:00.000Z');
+  const input = { notes: 'Atendió el auxiliar, el dueño no estaba' };
+
+  // 21:30 of 2026-09-19 in El Salvador, already 2026-09-20 in UTC: a stop of
+  // the 19th must still accept its note, which only holds if "today" is
+  // resolved in the business timezone.
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-09-20T03:30:00.000Z'));
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  type StopLookup = {
+    visit_date: Date;
+    route_user: { user_id: string; deleted_at: Date | null };
+  } | null;
+
+  const buildNoteClient = (
+    stop: StopLookup,
+    visit: { id: string } | null = { id: VISIT_ID }
+  ) => {
+    const findStop = jest.fn().mockResolvedValue(stop);
+    const findVisit = jest.fn().mockResolvedValue(visit);
+    const update = jest
+      .fn()
+      .mockResolvedValue({ id: VISIT_ID, updated_at: UPDATED_AT });
+    const client = {
+      scheduled_visit: { findFirst: findStop },
+      visit: { findFirst: findVisit, update },
+    } as unknown as Client;
+    return { client, findVisit, update };
+  };
+
+  const ownStop = (overrides: Partial<NonNullable<StopLookup>> = {}) => ({
+    visit_date: new Date(`${DATE}T00:00:00.000Z`),
+    route_user: { user_id: SELLER_ID, deleted_at: null },
+    ...overrides,
+  });
+
+  const statusOf = async (promise: Promise<unknown>) => {
+    try {
+      await promise;
+    } catch (error) {
+      return (error as CustomError).statusCode;
+    }
+    throw new Error('expected the call to throw');
+  };
+
+  it('replaces the note of the linked visit and returns it', async () => {
+    const { client, update } = buildNoteClient(ownStop());
+
+    const result = await setStopNote(client, SELLER_ID, STOP_ID, input);
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: VISIT_ID },
+        data: { notes: input.notes },
+      })
+    );
+    expect(result).toEqual({
+      id: STOP_ID,
+      visit_id: VISIT_ID,
+      notes: input.notes,
+      updated_at: UPDATED_AT,
+    });
+  });
+
+  it('looks up the visit by scheduled_visit_id, skipping soft-deleted ones', async () => {
+    const { client, findVisit } = buildNoteClient(ownStop());
+
+    await setStopNote(client, SELLER_ID, STOP_ID, input);
+
+    expect(findVisit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { scheduled_visit_id: STOP_ID, deleted_at: null },
+      })
+    );
+  });
+
+  it('responds 409 when the stop has not been completed', async () => {
+    const { client, update } = buildNoteClient(ownStop(), null);
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(409);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 404 when the stop does not exist', async () => {
+    const { client, update } = buildNoteClient(null);
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(404);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 404 when the stop assignment was deleted', async () => {
+    const { client, update } = buildNoteClient(
+      ownStop({ route_user: { user_id: SELLER_ID, deleted_at: new Date() } })
+    );
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(404);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 403 when the stop belongs to another seller', async () => {
+    const { client, update } = buildNoteClient(
+      ownStop({ route_user: { user_id: 'another-seller', deleted_at: null } })
+    );
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(403);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 422 when the stop is from another day', async () => {
+    const { client, update } = buildNoteClient(
+      ownStop({ visit_date: new Date('2026-09-18T00:00:00.000Z') })
+    );
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(422);
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('responds 422 for the UTC day when it is not yet the local one', async () => {
+    const { client, update } = buildNoteClient(
+      ownStop({ visit_date: new Date('2026-09-20T00:00:00.000Z') })
+    );
+
+    await expect(
+      statusOf(setStopNote(client, SELLER_ID, STOP_ID, input))
+    ).resolves.toBe(422);
+    expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe('getDailyRoute — notes', () => {
+  it('reads the note from the linked visit', async () => {
+    const $queryRaw = jest
+      .fn()
+      .mockResolvedValue([stopRow({ notes: 'Pidió volver el jueves' })]);
+    const client = {
+      $queryRaw,
+      $executeRaw: jest.fn().mockResolvedValue(0),
+    } as unknown as Client;
+
+    const route = await getDailyRoute(client, SELLER_ID, DATE);
+
+    const sql = ($queryRaw.mock.calls[0][0] as Prisma.Sql).sql.replace(/\s+/g, ' ');
+    expect(sql).toContain('v.notes AS notes');
+    expect(route.stops[0].notes).toBe('Pidió volver el jueves');
+  });
+});
+
 /**
  * ensureDailyStops (PCRM-161): materializes scheduled_visit from the
  * seller's weekly route composition. Postgres does the actual work -- the
@@ -912,5 +1089,117 @@ describe('ensureDailyStops — generación de paradas', () => {
     expect(selectSql).not.toContain('route_customer');
     expect(selectSql).toContain('sv.sort_order');
     expect(selectSql).toContain('sv.is_extra');
+  });
+});
+
+describe('getStopCustomerMetrics', () => {
+  const STOP_ID = '69b10917-fcbb-4450-b909-73963b7534d8';
+  const CUSTOMER_ID = 'b09d04b7-f931-4162-b028-7b6ed0fc9f88';
+
+  const getCustomerSummaryMock = getCustomerSummary as jest.Mock;
+  const getRecentVisitNotesMock = getRecentVisitNotes as jest.Mock;
+
+  const summary = {
+    category: 'A',
+    net_purchases: '1520.40',
+    orders_count: 6,
+    visits_count: 4,
+    conversion_rate: 75,
+    avg_payment_days: 38,
+    pending_balance: '210.00',
+    purchase_frequency_days: 21,
+    last_purchase_at: new Date('2026-09-30T15:00:00.000Z'),
+    last_visit_at: new Date('2026-10-01T16:00:00.000Z'),
+  };
+  const notes = [
+    { date: new Date('2026-10-01T16:00:00.000Z'), notes: 'Pidió catálogo' },
+  ];
+
+  type StopLookup = {
+    customer_id: string | null;
+    route_user: { user_id: string; deleted_at: Date | null };
+  } | null;
+
+  const buildMetricsClient = (stop: StopLookup) => {
+    const findFirst = jest.fn().mockResolvedValue(stop);
+    const client = { scheduled_visit: { findFirst } } as unknown as Client;
+    return { client, findFirst };
+  };
+
+  const ownStop = (overrides: Partial<NonNullable<StopLookup>> = {}) => ({
+    customer_id: CUSTOMER_ID,
+    route_user: { user_id: SELLER_ID, deleted_at: null },
+    ...overrides,
+  });
+
+  const statusOf = async (promise: Promise<unknown>) => {
+    try {
+      await promise;
+    } catch (error) {
+      return (error as CustomError).statusCode;
+    }
+    throw new Error('expected the call to throw');
+  };
+
+  beforeEach(() => {
+    getCustomerSummaryMock.mockResolvedValue(summary);
+    getRecentVisitNotesMock.mockResolvedValue(notes);
+  });
+
+  it('devuelve categoría, resumen y notas del cliente de la parada', async () => {
+    const { client } = buildMetricsClient(ownStop());
+
+    const result = await getStopCustomerMetrics(client, SELLER_ID, STOP_ID);
+
+    const { category: _category, ...metrics } = summary;
+    expect(result).toEqual({
+      customer_id: CUSTOMER_ID,
+      category: 'A',
+      summary: metrics,
+      recent_notes: notes,
+    });
+    // Keyed by the customer behind the stop, never by an id the app sends.
+    expect(getCustomerSummaryMock).toHaveBeenCalledWith(client, CUSTOMER_ID);
+    expect(getRecentVisitNotesMock).toHaveBeenCalledWith(client, CUSTOMER_ID);
+  });
+
+  it('responde 404 cuando la parada no existe', async () => {
+    const { client } = buildMetricsClient(null);
+
+    await expect(
+      statusOf(getStopCustomerMetrics(client, SELLER_ID, STOP_ID))
+    ).resolves.toBe(404);
+    expect(getCustomerSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 404 cuando la asignación de la parada fue borrada', async () => {
+    const { client } = buildMetricsClient(
+      ownStop({ route_user: { user_id: SELLER_ID, deleted_at: new Date() } })
+    );
+
+    await expect(
+      statusOf(getStopCustomerMetrics(client, SELLER_ID, STOP_ID))
+    ).resolves.toBe(404);
+    expect(getCustomerSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 403 cuando la parada es de otro vendedor', async () => {
+    const { client } = buildMetricsClient(
+      ownStop({ route_user: { user_id: 'otro-vendedor', deleted_at: null } })
+    );
+
+    await expect(
+      statusOf(getStopCustomerMetrics(client, SELLER_ID, STOP_ID))
+    ).resolves.toBe(403);
+    expect(getCustomerSummaryMock).not.toHaveBeenCalled();
+  });
+
+  it('responde 422 cuando la parada es de un prospecto', async () => {
+    const { client } = buildMetricsClient(ownStop({ customer_id: null }));
+
+    await expect(
+      statusOf(getStopCustomerMetrics(client, SELLER_ID, STOP_ID))
+    ).resolves.toBe(422);
+    expect(getCustomerSummaryMock).not.toHaveBeenCalled();
   });
 });

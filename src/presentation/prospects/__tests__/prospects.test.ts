@@ -7,6 +7,7 @@ import {
   createProspect,
   createProspectAsAdmin,
   listProspects,
+  updateProspect,
   updateProspectLocation,
 } from '../../../services/prospect.service';
 import { findUserByAuthUserId } from '../../../services/auth.service';
@@ -30,6 +31,7 @@ jest.mock('../../../services/prospect.service', () => ({
   createProspect: jest.fn(),
   createProspectAsAdmin: jest.fn(),
   listProspects: jest.fn(),
+  updateProspect: jest.fn(),
   updateProspectLocation: jest.fn(),
 }));
 
@@ -37,6 +39,7 @@ const createProspectMock = createProspect as jest.Mock;
 const createProspectAsAdminMock = createProspectAsAdmin as jest.Mock;
 const listProspectsMock = listProspects as jest.Mock;
 const updateProspectLocationMock = updateProspectLocation as jest.Mock;
+const updateProspectMock = updateProspect as jest.Mock;
 const findUserMock = findUserByAuthUserId as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
@@ -118,6 +121,7 @@ beforeEach(() => {
   updateProspectLocationMock.mockResolvedValue(
     listedProspect({ location: { lat: 13.7, lng: -89.2 } })
   );
+  updateProspectMock.mockResolvedValue(listedProspect());
 });
 
 describe('POST /api/v1/prospects', () => {
@@ -417,6 +421,199 @@ describe('PATCH /api/v1/prospects/:id/location', () => {
       .patch(`/api/v1/prospects/${PROSPECT_ID}/location`)
       .set(AUTH)
       .send(locationBody);
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('PCRM-185: fiscal fields on create', () => {
+  const fiscal = {
+    sanitary_registration: 'RS-0042-2024',
+    nrc: '230204-4',
+    nit: '0614-250621-108-6',
+    email: 'Compras@FarmaciaElSol.com',
+  };
+
+  it('passes the fiscal fields to the service, email lowercased', async () => {
+    const res = await request(app)
+      .post('/api/v1/prospects')
+      .set(AUTH)
+      .send(body(fiscal));
+
+    expect(res.status).toBe(201);
+    expect(createProspectMock).toHaveBeenCalledWith(
+      expect.anything(),
+      SELLER_ID,
+      expect.objectContaining({
+        ...fiscal,
+        email: 'compras@farmaciaelsol.com',
+      })
+    );
+  });
+
+  it('keeps them optional: a body without them still answers 201', async () => {
+    const res = await request(app)
+      .post('/api/v1/prospects')
+      .set(AUTH)
+      .send(body());
+
+    expect(res.status).toBe(201);
+    const input = createProspectMock.mock.calls[0][2];
+    expect(input.nit).toBeUndefined();
+    expect(input.email).toBeUndefined();
+  });
+
+  it('turns blank strings from an empty form field into null', async () => {
+    await request(app)
+      .post('/api/v1/prospects')
+      .set(AUTH)
+      .send(body({ nrc: '', nit: '   ', email: '' }));
+
+    expect(createProspectMock).toHaveBeenCalledWith(
+      expect.anything(),
+      SELLER_ID,
+      expect.objectContaining({ nrc: null, nit: null, email: null })
+    );
+  });
+
+  it('accepts the DUI homologated as NIT', async () => {
+    const res = await request(app)
+      .post('/api/v1/prospects')
+      .set(AUTH)
+      .send(body({ nit: '01234567-8' }));
+
+    expect(res.status).toBe(201);
+  });
+
+  it.each([
+    ['nit', '06142506211086'],
+    ['nit', '0614-250621-108'],
+    ['nrc', '2302044'],
+    ['nrc', 'abc-1'],
+    ['email', 'not-an-email'],
+  ])('rejects %s = %s with 400', async (field, value) => {
+    const res = await request(app)
+      .post('/api/v1/prospects')
+      .set(AUTH)
+      .send(body({ [field]: value }));
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe(field);
+    expect(createProspectMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts them on the admin create too', async () => {
+    findUserMock.mockResolvedValue(user('Administrador', ADMIN_ID));
+
+    const res = await request(app)
+      .post('/api/v1/prospects/admin')
+      .set(AUTH)
+      .send({
+        user_id: SELLER_ID,
+        name: 'Farmacia El Sol',
+        phone: '7777-1234',
+        ...fiscal,
+      });
+
+    expect(res.status).toBe(201);
+    expect(createProspectAsAdminMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ nrc: '230204-4', nit: '0614-250621-108-6' })
+    );
+  });
+});
+
+describe('PATCH /api/v1/prospects/:id', () => {
+  beforeEach(() => {
+    findUserMock.mockResolvedValue(user('Administrador', ADMIN_ID));
+  });
+
+  it('updates a single field and answers 200', async () => {
+    updateProspectMock.mockResolvedValue(listedProspect({ nrc: '230204-4' }));
+
+    const res = await request(app)
+      .patch(`/api/v1/prospects/${PROSPECT_ID}`)
+      .set(AUTH)
+      .send({ nrc: '230204-4' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.nrc).toBe('230204-4');
+    expect(updateProspectMock).toHaveBeenCalledWith(
+      expect.anything(),
+      PROSPECT_ID,
+      { nrc: '230204-4' }
+    );
+  });
+
+  it('passes null through so the service clears the field', async () => {
+    await request(app)
+      .patch(`/api/v1/prospects/${PROSPECT_ID}`)
+      .set(AUTH)
+      .send({ email: null });
+
+    expect(updateProspectMock).toHaveBeenCalledWith(
+      expect.anything(),
+      PROSPECT_ID,
+      { email: null }
+    );
+  });
+
+  it('rejects an empty body', async () => {
+    const res = await request(app)
+      .patch(`/api/v1/prospects/${PROSPECT_ID}`)
+      .set(AUTH)
+      .send({});
+
+    expect(res.status).toBe(400);
+    expect(updateProspectMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ name: null }],
+    [{ phone: '' }],
+    [{ latitude: 13.7 }],
+    [{ user_id: SELLER_ID }],
+    [{ nit: '123' }],
+  ])('rejects %j with 400', async (payload) => {
+    const res = await request(app)
+      .patch(`/api/v1/prospects/${PROSPECT_ID}`)
+      .set(AUTH)
+      .send(payload);
+
+    expect(res.status).toBe(400);
+    expect(updateProspectMock).not.toHaveBeenCalled();
+  });
+
+  it('forbids the Vendedor', async () => {
+    findUserMock.mockResolvedValue(user('Vendedor'));
+
+    const res = await request(app)
+      .patch(`/api/v1/prospects/${PROSPECT_ID}`)
+      .set(AUTH)
+      .send({ nrc: '230204-4' });
+
+    expect(res.status).toBe(403);
+    expect(updateProspectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid id', async () => {
+    const res = await request(app)
+      .patch('/api/v1/prospects/not-a-uuid')
+      .set(AUTH)
+      .send({ nrc: '230204-4' });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('maps a missing prospect to 404', async () => {
+    updateProspectMock.mockRejectedValue(
+      CustomError.notFound('Prospect not found')
+    );
+
+    const res = await request(app)
+      .patch(`/api/v1/prospects/${PROSPECT_ID}`)
+      .set(AUTH)
+      .send({ nrc: '230204-4' });
 
     expect(res.status).toBe(404);
   });

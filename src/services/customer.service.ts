@@ -5,7 +5,9 @@ import {
   CustomerCategory,
   ListCustomerSalesQuery,
   ListCustomersQuery,
+  UpdateCustomerCommercialProfileInput,
   UpdateCustomerContactInput,
+  UpdateCustomerFiscalDataInput,
   UpdateCustomerLocationInput,
 } from '../domain/schemas/customer.schema';
 import { PaginationQuery } from '../domain/schemas/pagination.schema';
@@ -51,6 +53,10 @@ import {
  *      GET   /api/v1/customers/:id/sales   -> assertCustomerExists, listCustomerSales
  *      GET   /api/v1/customers/:id/credits -> getCreditStatus
  *      PATCH /api/v1/customers/:id/location -> updateCustomerLocation
+ *      PATCH /api/v1/customers/:id/contact  -> updateCustomerContact
+ *      PATCH /api/v1/customers/:id/commercial-profile
+ *                                           -> updateCustomerCommercialProfile
+ *      PATCH /api/v1/customers/:id/fiscal-data -> updateCustomerFiscalData
  * ============================================================================
  */
 
@@ -311,6 +317,58 @@ export const updateCustomerContact = async (
     data: {
       ...(data.phone !== undefined ? { phone: data.phone } : {}),
       ...(data.trade_name !== undefined ? { trade_name: data.trade_name } : {}),
+      updated_at: new Date(),
+    },
+  });
+
+  return getCustomerCore(client, id);
+};
+
+/**
+ * RF-12: the colour and buying potential the administrator picks in the
+ * profile. Neither comes from Efactsoft, so the import never overwrites them.
+ * Omit a field to leave it unchanged, send null to clear it.
+ */
+export const updateCustomerCommercialProfile = async (
+  client: Client,
+  id: string,
+  data: UpdateCustomerCommercialProfileInput
+): Promise<CustomerCore> => {
+  await assertCustomerExists(client, id);
+
+  await client.customer.update({
+    where: { id },
+    data: {
+      ...(data.personality !== undefined
+        ? { personality: data.personality }
+        : {}),
+      ...(data.potential !== undefined ? { potential: data.potential } : {}),
+      updated_at: new Date(),
+    },
+  });
+
+  return getCustomerCore(client, id);
+};
+
+/**
+ * PCRM-185: sanitary registration, NRC, NIT and email, set by hand. Partial
+ * update: an omitted field is left untouched and null clears it. The import
+ * never writes these columns, so a later JSON upload does not undo the edit.
+ */
+export const updateCustomerFiscalData = async (
+  client: Client,
+  id: string,
+  data: UpdateCustomerFiscalDataInput
+): Promise<CustomerCore> => {
+  await assertCustomerExists(client, id);
+
+  await client.customer.update({
+    where: { id },
+    data: {
+      sanitary_registration: data.sanitary_registration,
+      nrc: data.nrc,
+      nit: data.nit,
+      email: data.email,
       updated_at: new Date(),
     },
   });
