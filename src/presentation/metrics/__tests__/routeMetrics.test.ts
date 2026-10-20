@@ -4,7 +4,11 @@ import { Server } from '../../server';
 import { envs } from '../../../config/envs';
 import { CustomError } from '../../../domain/errors/CustomError';
 import { findUserByAuthUserId } from '../../../services/auth.service';
-import { getRouteMetricsDetail, listRouteMetrics } from '../../../services/routeMetrics.service';
+import {
+  getRouteMetricsDetail,
+  getRouteWorkdayComparison,
+  listRouteMetrics,
+} from '../../../services/routeMetrics.service';
 
 // Route metrics are part of the admin-only panel (RF-09). The auth chain is
 // stubbed so these tests exercise the HTTP layer, not token verification.
@@ -20,12 +24,14 @@ jest.mock('../../../services/auth.service', () => ({
 
 jest.mock('../../../services/routeMetrics.service', () => ({
   getRouteMetricsDetail: jest.fn(),
+  getRouteWorkdayComparison: jest.fn(),
   listRouteMetrics: jest.fn(),
 }));
 
 const findUserMock = findUserByAuthUserId as jest.Mock;
 const listRouteMetricsMock = listRouteMetrics as jest.Mock;
 const getRouteMetricsDetailMock = getRouteMetricsDetail as jest.Mock;
+const getRouteWorkdayComparisonMock = getRouteWorkdayComparison as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
@@ -53,6 +59,7 @@ beforeEach(() => {
   findUserMock.mockResolvedValue(userWithRole('Administrador'));
   listRouteMetricsMock.mockResolvedValue({ routes: [], total_amount: '0.00' });
   getRouteMetricsDetailMock.mockResolvedValue({ route: { route_id: ROUTE_ID } });
+  getRouteWorkdayComparisonMock.mockResolvedValue({ route: { route_id: ROUTE_ID }, workdays: [] });
 });
 
 describe('GET /api/v1/metrics/routes', () => {
@@ -102,6 +109,44 @@ describe('GET /api/v1/metrics/routes/:id', () => {
     getRouteMetricsDetailMock.mockRejectedValue(CustomError.notFound('Route not found'));
 
     const res = await request(app).get(`/api/v1/metrics/routes/${ROUTE_ID}`).set(AUTH);
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/v1/metrics/routes/:id/workdays', () => {
+  it('passes the day and the limit to the service', async () => {
+    const res = await request(app)
+      .get(`/api/v1/metrics/routes/${ROUTE_ID}/workdays?day=2&limit=4`)
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(getRouteWorkdayComparisonMock).toHaveBeenCalledWith(expect.anything(), ROUTE_ID, {
+      day: 2,
+      limit: 4,
+    });
+  });
+
+  it('defaults the limit and leaves the day to the service', async () => {
+    const res = await request(app).get(`/api/v1/metrics/routes/${ROUTE_ID}/workdays`).set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(getRouteWorkdayComparisonMock.mock.calls[0][2]).toEqual({ limit: 5 });
+  });
+
+  it.each(['day=0', 'day=8', 'limit=1', 'limit=13'])('rejects %s with 400', async (param) => {
+    const res = await request(app)
+      .get(`/api/v1/metrics/routes/${ROUTE_ID}/workdays?${param}`)
+      .set(AUTH);
+
+    expect(res.status).toBe(400);
+    expect(getRouteWorkdayComparisonMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates the 404 of an unknown route', async () => {
+    getRouteWorkdayComparisonMock.mockRejectedValue(CustomError.notFound('Route not found'));
+
+    const res = await request(app).get(`/api/v1/metrics/routes/${ROUTE_ID}/workdays`).set(AUTH);
 
     expect(res.status).toBe(404);
   });
