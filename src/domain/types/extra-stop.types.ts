@@ -13,8 +13,12 @@ export interface ExtraStop {
   route_id: string;
   route_name: string;
   date: string;
-  customer_id: string;
-  customer_name: string;
+  /** Null when the stop targets a prospect. */
+  customer_id: string | null;
+  customer_name: string | null;
+  /** Null when the stop targets a customer. */
+  prospect_id: string | null;
+  prospect_name: string | null;
   stop_type: StopType;
   reason: string | null;
   is_extra: true;
@@ -27,6 +31,8 @@ export const EXTRA_STOP_ERROR_CODES = {
   SELLER_INACTIVE: 'SELLER_INACTIVE',
   CUSTOMER_NOT_FOUND: 'CUSTOMER_NOT_FOUND',
   CUSTOMER_NO_GPS: 'CUSTOMER_NO_GPS',
+  PROSPECT_NOT_FOUND: 'PROSPECT_NOT_FOUND',
+  PROSPECT_NO_GPS: 'PROSPECT_NO_GPS',
   SELLER_NO_ROUTE_ON_DATE: 'SELLER_NO_ROUTE_ON_DATE',
   ROUTE_ID_REQUIRED: 'ROUTE_ID_REQUIRED',
   ROUTE_NOT_ASSIGNED: 'ROUTE_NOT_ASSIGNED',

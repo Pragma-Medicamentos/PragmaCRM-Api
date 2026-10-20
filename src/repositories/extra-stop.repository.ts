@@ -21,3 +21,17 @@ export const customerHasGps = async (
 
   return rows[0]?.has_gps ?? false;
 };
+
+/** Same as customerHasGps, over `prospect.location`. */
+export const prospectHasGps = async (
+  client: Client,
+  prospectId: string
+): Promise<boolean> => {
+  const rows = await client.$queryRaw<{ has_gps: boolean }[]>(Prisma.sql`
+    SELECT (location IS NOT NULL) AS has_gps
+    FROM   prospect
+    WHERE  id = ${prospectId}::uuid
+  `);
+
+  return rows[0]?.has_gps ?? false;
+};
