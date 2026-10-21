@@ -547,6 +547,9 @@ prospect
       location     geography(Point,4326)
       status       text
       sanitary_registration / nrc / nit / email  text  -- PCRM-185, opcionales
+      active       boolean  default true     -- PCRM-186: false al convertirse
+  FK  customer_id  uuid -> customer.id  NULL -- PCRM-186: cliente en que se convirtió
+      converted_at timestamptz          NULL -- PCRM-186: junto con customer_id
       created_at / updated_at / deleted_at
 ```
 
@@ -556,6 +559,15 @@ prospect
 - Clientes: `PATCH /api/v1/customers/:id/fiscal-data` (solo Administrador), parcial y `strict`, como las otras secciones del perfil (`/contact`, `/location`, `/commercial-profile`). Se leen en `GET /api/v1/customers/:id`; el listado y la ruta móvil no los traen.
 
 **En `customer` son captura manual: el importador no los toca.** El JSON de Efactsoft no trae NRC, NIT ni correo del cliente: las llaves `nrc`, `nif`, `email`, `telefono` y `razon_social` del payload son del **emisor** (Pragma), con un único valor en todas las ventas. `upsertCustomer` (`salesSync.service.ts`) solo escribe nombre y crédito, así que una carga posterior no borra lo capturado.
+
+**Conversión de prospecto a cliente (PCRM-186, decidido el 20/10/2026).** Los clientes nacen en Efactsoft, así que convertir es **enlazar** el prospecto con el cliente que trae el JSON, no crearlo en el CRM. El enlace es **solo por nombre**, el único dato que Efactsoft comparte con el prospecto, comparado con `public.normalize_name` (minúsculas, sin tildes, espacios simples): `"FARMACIA  elena cortéz 17"` = `"Farmacia Elena Cortez 17"`. Los trabajadores de Pragma se comprometen a usar el mismo nombre en ambos lados.
+
+- **Automático al importar** (PASO 3 de `importSalesFile`, en la misma transacción que la reconciliación): un prospecto activo con **exactamente un** cliente del mismo nombre se convierte. La respuesta del upload trae `prospects.converted` y `prospects.alerts`.
+- **Dos o más clientes con el nombre: solo alerta**, no se enlaza y el admin no elige cliente. Sin coincidencias no hay alerta: el prospecto todavía no compra.
+- Al convertir: `active = false`, `customer_id` y `converted_at`. Sus paradas **pendientes** (hoy en adelante, sin visita) pasan al cliente como paradas extra; las pasadas quedan como histórico del prospecto. Sus visitas (`visit.prospect_id`) también se quedan en el prospecto. Un prospecto convertido ya no acepta paradas extra: `POST …/daily-route/extra-stops` responde 409 `PROSPECT_CONVERTED` y la parada va sobre el cliente.
+- `POST /api/v1/prospects/:id/convert` (solo Administrador) reintenta el cruce para un prospecto, p. ej. tras corregir su nombre. 409 con `code`: `PROSPECT_ALREADY_CONVERTED`, `PROSPECT_INACTIVE`, `PROSPECT_NO_MATCHING_CUSTOMER`, `PROSPECT_NAME_AMBIGUOUS`. `GET /api/v1/prospects?active=true|false` filtra abiertos y convertidos.
+- **"Nuevos prospectos" no cambia:** cuenta el prospecto al registrarse; convertirlo lo desactiva, no lo borra.
+- **Sin otra llave de cruce:** el JSON trae el nombre (149/150 clientes) y el celular (3/150); los campos DTE (`dte`, `dte_firm`…) llegan vacíos porque las ventas son "Recibo". Si Pragma emitiera CCF o factura electrónica, el `receptor` del DTE traería NRC/NIT y serviría como llave más confiable.
 
 ### 7.4 Rutas
 
