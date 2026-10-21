@@ -539,6 +539,7 @@ model balance_snapshot {
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 model customer {
   id                    String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   erp_customer_id       Int?                      @unique(where: raw("(deleted_at IS NULL)"))
@@ -567,6 +568,7 @@ model customer {
   nit                   String?
   email                 String?
   product_request       product_request[]
+  prospect              prospect[]
   route_customer        route_customer[]
   sale                  sale[]
   scheduled_visit       scheduled_visit[]
@@ -629,6 +631,7 @@ model product_request {
 }
 
 /// This model contains row level security and requires additional setup for migrations. Visit https://pris.ly/d/row-level-security for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
 model prospect {
   id                    String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id               String                    @db.Uuid
@@ -645,11 +648,16 @@ model prospect {
   nrc                   String?
   nit                   String?
   email                 String?
+  active                Boolean                   @default(true)
+  customer_id           String?                   @db.Uuid
+  converted_at          DateTime?                 @db.Timestamptz(6)
+  customer              customer?                 @relation(fields: [customer_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   app_user              app_user                  @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
   scheduled_visit       scheduled_visit[]
   visit                 visit[]
 
   @@index([user_id], where: raw("(deleted_at IS NULL)"))
+  @@index([customer_id], where: raw("(customer_id IS NOT NULL)"))
   @@schema("public")
 }
 
