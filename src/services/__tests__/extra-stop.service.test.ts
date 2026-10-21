@@ -4,6 +4,7 @@ import { createExtraStop, deleteExtraStop, getExtraStopsDay } from '../extra-sto
 
 const SELLER_ID = '11111111-1111-1111-1111-111111111101';
 const CUSTOMER_ID = '22222222-2222-2222-2222-222222222201';
+const PROSPECT_ID = '55555555-5555-5555-5555-555555555501';
 const ROUTE_USER_ID = '33333333-3333-3333-3333-333333333301';
 const ROUTE_ID = 'route-1';
 const STOP_ID = '44444444-4444-4444-4444-444444444401';
@@ -32,6 +33,7 @@ const buildClient = (
   overrides: {
     seller?: unknown;
     customer?: unknown;
+    prospect?: unknown;
     hasGps?: boolean;
     assignments?: unknown[];
     duplicate?: unknown;
@@ -65,6 +67,15 @@ const buildClient = (
           'customer' in overrides
             ? overrides.customer
             : { id: CUSTOMER_ID, name: 'Farmacia San Jose' }
+        ),
+    },
+    prospect: {
+      findFirst: jest
+        .fn()
+        .mockResolvedValue(
+          'prospect' in overrides
+            ? overrides.prospect
+            : { id: PROSPECT_ID, name: 'Farmacia Nueva' }
         ),
     },
     route_user: {
@@ -181,6 +192,69 @@ describe('createExtraStop', () => {
       statusCode: 422,
       message: 'Customer has no GPS location',
       code: 'CUSTOMER_NO_GPS',
+    });
+  });
+
+  it('creates a visit stop on a prospect, with customer_id left null', async () => {
+    const { client, mocks } = buildClient();
+
+    const result = await createExtraStop(
+      client,
+      SELLER_ID,
+      input({ customer_id: undefined, prospect_id: PROSPECT_ID })
+    );
+
+    expect(mocks.customer.findFirst).not.toHaveBeenCalled();
+    expect(mocks.scheduled_visit.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ prospect_id: PROSPECT_ID, is_extra: true }),
+      })
+    );
+    expect(mocks.scheduled_visit.create.mock.calls[0][0].data).not.toHaveProperty('customer_id');
+    expect(result).toMatchObject({
+      customer_id: null,
+      customer_name: null,
+      prospect_id: PROSPECT_ID,
+      prospect_name: 'Farmacia Nueva',
+    });
+  });
+
+  it('checks prospect duplicates by prospect_id', async () => {
+    const { client, mocks } = buildClient({ duplicate: { id: 'sv-1' } });
+
+    await expect(
+      createExtraStop(client, SELLER_ID, input({ customer_id: undefined, prospect_id: PROSPECT_ID }))
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: 'Prospect already has a stop of this type on that date',
+      code: 'EXTRA_STOP_DUPLICATE',
+    });
+    expect(mocks.scheduled_visit.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ prospect_id: PROSPECT_ID }) })
+    );
+  });
+
+  it('answers 404 for an unknown prospect', async () => {
+    const { client } = buildClient({ prospect: null });
+
+    await expect(
+      createExtraStop(client, SELLER_ID, input({ customer_id: undefined, prospect_id: PROSPECT_ID }))
+    ).rejects.toMatchObject({
+      statusCode: 404,
+      message: 'Prospect not found',
+      code: 'PROSPECT_NOT_FOUND',
+    });
+  });
+
+  it('answers 422 when the prospect has no GPS pin', async () => {
+    const { client } = buildClient({ hasGps: false });
+
+    await expect(
+      createExtraStop(client, SELLER_ID, input({ customer_id: undefined, prospect_id: PROSPECT_ID }))
+    ).rejects.toMatchObject({
+      statusCode: 422,
+      message: 'Prospect has no GPS location',
+      code: 'PROSPECT_NO_GPS',
     });
   });
 

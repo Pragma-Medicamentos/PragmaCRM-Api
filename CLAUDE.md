@@ -497,9 +497,9 @@ Además de la nomenclatura, tres decisiones que el DER dejaba abiertas ya están
 La segunda es la más importante y cambia el modelo mental de la sección 5.1: **planificación y ejecución son dos tablas**, no una.
 
 - `scheduled_visit` — la agenda. Cuelga de `route_user_id`, tiene `visit_date`, `stop_type` y acepta **`customer_id` o `prospect_id`, ambos nullable**. Esto absorbió la entidad propuesta `parada_unica`: una parada ad-hoc es una fila de `scheduled_visit` con `reason` explicando el motivo.
-- `visit` — la ejecución. Cuelga de `customer_id` (obligatorio), `user_id`, y opcionalmente `route_user_id` y `route_customer_id`.
+- `visit` — la ejecución. Cuelga de `customer_id` **o** `prospect_id` (exactamente uno, `visit_target_chk`), `user_id`, y opcionalmente `route_user_id` y `route_customer_id`.
 
-**Consecuencia directa sobre el Anexo A punto 3:** se puede **planificar** una parada sobre un prospecto (`scheduled_visit.prospect_id` existe y tiene índice parcial), pero **no se puede ejecutar**: `visit.customer_id` sigue siendo obligatorio y `visit` no tiene `prospect_id`. La brecha entre modelo y wireframe sigue abierta, ahora con contorno exacto.
+**Paradas sobre prospectos (21/10/2026, cierra B-8).** Una parada sobre un prospecto se planifica (`scheduled_visit.prospect_id`; el Administrador la agrega como parada extra, solo de tipo Visita) y **se ejecuta**: la migración `20261021120000_visit_prospect_id` hizo nullable `visit.customer_id` y agregó `visit.prospect_id`, con la misma regla de uno-de-dos que `scheduled_visit`. `confirmVisit` valida los 80 m contra el pin del prospecto. Las métricas de clientes (cobertura, clientes visitados, clientes sin visita) las ignoran por construcción, porque cruzan o cuentan por `v.customer_id`; las que cuentan todas las visitas (paradas ejecutadas, por tipo, tiempo promedio, efectividad) **sí las incluyen**.
 
 ### 7.2 Identidad
 
@@ -597,7 +597,8 @@ scheduled_visit                         -- AGENDA: la parada planificada
 
 visit                                   -- EJECUCIÓN: lo que pasó en campo
   PK  id                 uuid
-  FK  customer_id        uuid -> customer.id        NOT NULL
+  FK  customer_id        uuid -> customer.id        NULL   -- uno de los dos (visit_target_chk)
+  FK  prospect_id        uuid -> prospect.id        NULL
   FK  user_id            uuid -> app_user.id
   FK  route_user_id      uuid -> route_user.id      NULL
   FK  route_customer_id  uuid -> route_customer.id  NULL
@@ -929,7 +930,7 @@ Flujo `feat/* → dev → staging → prod`. `ci.yml` corre en cada PR (lint, ts
 | # | Discrepancia | Estado |
 |---|---|---|
 | 1 | Falta campo `tipo` en las tablas de fase de planificación | **Resuelto** vía `scheduled_visit.stop_type` y `visit.visit_type` |
-| 2 | `visit` no soporta prospectos (`customer_id` obligatorio, sin `prospect_id`) | **Abierta.** `scheduled_visit` sí acepta prospectos; `visit` no. Ningún KPI lo requiere, pero el wireframe de ruta ejecutada dibuja prospectos visitados como pin hueco |
+| 2 | `visit` no soporta prospectos (`customer_id` obligatorio, sin `prospect_id`) | **Resuelto (21/10/2026)** con `visit.prospect_id` y `customer_id` nullable (ver 7.1) |
 | 3 | Falta de validez temporal en la asignación de ruta | **Resuelto:** `route_user` con `day` + vigencia por `created_at` / `deleted_at` |
 | 4 | Tabla de usuarios sin campos de contraseña ni credenciales | **Resuelto**: las gestiona Supabase Auth |
 | 5 | Comportamiento GPS fuera de rango contradictorio entre tres documentos | **Abierta.** Requiere decisión del cliente |
@@ -1051,7 +1052,7 @@ Ninguno bloquea el desarrollo, pero todos afectan la calidad del resultado y deb
 
 **2. Ventas sin ruta atribuible.** Ahora que la atribución pasa exclusivamente por `sale.visit_id` (ver 5.4), **toda venta sin visita asociada queda fuera del reporte de venta por ruta** aunque sí entre en venta total. Ocurre cuando el vendedor no marcó la parada, cuando el día no tenía ruta asignada, o cuando el `id_usuario` de Efactsoft no mapea contra `app_user.erp_user_id`. El importador debería dejar un conteo de control de los tres casos para que la diferencia entre reportes sea explicable.
 
-**3. Ejecución de paradas sobre prospectos.** `visit.customer_id` es obligatorio y no existe `visit.prospect_id`, así que un check-in sobre un prospecto no tiene dónde registrarse — aunque `scheduled_visit.prospect_id` sí permite planificarlo. Ningún KPI lo requiere, pero el wireframe de ruta ejecutada dibuja los prospectos visitados como pin hueco en el mapa.
+**3. ~~Ejecución de paradas sobre prospectos.~~ Resuelto el 21/10/2026:** `visit.prospect_id` existe y `confirmVisit` registra el check-in sobre un prospecto (ver 7.1). Queda pendiente dibujarlos en la vista de ruta ejecutada (pin hueco del wireframe).
 
 **4. Deuda documental de nomenclatura.** El DER, la guía de KPIs y este documento hablan en español; la base está en inglés. Mientras no se unifique, toda consulta escrita a partir del DER hay que traducirla con la tabla de 7.0. Riesgo de errores silenciosos al copiar SQL de la documentación.
 
@@ -1068,7 +1069,7 @@ Ninguno bloquea el desarrollo, pero todos afectan la calidad del resultado y deb
 | 5 | ¿Qué hace el sistema cuando el vendedor está **fuera del radio GPS**? ¿Bloquea, advierte o registra con bandera? | Define el flujo central de RF-06 | Cliente | ⚠ Abierta |
 | 6 | ¿`goal` obtiene un RF nuevo o una excepción documentada? | Trazabilidad del GPI | Andrés / equipo | ⚠ Abierta |
 | 7 | ¿`customer.place_id` se mantiene? Implica Google Places API sin presupuesto | Costo y alcance | Cliente / equipo | ⚠ Abierta |
-| 8 | ¿Se resuelve el check-in sobre prospectos en `visit`? | Coherencia entre modelo y wireframes | Equipo | ⚠ Abierta |
+| 8 | ¿Se resuelve el check-in sobre prospectos en `visit`? | Coherencia entre modelo y wireframes | Equipo | ✅ **Cerrada (21/10/2026).** `visit.prospect_id` + `customer_id` nullable |
 | 9 | ¿Se purga `sale_staging` tras procesar cada carga? | Crecimiento de la base | Equipo | ⚠ Abierta |
 | 10 | ¿Se actualiza el DER a los nombres reales en inglés, o se publica la tabla de equivalencias? | Deuda documental | Jimmy / equipo | ⚠ Abierta |
 
