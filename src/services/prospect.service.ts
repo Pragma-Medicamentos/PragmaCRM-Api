@@ -53,6 +53,9 @@ export const createProspect = async (
       user_id: true,
       created_at: true,
       status: true,
+      active: true,
+      customer_id: true,
+      converted_at: true,
       sanitary_registration: true,
       nrc: true,
       nit: true,
@@ -80,6 +83,9 @@ export const createProspect = async (
     created_at: row.created_at.toISOString(),
     captured_at: input.captured_at.toISOString(),
     status: row.status,
+    active: row.active,
+    customer_id: row.customer_id,
+    converted_at: row.converted_at ? row.converted_at.toISOString() : null,
     sanitary_registration: row.sanitary_registration,
     nrc: row.nrc,
     nit: row.nit,
@@ -100,6 +106,8 @@ export const listProspects = async (
   query: ListProspectsQuery
 ): Promise<Paginated<ProspectListItem>> => {
   const offset = (query.page - 1) * query.limit;
+  const activeFilter =
+    query.active === undefined ? Prisma.empty : Prisma.sql`AND p.active = ${query.active}`;
   const sellerFilter = query.user_id
     ? Prisma.sql`AND p.user_id = ${query.user_id}::uuid`
     : Prisma.empty;
@@ -114,6 +122,9 @@ export const listProspects = async (
     lng: number | null;
     created_at: Date;
     status: string | null;
+    active: boolean;
+    customer_id: string | null;
+    converted_at: Date | null;
     sanitary_registration: string | null;
     nrc: string | null;
     nit: string | null;
@@ -132,6 +143,9 @@ export const listProspects = async (
       extensions.st_x(p.location::extensions.geometry)::float8 AS lng,
       p.created_at,
       p.status,
+      p.active,
+      p.customer_id::text AS customer_id,
+      p.converted_at,
       p.sanitary_registration,
       p.nrc,
       p.nit,
@@ -141,6 +155,7 @@ export const listProspects = async (
     INNER JOIN app_user u ON u.id = p.user_id
     WHERE p.deleted_at IS NULL
       ${sellerFilter}
+      ${activeFilter}
     ORDER BY p.created_at DESC
     LIMIT ${query.limit} OFFSET ${offset}
   `;
@@ -158,6 +173,9 @@ export const listProspects = async (
         : null,
     created_at: row.created_at.toISOString(),
     status: row.status,
+    active: row.active,
+    customer_id: row.customer_id,
+    converted_at: row.converted_at ? row.converted_at.toISOString() : null,
     sanitary_registration: row.sanitary_registration,
     nrc: row.nrc,
     nit: row.nit,
@@ -186,6 +204,9 @@ export const getProspectById = async (
     lng: number | null;
     created_at: Date;
     status: string | null;
+    active: boolean;
+    customer_id: string | null;
+    converted_at: Date | null;
     sanitary_registration: string | null;
     nrc: string | null;
     nit: string | null;
@@ -203,6 +224,9 @@ export const getProspectById = async (
       extensions.st_x(p.location::extensions.geometry)::float8 AS lng,
       p.created_at,
       p.status,
+      p.active,
+      p.customer_id::text AS customer_id,
+      p.converted_at,
       p.sanitary_registration,
       p.nrc,
       p.nit,
@@ -228,6 +252,9 @@ export const getProspectById = async (
         : null,
     created_at: row.created_at.toISOString(),
     status: row.status,
+    active: row.active,
+    customer_id: row.customer_id,
+    converted_at: row.converted_at ? row.converted_at.toISOString() : null,
     sanitary_registration: row.sanitary_registration,
     nrc: row.nrc,
     nit: row.nit,

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { paginationQuerySchema } from './pagination.schema';
+import { booleanQueryParam, paginationQuerySchema } from './pagination.schema';
 import { fiscalFields } from './fiscal.schema';
 
 /**
@@ -35,6 +35,8 @@ export type CreateProspectInput = z.infer<typeof createProspectSchema>;
 /** PCRM-64: admin list of prospects. */
 export const listProspectsQuerySchema = paginationQuerySchema.extend({
   user_id: z.string().uuid('Invalid user id').optional(),
+  /** PCRM-186: `false` lists the converted ones, `true` the ones still open. */
+  active: booleanQueryParam.optional(),
 });
 export type ListProspectsQuery = z.infer<typeof listProspectsQuerySchema>;
 
