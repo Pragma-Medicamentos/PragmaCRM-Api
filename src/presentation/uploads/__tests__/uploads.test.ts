@@ -67,6 +67,7 @@ const stagingResult = (overrides: Partial<ImportSalesResult> = {}): ImportSalesR
   updated: 0,
   sync_failed: 0,
   removed: { annulled: 0, missing: 0 },
+  prospects: { converted: [], alerts: [] },
   sellers: { created_count: 0, created: [], unmapped: [] },
   ...overrides,
 });
@@ -136,6 +137,36 @@ describe('POST /api/v1/uploads/sales', () => {
     expect(res.status).toBe(201);
     expect(res.body.data.removed).toEqual({ annulled: 1, missing: 2 });
     expect(res.body.message).toContain('3 sales removed (1 annulled, 2 no longer in the ERP)');
+  });
+
+  it('reports the prospect conversions and alerts (PCRM-186)', async () => {
+    const prospects = {
+      converted: [
+        { prospect_id: 'p1', prospect_name: 'A', customer_id: 'c1', customer_name: 'A', moved_stops: 0 },
+        { prospect_id: 'p2', prospect_name: 'B', customer_id: 'c2', customer_name: 'B', moved_stops: 1 },
+      ],
+      alerts: [
+        {
+          prospect_id: 'p3',
+          prospect_name: 'Gemela',
+          candidates: [
+            { customer_id: 'c3', name: 'Gemela', erp_customer_id: 1 },
+            { customer_id: 'c4', name: 'GEMELA', erp_customer_id: 2 },
+          ],
+        },
+      ],
+    };
+    importSalesFileMock.mockResolvedValue(stagingResult({ prospects }));
+
+    const res = await request(app).post(ENDPOINT)
+      .set('Authorization', 'Bearer token-de-prueba').set('x-api-key', API_KEY).attach('file', validFile, 'sales.json');
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.prospects).toEqual(prospects);
+    expect(res.body.message).toContain('2 prospects converted to customer.');
+    expect(res.body.message).toContain(
+      '1 prospect matches more than one customer by name and was not converted.'
+    );
   });
 
   it('returns a null range when there are no dates', async () => {
