@@ -230,16 +230,24 @@ interface Target {
  * The customer or prospect the stop targets; the schema guarantees exactly
  * one of the two ids. Both need a GPS pin: the stop shows on the seller's map.
  *
- * A stop on a prospect can be planned but not yet executed — `visit` has no
- * prospect_id (CLAUDE.md 7.1, open decision B-8).
+ * Only an active prospect takes a stop: one converted to a customer
+ * (PCRM-186) answers 409 PROSPECT_CONVERTED.
  */
 const resolveTarget = async (client: Client, input: CreateExtraStopInput): Promise<Target> => {
   if (input.prospect_id) {
     const prospect = await client.prospect.findFirst({
       where: { id: input.prospect_id, deleted_at: null },
-      select: { id: true, name: true },
+      select: { id: true, name: true, active: true, customer_id: true },
     });
     if (!prospect) throw CustomError.notFound('Prospect not found', EXTRA_STOP_ERROR_CODES.PROSPECT_NOT_FOUND);
+    // A converted prospect is a customer now (PCRM-186): its pending stops
+    // already moved to the customer, so a new one goes on the customer too.
+    if (!prospect.active || prospect.customer_id) {
+      throw CustomError.conflict(
+        'Prospect was converted to a customer; add the stop on the customer instead',
+        EXTRA_STOP_ERROR_CODES.PROSPECT_CONVERTED
+      );
+    }
 
     const hasGps = await prospectHasGps(client, prospect.id);
     if (!hasGps) throw CustomError.unprocessable('Prospect has no GPS location', EXTRA_STOP_ERROR_CODES.PROSPECT_NO_GPS);
