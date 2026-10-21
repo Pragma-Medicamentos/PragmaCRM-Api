@@ -5,6 +5,7 @@ import { TargetKind } from '../../domain/types/daily-route.types';
 import {
   ensureDailyStops,
   getDailyRoute,
+  readDailyRoute,
   setStopCustomerLocation,
 } from '../daily-route.service';
 import { CustomError } from '../../domain/errors/CustomError';
@@ -775,19 +776,42 @@ describe('ensureDailyStops — generación de paradas', () => {
     expect(ranStatement($executeRaw).values).toContain(1);
   });
 
-  it('la puerta de idempotencia mira cualquier fila planificada del vendedor/día, sin filtrar por deleted_at', async () => {
+  it('la puerta de idempotencia mira cualquier fila planificada de la asignación/día, sin filtrar por deleted_at', async () => {
     const { client, $executeRaw } = buildExecClient();
 
     await ensureDailyStops(client, SELLER_ID, MONDAY);
 
     const sql = ranSql($executeRaw);
-    // "Already generated" is answered by any planned row -- live or
-    // soft-deleted -- which is what freezes the day even after later edits
+    // "Already generated" is answered by any planned row of that assignment --
+    // live or soft-deleted -- which is what freezes it even after later edits
     // to route_customer. The real once-per-day guarantee under concurrency
     // is scheduled_visit_planned_uq + ON CONFLICT DO NOTHING, asserted below.
     expect(sql).toMatch(
-      /NOT EXISTS \( SELECT 1 FROM scheduled_visit sv JOIN route_user ru2 ON ru2\.id = sv\.route_user_id WHERE ru2\.user_id = \?::uuid AND sv\.visit_date = \?::date AND NOT sv\.is_extra AND sv\.customer_id IS NOT NULL \)/
+      /NOT EXISTS \( SELECT 1 FROM scheduled_visit sv WHERE sv\.route_user_id = ru\.id AND sv\.visit_date = \?::date AND NOT sv\.is_extra AND sv\.customer_id IS NOT NULL \)/
     );
+  });
+
+  it('una ruta asignada después de abrir el día se genera: la puerta no mira las otras asignaciones del vendedor', async () => {
+    const { client, $executeRaw } = buildExecClient();
+
+    await ensureDailyStops(client, SELLER_ID, MONDAY);
+
+    const gate = ranSql($executeRaw).match(/NOT EXISTS \( SELECT 1 FROM scheduled_visit sv .*? \)/)?.[0];
+    expect(gate).toBeDefined();
+    expect(gate).toContain('sv.route_user_id = ru.id');
+    expect(gate).not.toMatch(/\bru2?\.user_id\b/);
+  });
+
+  it('readDailyRoute lee las paradas existentes sin generar', async () => {
+    const $executeRaw = jest.fn().mockResolvedValue(3);
+    const $queryRaw = jest.fn().mockResolvedValue([stopRow()]);
+    const client = { $executeRaw, $queryRaw } as unknown as Client;
+
+    const route = await readDailyRoute(client, SELLER_ID, MONDAY);
+
+    expect($executeRaw).not.toHaveBeenCalled();
+    expect(route.date).toBe(MONDAY);
+    expect(route.stops).toHaveLength(1);
   });
 
   it('termina en ON CONFLICT DO NOTHING, sin bucle de inserts del lado de JS', async () => {
@@ -901,7 +925,7 @@ describe('ensureDailyStops — generación de paradas', () => {
     for (const call of $executeRaw.mock.calls) {
       const sql = (call[0] as Prisma.Sql).sql.replace(/\s+/g, ' ').trim();
       expect(sql).toMatch(
-        /NOT EXISTS \( SELECT 1 FROM scheduled_visit sv JOIN route_user ru2 ON ru2\.id = sv\.route_user_id WHERE ru2\.user_id = \?::uuid AND sv\.visit_date = \?::date AND NOT sv\.is_extra AND sv\.customer_id IS NOT NULL \)/
+        /NOT EXISTS \( SELECT 1 FROM scheduled_visit sv WHERE sv\.route_user_id = ru\.id AND sv\.visit_date = \?::date AND NOT sv\.is_extra AND sv\.customer_id IS NOT NULL \)/
       );
     }
 
