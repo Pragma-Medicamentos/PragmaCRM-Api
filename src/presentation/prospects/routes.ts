@@ -53,6 +53,14 @@ export class ProspectsRoutes {
       controller.updateLocation
     );
 
+    // PCRM-186: manual retry of the name match the sales import runs.
+    router.post(
+      '/:id/convert',
+      requireRole(ROLES.ADMIN),
+      validateParams(prospectParamsSchema),
+      controller.convert
+    );
+
     router.patch(
       '/:id',
       requireRole(ROLES.ADMIN),

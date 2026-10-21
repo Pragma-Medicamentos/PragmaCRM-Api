@@ -75,7 +75,7 @@ const buildClient = (
         .mockResolvedValue(
           'prospect' in overrides
             ? overrides.prospect
-            : { id: PROSPECT_ID, name: 'Farmacia Nueva' }
+            : { id: PROSPECT_ID, name: 'Farmacia Nueva', active: true, customer_id: null }
         ),
     },
     route_user: {
@@ -244,6 +244,16 @@ describe('createExtraStop', () => {
       message: 'Prospect not found',
       code: 'PROSPECT_NOT_FOUND',
     });
+  });
+
+  it('answers 409 for a prospect already converted to a customer (PCRM-186)', async () => {
+    const { client } = buildClient({
+      prospect: { id: PROSPECT_ID, name: 'Farmacia Nueva', active: false, customer_id: CUSTOMER_ID },
+    });
+
+    await expect(
+      createExtraStop(client, SELLER_ID, input({ customer_id: undefined, prospect_id: PROSPECT_ID }))
+    ).rejects.toMatchObject({ statusCode: 409, code: 'PROSPECT_CONVERTED' });
   });
 
   it('answers 422 when the prospect has no GPS pin', async () => {

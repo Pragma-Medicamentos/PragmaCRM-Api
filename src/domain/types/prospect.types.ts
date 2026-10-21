@@ -7,6 +7,11 @@ export interface CreatedProspect {
   created_at: string;
   captured_at: string;
   status: string | null;
+  /** PCRM-186: false once converted to a customer. */
+  active: boolean;
+  /** PCRM-186: the customer it became, null while still a prospect. */
+  customer_id: string | null;
+  converted_at: string | null;
   sanitary_registration: string | null;
   nrc: string | null;
   nit: string | null;
@@ -22,6 +27,11 @@ export interface ProspectListItem {
   location: { lat: number; lng: number } | null;
   created_at: string;
   status: string | null;
+  /** PCRM-186: false once converted to a customer. */
+  active: boolean;
+  /** PCRM-186: the customer it became, null while still a prospect. */
+  customer_id: string | null;
+  converted_at: string | null;
   sanitary_registration: string | null;
   nrc: string | null;
   nit: string | null;
