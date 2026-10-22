@@ -100,6 +100,8 @@ const nonEmptyRoute: DailyRoute = {
       reason: null,
       completed_at: null,
       notes: null,
+      checkin_location: null,
+      distance_meters: null,
     },
   ],
 };

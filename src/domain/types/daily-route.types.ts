@@ -103,6 +103,16 @@ export interface DailyRouteStop {
    * pending or when the seller left no note.
    */
   notes: string | null;
+  /**
+   * `visit.checkin_location`: where the seller stood when marking the stop
+   * (RF-06, RF-08). Null while the stop is pending.
+   */
+  checkin_location: GeoPoint | null;
+  /**
+   * `visit.distance_meters` from that point to the target's pin. Null while
+   * the stop is pending.
+   */
+  distance_meters: number | null;
 }
 
 export interface DailyRoute {
