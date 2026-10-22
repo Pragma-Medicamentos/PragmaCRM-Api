@@ -376,6 +376,16 @@ describe('getExtraStopsDay', () => {
       })
     );
   });
+
+  it('reads the day without generating its planned stops', async () => {
+    const { client, mocks } = buildClient({
+      dailyRoute: { date: TODAY, routes: [], stops: [] },
+    });
+
+    await getExtraStopsDay(client, SELLER_ID, '2026-12-28');
+
+    expect(mocks.$executeRaw).not.toHaveBeenCalled();
+  });
 });
 
 describe('deleteExtraStop', () => {
