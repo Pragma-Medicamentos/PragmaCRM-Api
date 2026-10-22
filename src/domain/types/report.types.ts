@@ -103,6 +103,11 @@ export interface ReportDefinition {
   description: string;
   period: MetricsPeriod;
   generatedAt: Date;
+  /**
+   * Name of the admin who downloaded the file (PCRM-159). Optional so the
+   * PCRM-162 reports, which never set it, render exactly as before.
+   */
+  generatedBy?: string;
   /** Filters and thresholds the figures depend on (CLAUDE.md 5.8). */
   parameters: ReportParameter[];
   highlights: ReportHighlight[];

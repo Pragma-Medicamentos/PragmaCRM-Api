@@ -26,7 +26,7 @@ import {
  * tells them apart by status code (or Content-Type).
  */
 
-const sendReport = (res: Response, report: RenderedReport) => {
+export const sendReport = (res: Response, report: RenderedReport) => {
   res
     .status(200)
     .set({
