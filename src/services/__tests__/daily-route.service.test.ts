@@ -8,6 +8,7 @@ import {
   getStopCustomerMetrics,
   setStopCustomerLocation,
   setStopNote,
+  todayInBusinessZone,
 } from '../daily-route.service';
 import { getCustomerSummary, getRecentVisitNotes } from '../customer.service';
 import { CustomError } from '../../domain/errors/CustomError';
@@ -72,6 +73,9 @@ interface StopRow {
   reason: string | null;
   completed_at: Date | null;
   notes: string | null;
+  checkin_lat: number | null;
+  checkin_lng: number | null;
+  distance_meters: number | null;
 }
 
 /** A planned customer stop with GPS, still pending. The seed's "stop A". */
@@ -102,6 +106,9 @@ const stopRow = (overrides: Partial<StopRow> = {}): StopRow => ({
   reason: null,
   completed_at: null,
   notes: null,
+  checkin_lat: null,
+  checkin_lng: null,
+  distance_meters: null,
   ...overrides,
 });
 
@@ -458,10 +465,10 @@ describe('getDailyRoute — consulta', () => {
     expect(ranQuery($queryRaw).values).toContain(SELLER_ID);
   });
 
-  it('filtra deleted_at en las seis tablas que toca', async () => {
+  it('filtra deleted_at en las seis tablas que toca, para hoy', async () => {
     const { client, $queryRaw } = buildClient([]);
 
-    await getDailyRoute(client, SELLER_ID, DATE);
+    await getDailyRoute(client, SELLER_ID, todayInBusinessZone());
 
     const clauses = clausesOf(ranSql($queryRaw));
 
@@ -472,6 +479,51 @@ describe('getDailyRoute — consulta', () => {
     for (const alias of ['r', 'sv', 'c', 'p', 'v']) {
       expect(clauses.on[alias]).toContain(`${alias}.deleted_at IS NULL`);
     }
+  });
+
+  it('en un día pasado no pierde las paradas de una asignación o ruta retirada (PCRM-203)', async () => {
+    const { client, $queryRaw } = buildClient([]);
+
+    await getDailyRoute(client, SELLER_ID, DATE);
+
+    const clauses = clausesOf(ranSql($queryRaw));
+
+    // A reassignment soft-deletes the old route_user: filtering on it would
+    // erase the seller's past weeks on that route.
+    expect(clauses.where).not.toContain('ru.deleted_at IS NULL');
+    expect(clauses.on.r).not.toContain('r.deleted_at IS NULL');
+    expect(clauses.where).toContain('v.id IS NOT NULL OR sv.visit_date < COALESCE');
+    expect(clauses.where).toContain('LEAST(ru.deleted_at, r.deleted_at)');
+
+    // The rest keep their own predicate.
+    for (const alias of ['sv', 'c', 'p', 'v']) {
+      expect(clauses.on[alias]).toContain(`${alias}.deleted_at IS NULL`);
+    }
+  });
+
+  it('expone el punto y la distancia del marcado de una parada ejecutada', async () => {
+    const { client } = buildClient([
+      stopRow({
+        completed_at: new Date('2026-09-19T15:10:00.000Z'),
+        checkin_lat: 13.7534,
+        checkin_lng: -89.2288,
+        distance_meters: 12.5,
+      }),
+    ]);
+
+    const route = await getDailyRoute(client, SELLER_ID, DATE);
+
+    expect(route.stops[0].checkin_location).toEqual({ lat: 13.7534, lng: -89.2288 });
+    expect(route.stops[0].distance_meters).toBe(12.5);
+  });
+
+  it('deja el punto del marcado en null mientras la parada está pendiente', async () => {
+    const { client } = buildClient([stopRow()]);
+
+    const route = await getDailyRoute(client, SELLER_ID, DATE);
+
+    expect(route.stops[0].checkin_location).toBeNull();
+    expect(route.stops[0].distance_meters).toBeNull();
   });
 
   it('mantiene los predicados de las tablas opcionales en el ON y no en el WHERE', async () => {

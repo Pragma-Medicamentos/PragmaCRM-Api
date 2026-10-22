@@ -58,3 +58,27 @@ export const setStopNoteSchema = z.object({
   notes: visitNotes,
 });
 export type SetStopNoteInput = z.infer<typeof setStopNoteSchema>;
+
+/** Days per page of GET /api/v1/me/route/history when `limit` is omitted. */
+export const ROUTE_HISTORY_DEFAULT_LIMIT = 20;
+/** Two months of working days: enough for a page, small enough to stay fast. */
+export const ROUTE_HISTORY_MAX_LIMIT = 60;
+
+/**
+ * Query of GET /api/v1/me/route/history (PCRM-203).
+ *
+ * `before` is the keyset cursor: only days strictly before it are returned.
+ * Omitted, it is today in the business timezone, so today never shows up in
+ * the history. A `before` in the future is capped to today by the service
+ * rather than rejected: it means "from the most recent day", nothing more.
+ */
+export const routeHistoryQuerySchema = z.object({
+  before: z.iso.date().optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(ROUTE_HISTORY_MAX_LIMIT)
+    .default(ROUTE_HISTORY_DEFAULT_LIMIT),
+});
+export type RouteHistoryQuery = z.infer<typeof routeHistoryQuerySchema>;

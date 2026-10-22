@@ -9,6 +9,7 @@ import {
 } from '../../domain/types/daily-route.types';
 import {
   DailyRouteQuery,
+  RouteHistoryQuery,
   SetStopLocationInput,
   SetStopNoteInput,
   StopParams,
@@ -23,6 +24,8 @@ import {
 } from '../../services/daily-route.service';
 import { getWeeklyRoute } from '../../services/weekly-route.service';
 import { WeeklyRoute } from '../../domain/types/weekly-route.types';
+import { getRouteHistory } from '../../services/route-history.service';
+import { RouteHistory } from '../../domain/types/route-history.types';
 
 export class DailyRouteController {
   public async get(req: Request, res: Response) {
@@ -65,6 +68,30 @@ export class DailyRouteController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'DailyRouteController.getWeek');
+    }
+  }
+
+  /** PCRM-203: the seller's past days, newest first, keyset-paged by date. */
+  public async getHistory(req: Request, res: Response) {
+    try {
+      if (!req.authUser) throw CustomError.unauthorized();
+
+      const { before, limit } = req.query as unknown as RouteHistoryQuery;
+
+      const history = await getRouteHistory(prisma, req.authUser.id, {
+        before,
+        limit,
+      });
+
+      const response: ApiResponse<RouteHistory> = {
+        success: true,
+        message: 'Historial de rutas obtenido correctamente',
+        data: history,
+      };
+
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'DailyRouteController.getHistory');
     }
   }
 

@@ -7,6 +7,7 @@ import {
 } from '../middleware/validate';
 import {
   dailyRouteQuerySchema,
+  routeHistoryQuerySchema,
   setStopLocationSchema,
   setStopNoteSchema,
   stopParamsSchema,
@@ -23,6 +24,14 @@ export class DailyRouteRoutes {
 
     // PCRM-170: the live weekly assignment. Read-only — never generates days.
     router.get('/week', controller.getWeek);
+
+    // PCRM-203: the seller's past days with their summary. Read-only; the
+    // detail of a day is GET /?date=.
+    router.get(
+      '/history',
+      validateQuery(routeHistoryQuerySchema),
+      controller.getHistory
+    );
 
     // PCRM-160: the seller may fill an empty customer pin, never move one.
     router.patch(
