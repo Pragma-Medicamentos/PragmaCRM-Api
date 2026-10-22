@@ -19,6 +19,7 @@ import {
 import { getCustomerSummary, getRecentVisitNotes } from './customer.service';
 import { GPS_RADIUS_METERS } from './visit.service';
 import { generateDailyStops } from '../repositories/daily-route.repository';
+import { historicalStopVisibleSql } from '../repositories/route-history/route-history.sql';
 
 // --- Business constants -----------------------------------------------------
 //
@@ -76,12 +77,13 @@ export const getDailyRoute = async (
   userId: string,
   date?: string
 ): Promise<DailyRoute> => {
-  const visitDate = date ?? todayInBusinessZone();
+  const today = todayInBusinessZone();
+  const visitDate = date ?? today;
 
   await ensureDailyStops(client, userId, visitDate);
 
   const rows = await client.$queryRaw<DailyRouteStopRow[]>(
-    dailyRouteSql(userId, visitDate)
+    dailyRouteSql(userId, visitDate, visitDate < today)
   );
 
   return {
@@ -378,6 +380,8 @@ const toStop = (row: DailyRouteStopRow): DailyRouteStop => {
   const {
     lat,
     lng,
+    checkin_lat,
+    checkin_lng,
     route_id,
     route_name,
     // Route metadata that belongs to `routes[]`, not to the stop card.
@@ -391,6 +395,10 @@ const toStop = (row: DailyRouteStopRow): DailyRouteStop => {
     ...rest,
     route: { id: route_id, name: route_name },
     location: lat !== null && lng !== null ? { lat, lng } : null,
+    checkin_location:
+      checkin_lat !== null && checkin_lng !== null
+        ? { lat: checkin_lat, lng: checkin_lng }
+        : null,
   };
 };
 
@@ -439,6 +447,9 @@ interface DailyRouteStopRow {
   reason: string | null;
   completed_at: Date | null;
   notes: string | null;
+  checkin_lat: number | null;
+  checkin_lng: number | null;
+  distance_meters: number | null;
 }
 
 /**
@@ -454,7 +465,9 @@ interface DailyRouteStopRow {
  * `route_user`, `route`, `scheduled_visit`, `customer`, `prospect` and
  * `visit`. On the LEFT JOINs the predicate sits in the ON clause: moved to
  * the WHERE it would turn them into inner joins and drop the very stops it
- * was meant to keep.
+ * was meant to keep. The one exception is a past day (`isPastDay`): there
+ * `route_user` and `route` go through historicalStopVisibleSql instead
+ * (PCRM-203), so a reassignment does not erase the seller's history.
  *
  * Four things worth reading twice:
  *
@@ -490,7 +503,11 @@ interface DailyRouteStopRow {
  *     query cannot even report how many it dropped: they are gone before the
  *     projection runs. See the comments at each site.
  */
-const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
+const dailyRouteSql = (
+  userId: string,
+  date: string,
+  isPastDay: boolean
+): Prisma.Sql => Prisma.sql`
   SELECT sv.id::text              AS id,
          ru.id::text              AS route_user_id,
          r.id::text               AS route_id,
@@ -518,7 +535,10 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
          (sv.is_extra OR sv.prospect_id IS NOT NULL) AS is_extra,
          sv.reason,
          v.started_at             AS completed_at,
-         v.notes                  AS notes
+         v.notes                  AS notes,
+         extensions.st_y(v.checkin_location::extensions.geometry)::float8 AS checkin_lat,
+         extensions.st_x(v.checkin_location::extensions.geometry)::float8 AS checkin_lng,
+         v.distance_meters::float8 AS distance_meters
   FROM   route_user ru
   /* INNER on purpose, not the LEFT JOIN the rest of this query uses.
      route.name is NOT NULL and RouteRef.name is typed as a plain string; a
@@ -530,7 +550,7 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
      which belongs to its own ticket -- this query only refuses to invent a
      name it does not have. */
   JOIN   route r ON r.id = ru.route_id
-               AND r.deleted_at IS NULL
+               ${isPastDay ? Prisma.empty : Prisma.sql`AND r.deleted_at IS NULL`}
   JOIN   scheduled_visit sv ON sv.route_user_id = ru.id
                            AND sv.visit_date = ${date}::date
                            AND sv.deleted_at IS NULL
@@ -541,7 +561,11 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
   LEFT   JOIN visit v ON v.scheduled_visit_id = sv.id
                      AND v.deleted_at IS NULL
   WHERE  ru.user_id = ${userId}::uuid
-    AND  ru.deleted_at IS NULL
+    /* Today and later follow the live assignment. A past day is the record
+       of what the seller had, so a later reassignment or route deletion must
+       not erase it (PCRM-203): see historicalStopVisibleSql, which the
+       history list applies too, so its counts match this detail. */
+    AND  ${isPastDay ? historicalStopVisibleSql : Prisma.sql`ru.deleted_at IS NULL`}
     /* A stop whose target was soft-deleted would project name and target_id
        as NULL, and the contract says name is never null. Dropping it is the
        only honest option: the business deleted the target, so the card has

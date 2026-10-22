@@ -11,11 +11,16 @@ import {
   updateProspectLocation,
 } from '../../../services/prospect.service';
 import { findUserByAuthUserId } from '../../../services/auth.service';
+import { convertProspectByName } from '../../../services/prospectConversion.service';
 
 jest.mock('../../../lib/supabaseJwt', () => ({
   verifyAccessToken: jest.fn().mockResolvedValue({ sub: 'auth-seller' }),
   JwksUnavailableError: class extends Error {},
   warmUpJwks: jest.fn(),
+}));
+
+jest.mock('../../../services/prospectConversion.service', () => ({
+  convertProspectByName: jest.fn(),
 }));
 
 jest.mock('../../../services/auth.service', () => ({
@@ -41,6 +46,7 @@ const listProspectsMock = listProspects as jest.Mock;
 const updateProspectLocationMock = updateProspectLocation as jest.Mock;
 const updateProspectMock = updateProspect as jest.Mock;
 const findUserMock = findUserByAuthUserId as jest.Mock;
+const convertMock = convertProspectByName as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
@@ -616,5 +622,82 @@ describe('PATCH /api/v1/prospects/:id', () => {
       .send({ nrc: '230204-4' });
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/v1/prospects ?active (PCRM-186)', () => {
+  beforeEach(() => {
+    findUserMock.mockResolvedValue(user('Administrador', ADMIN_ID));
+  });
+
+  it.each([
+    ['false', false],
+    ['true', true],
+  ])('parses active=%s into a boolean', async (raw, parsed) => {
+    await request(app).get('/api/v1/prospects').query({ active: raw }).set(AUTH);
+
+    expect(listProspectsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ active: parsed })
+    );
+  });
+
+  it('rejects any other value', async () => {
+    const res = await request(app).get('/api/v1/prospects').query({ active: 'yes' }).set(AUTH);
+
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /api/v1/prospects/:id/convert (PCRM-186)', () => {
+  const { CustomError: RealCustomError } = jest.requireActual(
+    '../../../domain/errors/CustomError'
+  );
+
+  beforeEach(() => {
+    findUserMock.mockResolvedValue(user('Administrador', ADMIN_ID));
+    convertMock.mockReset();
+  });
+
+  it('answers 200 with the conversion', async () => {
+    convertMock.mockResolvedValue({
+      prospect_id: PROSPECT_ID,
+      prospect_name: 'Farmacia El Sol',
+      customer_id: 'customer-1',
+      customer_name: 'FARMACIA EL SOL',
+      moved_stops: 2,
+    });
+
+    const res = await request(app).post(`/api/v1/prospects/${PROSPECT_ID}/convert`).set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.moved_stops).toBe(2);
+    expect(convertMock).toHaveBeenCalledWith(expect.anything(), PROSPECT_ID);
+  });
+
+  it('passes the 409 code through so the web can tell the cases apart', async () => {
+    convertMock.mockRejectedValue(
+      RealCustomError.conflict('The prospect name matches 2 customers', 'PROSPECT_NAME_AMBIGUOUS')
+    );
+
+    const res = await request(app).post(`/api/v1/prospects/${PROSPECT_ID}/convert`).set(AUTH);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('PROSPECT_NAME_AMBIGUOUS');
+  });
+
+  it('forbids the Vendedor', async () => {
+    findUserMock.mockResolvedValue(user('Vendedor'));
+
+    const res = await request(app).post(`/api/v1/prospects/${PROSPECT_ID}/convert`).set(AUTH);
+
+    expect(res.status).toBe(403);
+    expect(convertMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid id', async () => {
+    const res = await request(app).post('/api/v1/prospects/not-a-uuid/convert').set(AUTH);
+
+    expect(res.status).toBe(400);
   });
 });

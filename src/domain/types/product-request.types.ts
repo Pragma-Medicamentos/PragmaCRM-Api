@@ -2,7 +2,8 @@
 export interface CreatedProductRequest {
   id: string;
   visit_id: string;
-  customer_id: string;
+  /** Null when the visit was on a prospect (product_request.customer_id is nullable). */
+  customer_id: string | null;
   scheduled_visit_id: string;
   quoted_product: { id: string; name: string };
   requested_quantity: number | null;

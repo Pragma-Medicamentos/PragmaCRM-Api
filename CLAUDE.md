@@ -277,6 +277,8 @@ Es el punto donde más errores de interpretación ocurren. Los cuatro son entida
 
 **Ruta semanal del vendedor (PCRM-170).** `GET /api/v1/me/route/week` devuelve la semana en curso (lunes a domingo, zona de negocio), con los 7 días siempre presentes, leyendo la asignación **viva**: `route_user` + `route_customer` más las paradas extra (`scheduled_visit.is_extra`) de esas fechas. Es de solo lectura y **nunca** genera días: `ensureDailyStops` congela el plan del día que genera, y esta vista existe justamente para que una reasignación (miércoles de Santa Ana a San Salvador) se vea al refrescar. Las paradas tienen el mismo shape que las de `/me/route`; las de plantilla llevan `route_customer.id` como `id`.
 
+**Historial de rutas del vendedor (PCRM-203).** `GET /api/v1/me/route/history?before=YYYY-MM-DD&limit=` lista los días anteriores a hoy (zona de negocio) que tuvieron paradas, del más reciente al más viejo, con `total`, `completed`, `skipped` y las paradas sin marcar. Pagina por fecha: `next_before` es el `before` de la página siguiente. El detalle de un día es `GET /me/route?date=`, que ahora trae también `checkin_location` y `distance_meters` de cada visita. **En un día pasado no se filtra el `route_user` ni la `route` borrados** (`historicalStopVisibleSql`): una reasignación borra la asignación vieja y, con el filtro vivo, desaparecería todo el historial del vendedor en esa ruta. Se conserva toda parada ejecutada, y las no ejecutadas solo si su fecha es anterior al día en que se retiró la asignación o la ruta. "Omitida" significa "sin marcar": todavía no existe el flujo de omitir con motivo (wireframe 7 móvil), así que no hay motivo que mostrar.
+
 **✅ Discrepancia resuelta en el esquema aplicado.** El DER dibujaba `ruta_usuario.fecha date`; la decisión confirmada pedía día de la semana con vigencia. **La base implementada le dio la razón a la decisión:** `route_user.day smallint` + `created_at` / `deleted_at`, con índice único parcial `(route_id, user_id, day) WHERE deleted_at IS NULL`. El punto 1 del Anexo B queda cerrado.
 
 ### 5.2 Clasificación estricta de paradas
@@ -497,9 +499,9 @@ Además de la nomenclatura, tres decisiones que el DER dejaba abiertas ya están
 La segunda es la más importante y cambia el modelo mental de la sección 5.1: **planificación y ejecución son dos tablas**, no una.
 
 - `scheduled_visit` — la agenda. Cuelga de `route_user_id`, tiene `visit_date`, `stop_type` y acepta **`customer_id` o `prospect_id`, ambos nullable**. Esto absorbió la entidad propuesta `parada_unica`: una parada ad-hoc es una fila de `scheduled_visit` con `reason` explicando el motivo.
-- `visit` — la ejecución. Cuelga de `customer_id` (obligatorio), `user_id`, y opcionalmente `route_user_id` y `route_customer_id`.
+- `visit` — la ejecución. Cuelga de `customer_id` **o** `prospect_id` (exactamente uno, `visit_target_chk`), `user_id`, y opcionalmente `route_user_id` y `route_customer_id`.
 
-**Consecuencia directa sobre el Anexo A punto 3:** se puede **planificar** una parada sobre un prospecto (`scheduled_visit.prospect_id` existe y tiene índice parcial), pero **no se puede ejecutar**: `visit.customer_id` sigue siendo obligatorio y `visit` no tiene `prospect_id`. La brecha entre modelo y wireframe sigue abierta, ahora con contorno exacto.
+**Paradas sobre prospectos (21/10/2026, cierra B-8).** Una parada sobre un prospecto se planifica (`scheduled_visit.prospect_id`; el Administrador la agrega como parada extra, solo de tipo Visita) y **se ejecuta**: la migración `20261021120000_visit_prospect_id` hizo nullable `visit.customer_id` y agregó `visit.prospect_id`, con la misma regla de uno-de-dos que `scheduled_visit`. `confirmVisit` valida los 80 m contra el pin del prospecto. Las métricas de clientes (cobertura, clientes visitados, clientes sin visita) las ignoran por construcción, porque cruzan o cuentan por `v.customer_id`; las que cuentan todas las visitas (paradas ejecutadas, por tipo, tiempo promedio, efectividad) **sí las incluyen**.
 
 ### 7.2 Identidad
 
@@ -547,6 +549,9 @@ prospect
       location     geography(Point,4326)
       status       text
       sanitary_registration / nrc / nit / email  text  -- PCRM-185, opcionales
+      active       boolean  default true     -- PCRM-186: false al convertirse
+  FK  customer_id  uuid -> customer.id  NULL -- PCRM-186: cliente en que se convirtió
+      converted_at timestamptz          NULL -- PCRM-186: junto con customer_id
       created_at / updated_at / deleted_at
 ```
 
@@ -556,6 +561,15 @@ prospect
 - Clientes: `PATCH /api/v1/customers/:id/fiscal-data` (solo Administrador), parcial y `strict`, como las otras secciones del perfil (`/contact`, `/location`, `/commercial-profile`). Se leen en `GET /api/v1/customers/:id`; el listado y la ruta móvil no los traen.
 
 **En `customer` son captura manual: el importador no los toca.** El JSON de Efactsoft no trae NRC, NIT ni correo del cliente: las llaves `nrc`, `nif`, `email`, `telefono` y `razon_social` del payload son del **emisor** (Pragma), con un único valor en todas las ventas. `upsertCustomer` (`salesSync.service.ts`) solo escribe nombre y crédito, así que una carga posterior no borra lo capturado.
+
+**Conversión de prospecto a cliente (PCRM-186, decidido el 20/10/2026).** Los clientes nacen en Efactsoft, así que convertir es **enlazar** el prospecto con el cliente que trae el JSON, no crearlo en el CRM. El enlace es **solo por nombre**, el único dato que Efactsoft comparte con el prospecto, comparado con `public.normalize_name` (minúsculas, sin tildes, espacios simples): `"FARMACIA  elena cortéz 17"` = `"Farmacia Elena Cortez 17"`. Los trabajadores de Pragma se comprometen a usar el mismo nombre en ambos lados.
+
+- **Automático al importar** (PASO 3 de `importSalesFile`, en la misma transacción que la reconciliación): un prospecto activo con **exactamente un** cliente del mismo nombre se convierte. La respuesta del upload trae `prospects.converted` y `prospects.alerts`.
+- **Dos o más clientes con el nombre: solo alerta**, no se enlaza y el admin no elige cliente. Sin coincidencias no hay alerta: el prospecto todavía no compra.
+- Al convertir: `active = false`, `customer_id` y `converted_at`. Sus paradas **pendientes** (hoy en adelante, sin visita) pasan al cliente como paradas extra; las pasadas quedan como histórico del prospecto. Sus visitas (`visit.prospect_id`) también se quedan en el prospecto. Un prospecto convertido ya no acepta paradas extra: `POST …/daily-route/extra-stops` responde 409 `PROSPECT_CONVERTED` y la parada va sobre el cliente.
+- `POST /api/v1/prospects/:id/convert` (solo Administrador) reintenta el cruce para un prospecto, p. ej. tras corregir su nombre. 409 con `code`: `PROSPECT_ALREADY_CONVERTED`, `PROSPECT_INACTIVE`, `PROSPECT_NO_MATCHING_CUSTOMER`, `PROSPECT_NAME_AMBIGUOUS`. `GET /api/v1/prospects?active=true|false` filtra abiertos y convertidos.
+- **"Nuevos prospectos" no cambia:** cuenta el prospecto al registrarse; convertirlo lo desactiva, no lo borra.
+- **Sin otra llave de cruce:** el JSON trae el nombre (149/150 clientes) y el celular (3/150); los campos DTE (`dte`, `dte_firm`…) llegan vacíos porque las ventas son "Recibo". Si Pragma emitiera CCF o factura electrónica, el `receptor` del DTE traería NRC/NIT y serviría como llave más confiable.
 
 ### 7.4 Rutas
 
@@ -597,7 +611,8 @@ scheduled_visit                         -- AGENDA: la parada planificada
 
 visit                                   -- EJECUCIÓN: lo que pasó en campo
   PK  id                 uuid
-  FK  customer_id        uuid -> customer.id        NOT NULL
+  FK  customer_id        uuid -> customer.id        NULL   -- uno de los dos (visit_target_chk)
+  FK  prospect_id        uuid -> prospect.id        NULL
   FK  user_id            uuid -> app_user.id
   FK  route_user_id      uuid -> route_user.id      NULL
   FK  route_customer_id  uuid -> route_customer.id  NULL
@@ -929,7 +944,7 @@ Flujo `feat/* → dev → staging → prod`. `ci.yml` corre en cada PR (lint, ts
 | # | Discrepancia | Estado |
 |---|---|---|
 | 1 | Falta campo `tipo` en las tablas de fase de planificación | **Resuelto** vía `scheduled_visit.stop_type` y `visit.visit_type` |
-| 2 | `visit` no soporta prospectos (`customer_id` obligatorio, sin `prospect_id`) | **Abierta.** `scheduled_visit` sí acepta prospectos; `visit` no. Ningún KPI lo requiere, pero el wireframe de ruta ejecutada dibuja prospectos visitados como pin hueco |
+| 2 | `visit` no soporta prospectos (`customer_id` obligatorio, sin `prospect_id`) | **Resuelto (21/10/2026)** con `visit.prospect_id` y `customer_id` nullable (ver 7.1) |
 | 3 | Falta de validez temporal en la asignación de ruta | **Resuelto:** `route_user` con `day` + vigencia por `created_at` / `deleted_at` |
 | 4 | Tabla de usuarios sin campos de contraseña ni credenciales | **Resuelto**: las gestiona Supabase Auth |
 | 5 | Comportamiento GPS fuera de rango contradictorio entre tres documentos | **Abierta.** Requiere decisión del cliente |
@@ -1051,7 +1066,7 @@ Ninguno bloquea el desarrollo, pero todos afectan la calidad del resultado y deb
 
 **2. Ventas sin ruta atribuible.** Ahora que la atribución pasa exclusivamente por `sale.visit_id` (ver 5.4), **toda venta sin visita asociada queda fuera del reporte de venta por ruta** aunque sí entre en venta total. Ocurre cuando el vendedor no marcó la parada, cuando el día no tenía ruta asignada, o cuando el `id_usuario` de Efactsoft no mapea contra `app_user.erp_user_id`. El importador debería dejar un conteo de control de los tres casos para que la diferencia entre reportes sea explicable.
 
-**3. Ejecución de paradas sobre prospectos.** `visit.customer_id` es obligatorio y no existe `visit.prospect_id`, así que un check-in sobre un prospecto no tiene dónde registrarse — aunque `scheduled_visit.prospect_id` sí permite planificarlo. Ningún KPI lo requiere, pero el wireframe de ruta ejecutada dibuja los prospectos visitados como pin hueco en el mapa.
+**3. ~~Ejecución de paradas sobre prospectos.~~ Resuelto el 21/10/2026:** `visit.prospect_id` existe y `confirmVisit` registra el check-in sobre un prospecto (ver 7.1). Queda pendiente dibujarlos en la vista de ruta ejecutada (pin hueco del wireframe).
 
 **4. Deuda documental de nomenclatura.** El DER, la guía de KPIs y este documento hablan en español; la base está en inglés. Mientras no se unifique, toda consulta escrita a partir del DER hay que traducirla con la tabla de 7.0. Riesgo de errores silenciosos al copiar SQL de la documentación.
 
@@ -1068,7 +1083,7 @@ Ninguno bloquea el desarrollo, pero todos afectan la calidad del resultado y deb
 | 5 | ¿Qué hace el sistema cuando el vendedor está **fuera del radio GPS**? ¿Bloquea, advierte o registra con bandera? | Define el flujo central de RF-06 | Cliente | ⚠ Abierta |
 | 6 | ¿`goal` obtiene un RF nuevo o una excepción documentada? | Trazabilidad del GPI | Andrés / equipo | ⚠ Abierta |
 | 7 | ¿`customer.place_id` se mantiene? Implica Google Places API sin presupuesto | Costo y alcance | Cliente / equipo | ⚠ Abierta |
-| 8 | ¿Se resuelve el check-in sobre prospectos en `visit`? | Coherencia entre modelo y wireframes | Equipo | ⚠ Abierta |
+| 8 | ¿Se resuelve el check-in sobre prospectos en `visit`? | Coherencia entre modelo y wireframes | Equipo | ✅ **Cerrada (21/10/2026).** `visit.prospect_id` + `customer_id` nullable |
 | 9 | ¿Se purga `sale_staging` tras procesar cada carga? | Crecimiento de la base | Equipo | ⚠ Abierta |
 | 10 | ¿Se actualiza el DER a los nombres reales en inglés, o se publica la tabla de equivalencias? | Deuda documental | Jimmy / equipo | ⚠ Abierta |
 

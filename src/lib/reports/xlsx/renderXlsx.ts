@@ -185,6 +185,7 @@ const writeSummarySheet = (
     `${formatLocalDay(definition.period.from)} – ${formatLocalDay(definition.period.to)}`
   );
   put('Generado', toBusinessDateTime(definition.generatedAt).toFormat('dd/MM/yyyy HH:mm'));
+  if (definition.generatedBy) put('Generado por', definition.generatedBy);
 
   if (definition.parameters.length > 0) {
     heading('Parámetros');

@@ -64,3 +64,46 @@ CORS expone `Content-Disposition` (`exposedHeaders` en `server.ts`), así que el
 - El contenido de los archivos está en español aunque el código esté en inglés: el archivo es lo que lee el cliente y no hay frontend que lo traduzca (excepción a la convención de la sección 11 de `CLAUDE.md`).
 - Cada reporte imprime en sus notas los supuestos que cambian las cifras: umbral de inactividad, plazo de crédito, estado 2 de venta, atribución de venta a ruta vía visita, zona horaria.
 - Sin dependencias con costo: `exceljs`, `jszip` y `pdfmake` son MIT. El PDF usa las fuentes estándar de PDF (Helvetica), no lee archivos de disco.
+
+---
+
+## Reportes gerenciales (PCRM-159)
+
+Los reportes detallados que pide el doc **Especificaciones CRM**. A diferencia de los anteriores, **no espejan un endpoint de métricas**: cada uno tiene su propio SQL (`src/repositories/reports/`), construido sobre los mismos fragmentos (`repositories/metrics/fragments.sql.ts`) y la misma atribución de venta a ruta (`attributedSalesCte`). Por eso aceptan filtros que el panel no tiene y, aun así, sin filtros suman lo mismo que las KPIs del panel para el mismo rango (lo verifica `__tests__/integration/managementReports.integration.test.ts`). Los 8 reportes anteriores no cambian.
+
+Código: `src/services/managementReport.service.ts`, `src/services/reports/management/*.report.ts` (builders), `src/repositories/reports/*.sql.ts`, `src/presentation/reports/management.routes.ts`.
+
+### Filtros
+
+Además de `from`, `to`, `inactivity_days` y `format`:
+
+| Param | Qué filtra |
+|---|---|
+| `zone` | `route.zone` de la ruta a la que se atribuye la venta o la visita. Sin distinguir mayúsculas ni espacios. El importador nunca llena `customer.zone`, por eso la zona (y el municipio) salen de la ruta |
+| `user_id` | El vendedor: `sale.user_id` en ventas y créditos, `visit.user_id` en visitas, `route_user.user_id` en la agenda |
+| `route_id` | La ruta atribuida (venta → visita → parada de la agenda → ruta, CLAUDE.md 5.4) |
+
+Se combinan con AND. Un `user_id` o `route_id` inexistente responde `404` (`Seller not found` / `Route not found`), no un archivo vacío. Un rango sin datos sí genera el archivo, con la leyenda **"Sin datos para el período."**. El encabezado imprime los filtros aplicados y **"Generado por"** con el nombre del admin.
+
+### Endpoints
+
+| Reporte | Endpoint | Archivo | Filas | Filtros |
+|---|---|---|---|---|
+| Ventas por vendedor / cliente / municipio / ruta / zona / producto | `GET /reports/sales/:group` (`seller\|customer\|municipality\|route\|zone\|product`) | `ventas-por-<grupo>` | Monto, pedidos, ticket, clientes, % del total. Las ventas sin ruta atribuible quedan en su propia fila | Todos |
+| Comparativo entre vendedores | `GET /reports/sales/sellers-comparison` | `comparativo-vendedores` | Venta y pedidos del periodo vs. el anterior de igual duración | Todos |
+| ABC de clientes / productos | `GET /reports/abc/:entity` (`customer\|product`) | `abc-clientes`, `abc-productos` | Pareto: A hasta 80% acumulado, B hasta 95%, C el resto | Todos |
+| Rankings generales | `GET /reports/rankings?limit=` (1–500, default 50) | `rankings` | Tres tablas: vendedores, clientes, productos | Todos |
+| Cumplimiento de metas | `GET /reports/goals` | `cumplimiento-de-metas` | Meta prorrateada vs. venta por vendedor (`goalSlicesCte`, igual que la KPI) | Solo `user_id` |
+| Visitas realizadas vs. planificadas | `GET /reports/visits/planned-vs-done` | `visitas-planificadas-vs-realizadas` | Por vendedor y ruta: paradas planificadas y realizadas, extra, fuera de agenda | Todos |
+| Efectividad de visitas | `GET /reports/visits/effectiveness` | `efectividad-de-visitas` | Por vendedor: visitas a clientes, con pedido (`sale.visit_id`), % y lo autodeclarado | Todos |
+| Clientes nuevos | `GET /reports/customers/new` | `clientes-nuevos` | Clientes cuya primera venta confirmada cae en el rango | Todos |
+| Clientes recuperados | `GET /reports/customers/recovered` | `clientes-recuperados` | Misma regla que la KPI, con `inactivity_days` | Todos |
+| Clientes sin compra 30/60/90 | `GET /reports/customers/no-purchase` | `clientes-sin-compra` | Clientes activos con última compra hace más de 30 días, por tramo | Ruta y zona por `route_customer`; vendedor de la última venta |
+| Cobranza por vendedor | `GET /reports/collections` | `cobranza-por-vendedor` | Cobrado en el periodo, saldo pendiente y vencido al día de hoy | Todos |
+| Cartera vencida | `GET /reports/overdue-portfolio` | `cartera-vencida` | Por factura, por cliente y por antigüedad; foto al día de hoy | Todos (el rango no aplica) |
+
+### Supuestos que conviene conocer
+
+- **Cobranza.** Efactsoft no informa pagos, solo el saldo de cada factura en cada carga (`balance_snapshot`). "Cobrado" suma las bajas de saldo entre dos cargas consecutivas cuando la más reciente cae en el periodo: la fecha es la de la carga, no la del pago.
+- **Planificadas.** La agenda de un día se genera cuando alguien abre ese día en la app (PCRM-161); un día que nadie abrió no suma planificadas.
+- **Cartera vencida y saldos** son al día de hoy, con el mismo criterio que las KPIs `overdue_portfolio` y `pending_collections` (venta confirmada, sin contado, plazo de 60 días).
