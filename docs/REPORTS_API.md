@@ -107,3 +107,21 @@ Se combinan con AND. Un `user_id` o `route_id` inexistente responde `404` (`Sell
 - **Cobranza.** Efactsoft no informa pagos, solo el saldo de cada factura en cada carga (`balance_snapshot`). "Cobrado" suma las bajas de saldo entre dos cargas consecutivas cuando la más reciente cae en el periodo: la fecha es la de la carga, no la del pago.
 - **Planificadas.** La agenda de un día se genera cuando alguien abre ese día en la app (PCRM-161); un día que nadie abrió no suma planificadas.
 - **Cartera vencida y saldos** son al día de hoy, con el mismo criterio que las KPIs `overdue_portfolio` y `pending_collections` (venta confirmada, sin contado, plazo de 60 días).
+
+### Datos de prueba locales
+
+`supabase/seeds/reports-demo.sql` carga datos para que todos los reportes muestren algo tras `supabase db reset` (corre al final, después de `seed.sql` y los `pcrm-*`). También se puede correr solo, sobre una base ya sembrada; es re-ejecutable y borra únicamente sus propias filas:
+
+```bash
+docker exec -i supabase_db_PragmaCRM-Api psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/seeds/reports-demo.sql
+```
+
+Solo agrega filas (las existentes únicamente ganan detalle de venta e historial de saldo). Las fechas son relativas a hoy:
+
+| Reportes | Qué agrega |
+|---|---|
+| Ventas por ruta / zona / municipio, comparativo, planificadas vs. realizadas, efectividad | Agenda, visitas y ventas atribuidas a ruta en las últimas ~15 semanas, repartidas entre los 5 vendedores y las 10 rutas. No toca los días de ruta que ya tienen agenda de otros seeds. Mejicanos queda con cobertura baja a propósito |
+| Ventas por producto, ABC de productos, rankings | 16 productos y detalle en toda venta confirmada que no lo tenía (las líneas suman el total de la venta) |
+| Clientes nuevos / recuperados | 12 clientes con alta escalonada y 4 inactivos que vuelven a comprar, en distintos vendedores. Los tramos de "sin compra" conservan clientes |
+| Cobranza | Historial semanal de `balance_snapshot` para las ventas a crédito, sin `upload_id` (la importación real siempre lo pone) |
+| Cumplimiento de metas | Metas del mes pasado y el actual con cumplimiento variado; no pisa metas existentes |
