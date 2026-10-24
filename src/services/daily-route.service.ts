@@ -82,12 +82,25 @@ export const getDailyRoute = async (
 
   await ensureDailyStops(client, userId, visitDate);
 
+  return readDailyRoute(client, userId, visitDate);
+};
+
+/**
+ * getDailyRoute without the generation: returns only the stops that already
+ * exist. For the admin's planner, which reads days while it is still
+ * assigning routes and must not freeze them half-built.
+ */
+export const readDailyRoute = async (
+  client: Client,
+  userId: string,
+  date: string
+): Promise<DailyRoute> => {
   const rows = await client.$queryRaw<DailyRouteStopRow[]>(
-    dailyRouteSql(userId, visitDate, visitDate < today)
+    dailyRouteSql(userId, date, date < todayInBusinessZone())
   );
 
   return {
-    date: visitDate,
+    date,
     routes: toRoutes(rows),
     stops: rows.map(toStop),
   };
@@ -264,9 +277,9 @@ export const getStopCustomerMetrics = async (
 /**
  * PCRM-161: generates the seller's planned stops for `date` from the weekly
  * route composition, on demand rather than through a nightly job. Called by
- * `getDailyRoute` before its SELECT, so both `/me/route` and the admin
- * `sellers/:sellerId/daily-route` GET (which calls `getDailyRoute`
- * internally, see extra-stop.service.ts) generate the same way.
+ * `getDailyRoute` before its SELECT (`/me/route`) and by createExtraStop. The
+ * admin `sellers/:sellerId/daily-route` GET does not generate: it reads
+ * through `readDailyRoute`.
  *
  * A date in the past is read as-is and never generated: there is nothing to
  * plan for a day already gone, and generating one retroactively would

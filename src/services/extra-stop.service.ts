@@ -6,7 +6,7 @@ import { CreateExtraStopInput } from '../domain/schemas/extra-stop.schema';
 import { ExtraStop, EXTRA_STOP_ERROR_CODES } from '../domain/types/extra-stop.types';
 import { customerHasGps, prospectHasGps } from '../repositories/extra-stop.repository';
 import { DailyRoute } from '../domain/types/daily-route.types';
-import { ensureDailyStops, getDailyRoute, todayInBusinessZone } from './daily-route.service';
+import { ensureDailyStops, readDailyRoute, todayInBusinessZone } from './daily-route.service';
 
 // Same business timezone daily-route.service.ts uses for "today" (CLAUDE.md
 // 5.7): a stop dated "today" has to mean today in El Salvador, not the
@@ -166,9 +166,10 @@ export const deleteExtraStop = async (
 
 /**
  * A seller's day, extras included, for the Web to show what it can delete
- * (PCRM-158). Extends getDailyRoute to include all active route assignments
+ * (PCRM-158). Extends readDailyRoute to include all active route assignments
  * for the day, even those with no stops yet, so the Web can add stops on them.
- * ADMIN endpoint only.
+ * Reads without generating, so the planner never freezes a day it is still
+ * assigning. ADMIN endpoint only.
  */
 export const getExtraStopsDay = async (
   client: Client,
@@ -182,7 +183,7 @@ export const getExtraStopsDay = async (
   if (!seller) throw CustomError.notFound('Seller not found', EXTRA_STOP_ERROR_CODES.SELLER_NOT_FOUND);
 
   const visitDate = date ?? todayInBusinessZone();
-  const dailyRoute = await getDailyRoute(client, sellerId, visitDate);
+  const dailyRoute = await readDailyRoute(client, sellerId, visitDate);
   const activeAssignments = await findActiveAssignments(client, sellerId, visitDate);
 
   // Merge active assignments into routes, deduped by route_user_id.
