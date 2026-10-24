@@ -90,6 +90,8 @@ npm run smoke
 | `npm run tsc`              | Type-check sin emitir                                         |
 | `npm run test`             | Tests unitarios                                               |
 | `npm run test:integration` | Tests de integración (requiere `.env.test`)                   |
+| `npm run efactsoft:sync`   | Descarga ventas de Efactsoft y las importa (ver [Sincronización diaria](#sincronización-diaria-con-efactsoft)) |
+| `npm run typecheck:scripts` | Type-check de `scripts/`                                     |
 
 Detalle de puertos y variables de entorno (Api/Web/Mobile): [docs/dx-ports-env.md](./docs/dx-ports-env.md).
 
@@ -498,6 +500,63 @@ y el detalle está en [docs/Contexto_KPIs_Pragma_CRM.md](./docs/Contexto_KPIs_Pr
 
 El archivo se procesa **en memoria**, así que el contenedor necesita holgura:
 ver la nota de memoria en [docs/DEPLOY_DOKPLOY.md](./docs/DEPLOY_DOKPLOY.md).
+
+### Sincronización diaria con Efactsoft
+
+`scripts/efactsoft-daily-sync.ts` reemplaza la exportación y subida manual: entra a Efactsoft con
+Playwright, descarga el JSON y lo sube a `POST /api/v1/uploads/sales`, el mismo endpoint que usa el
+dashboard. Se programa una vez al día.
+
+**Por qué no basta con exportar "ayer".** Efactsoft filtra la exportación por `venta.created_at`
+(fecha de la cotización), y `sale.pending_balance` solo se actualiza cuando la venta vuelve a venir en
+un archivo. Si solo se exporta el último día, el saldo de una venta a crédito queda congelado en el
+valor del día en que se importó por primera vez. Por eso el script pregunta primero el rango:
+
+`GET /api/v1/uploads/sales/sync-range` (solo Administrador) devuelve `from` / `to` en `YYYY-MM-DD`,
+hora de El Salvador:
+
+- `from` = día de la venta más antigua con `pending_balance > 0` (por `erp_quoted_at`, o
+  `erp_created_at` si falta), pero **nunca más reciente que hace `SALES_SYNC_MIN_LOOKBACK_DAYS`**
+  (30 por defecto: cubre cotizaciones convertidas días después y corridas fallidas) **ni más antiguo
+  que hace `SALES_SYNC_MAX_LOOKBACK_DAYS`** (180 por defecto: evita que una factura impaga de hace años
+  arrastre todo el histórico).
+- `to` = hoy.
+- `pending_outside_range` cuenta las ventas con saldo que quedaron antes del tope; el script las
+  avisa en el log porque su saldo no se refresca.
+
+Todo el rango se reconcilia en el import (CLAUDE.md 5.5), lo cual es correcto porque el archivo trae
+todo lo que Efactsoft tiene para esos días.
+
+Flujo del script: login en Supabase con la cuenta de servicio → `sync-range` → descarga del rango →
+verifica que todas las ventas del archivo tengan `created_at` dentro del rango (si el filtro de fecha
+no se aplicó, aborta sin subir nada) → espera si hay un import en curso → sube el archivo,
+reintentando ante un 409. Sale con código 1 ante cualquier error; si falla dentro de Efactsoft deja una
+captura de pantalla en el directorio temporal y su ruta en el log.
+
+```bash
+npx playwright install chromium          # una vez por máquina
+npm run efactsoft:sync                   # corrida diaria
+npm run efactsoft:sync -- --dry-run      # descarga y valida, no sube
+npm run efactsoft:sync -- --from 2026-09-01 --to 2026-09-30   # rango manual (backfill)
+npm run efactsoft:sync -- --save ./export.json                # guarda una copia del JSON
+```
+
+Variables (las lee de `.env` o del entorno):
+
+| Variable | Uso |
+| --- | --- |
+| `PRAGMA_API_URL` | URL base de la API, sin `/api/v1` |
+| `API_KEY` | El mismo `x-api-key` de la API |
+| `SUPABASE_URL`, `SUPABASE_ANON_KEY` | Para pedir el token con `grant_type=password` |
+| `SYNC_ADMIN_EMAIL`, `SYNC_ADMIN_PASSWORD` | Cuenta **Administrador** dedicada al sync, con contraseña. Los imports quedan a su nombre en `upload.uploaded_by` |
+| `EFACTSOFT_USER`, `EFACTSOFT_PASSWORD` | Credenciales de Efactsoft |
+| `EFACTSOFT_LOGIN_URL`, `EFACTSOFT_SALES_URL` | Opcionales; por defecto `distdemedicamentos.efactsoft.com` |
+| `HEADLESS` | `false` para ver el navegador |
+| `SYNC_UPLOAD_TIMEOUT_MINUTES` | Opcional, 30 por defecto. Si se corta, el import sigue en el servidor (PCRM-169) |
+| `EFACTSOFT_SAVE_PATH` | Opcional, igual que `--save` |
+
+`SALES_SYNC_MIN_LOOKBACK_DAYS` y `SALES_SYNC_MAX_LOOKBACK_DAYS` son variables **de la API**, no del
+script.
 
 ## Despliegue de migraciones
 
