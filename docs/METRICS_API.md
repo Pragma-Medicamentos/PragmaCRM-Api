@@ -181,7 +181,7 @@ Cada KPI viene como `{ value, previous_value }`. `previous_value` es la misma KP
 - Ordenado por `total_sales` descendente.
 - La **venta** se acredita al vendedor del ERP (`sale.user_id`); las **paradas**, a quien las ejecutó (`visit.user_id`).
 - `dispatches_for_others`: despachos que ejecutó este vendedor cuya venta pertenece a otro (nota de `1f`).
-- `portfolio_customers`: clientes de las rutas asignadas **hoy** ("18 clientes en cartera").
+- `portfolio_customers`: clientes distintos a los que el vendedor les vendió en el período (`sale.user_id`, `erp_status = 2`), es decir, quién le vende a quién ("18 clientes en cartera"). No depende de las rutas asignadas (PCRM-154).
 - Aparecen los vendedores activos, y los inactivos solo si tuvieron actividad en el período.
 
 ### 3. `GET /sellers/:id` — fila expandida de `1f`
@@ -461,6 +461,101 @@ La cadena no se mueve con cambios posteriores: reasignar el día (`route_user` b
 | `seller_performance` | Monto y pedidos acreditados a `sale.user_id`, igual que en `/sellers`. Solo vendedores con venta atribuida en la ruta |
 
 **Retirado (decisión del PO, 13/10/2026).** La primera versión de PCRM-178 devolvía además unidades de la ruta, posiciones por monto y por unidades, venta por día-ruta (efectividad), clientes visitados / planificados y paradas ejecutadas / planificadas. Las unidades de una ruta suman productos distintos y no se pueden comparar; el resto no aportaba a la vista de cards. Las unidades siguen por producto en `top_products`. No reintroducir sin conversación.
+
+### 12. `GET /sales/comparison` — venta contra el período anterior (PCRM-187)
+
+Venta, pedidos y ticket promedio del período contra el período anterior, para toda la empresa, un cliente, un vendedor o ambos, con desglose opcional por cliente o por vendedor. La vista web es de Gustavo; la ubicación (perfiles, panel o ambos) la decide Web.
+
+**Query.** La común (`from`, `to`) más:
+
+| Param | Formato | Nota |
+|---|---|---|
+| `customer_id` | uuid | Opcional. `404` si no existe (los clientes borrados sí valen: su historia cuenta) |
+| `user_id` | uuid | Opcional. `404` si no existe. Se combina con `customer_id` (AND) |
+| `group_by` | `customer` \| `seller` | Opcional. Sin él, `breakdown` es `null` |
+| `page`, `limit` | entero | Paginación del desglose (20 por defecto, tope 100). Sin `group_by` se ignoran |
+
+**Período anterior.** El mismo de las tarjetas KPI: igual número de días, inmediatamente antes (`previousRange`). 1–30 sep se compara con 2 ago–31 ago.
+
+```json
+{
+  "period": { "from": "2026-09-01", "to": "2026-09-30" }, "thresholds": { "...": "..." },
+  "previous_period": { "from": "2026-08-02", "to": "2026-08-31" },
+  "filters": { "customer_id": null, "user_id": "…" },
+  "totals": {
+    "current":  { "total_sales": "3031.36", "orders_count": 8, "average_ticket": "378.92" },
+    "previous": { "total_sales": "1757.64", "orders_count": 6, "average_ticket": "292.94" },
+    "variation": {
+      "total_sales":    { "amount": "1273.72", "pct": 72.5 },
+      "orders_count":   { "amount": 2,         "pct": 33.3 },
+      "average_ticket": { "amount": "85.98",   "pct": 29.4 }
+    }
+  },
+  "breakdown": {
+    "group_by": "customer",
+    "items": [
+      { "id": "…", "name": "Farmacia San José",
+        "current": { "...": "..." }, "previous": { "...": "..." }, "variation": { "...": "..." } }
+    ],
+    "page": 1, "page_size": 20, "total": 12, "total_pages": 1
+  }
+}
+```
+
+| Campo | Notas |
+|---|---|
+| `totals` sin filtros | **Cuadra exacto** con `total_sales`, `orders_count` y `average_ticket` de `/kpis/values` para el mismo rango: mismas reglas (`erp_status = 2`, IVA incluido, `erp_created_at`) |
+| `variation.*.amount` | Actual menos anterior. Montos como string; `average_ticket.amount` es `null` si algún período no tiene ventas |
+| `variation.*.pct` | Variación % con un decimal. **`null` si el anterior es 0** (no hay base): la web lo muestra como "Nuevo" o "—" |
+| `breakdown.items` | Un renglón por cliente o vendedor con venta en **cualquiera** de los dos períodos, ordenado por venta actual desc, luego anterior desc y nombre |
+| Fila `id: null` | Ventas sin cliente o sin vendedor (un `id_usuario` de Efactsoft que no mapea a ningún `app_user`, Anexo A.2). Se agrupan en una fila para que **las filas sumen el total** |
+
+Códigos: `400` por query inválida (incluido `group_by` desconocido o rango > 366 días), `404` por `customer_id` o `user_id` inexistente, `403` para Vendedor (todo `/metrics` es solo Administrador).
+
+### 13. `GET /routes/:id/workdays` — la ruta contra sus jornadas anteriores (PCRM-188)
+
+Compara una ruta contra sí misma en el mismo día de la semana: la última jornada (ej. ruta SA de este martes) contra el promedio de las anteriores (los martes previos). La vista web va en el detalle de ruta.
+
+**Query.** No usa `from` / `to`:
+
+| Param | Valores | Default |
+|---|---|---|
+| `day` | `1`–`7`, día ISO como `route_user.day` (1 lunes … 7 domingo) | El día de la jornada más reciente de la ruta; sin jornadas, el día de hoy |
+| `limit` | `2`–`12`, jornadas devueltas **incluida la última** | `5` (la última + 4 anteriores) |
+
+```json
+{
+  "route": { "route_id": "…", "name": "Zona Escalón", "active": true },
+  "day": 2,
+  "limit": 5,
+  "workdays": [
+    { "date": "2026-10-13", "sellers": [{ "user_id": "…", "name": "Carlos Martínez" }],
+      "amount": "1500.00", "orders_count": 12, "planned_stops": 14, "executed_stops": 12,
+      "stops_with_order": 10, "visit_coverage_rate": 85.7, "order_rate": 83.3 },
+    { "date": "2026-10-06", "…": "…" }
+  ],
+  "baseline": { "workdays": 4, "amount": "750.00", "orders_count": 6.5,
+                "visit_coverage_rate": 80.0, "order_rate": 70.0 },
+  "change_rate": 100.0
+}
+```
+
+| Campo | Notas |
+|---|---|
+| Jornada | Cada `scheduled_visit.visit_date` (hasta hoy) de las paradas generadas por cualquier `route_user` de la ruta, con `ISODOW(visit_date) = day`. Sale de la agenda que la app congeló ese día, no de la asignación vigente: una reasignación posterior no reescribe la historia. Las paradas sobre prospectos no cuentan (igual que la agenda del endpoint 11) |
+| `workdays` | De la más reciente a la más vieja. La primera es la que se compara |
+| `sellers` | Dueños de las asignaciones que generaron las paradas del día. **La ruta se compara aunque haya cambiado de vendedor**; la web lo marca. Un vendedor borrado sigue apareciendo en las jornadas que trabajó |
+| `amount`, `orders_count` | Venta atribuida (regla del endpoint 11) acreditada a la jornada **de la parada** cuya visita la generó, no al día de facturación. Las ventas se leen desde la jornada más vieja hasta el fin de hoy, para no perder una venta facturada al día siguiente |
+| `visit_coverage_rate` | Clientes agendados con parada ejecutada ÷ clientes agendados × 100, la misma fórmula del endpoint 11. `null` sin agenda |
+| `order_rate` | Efectividad: paradas ejecutadas con al menos una venta atribuida ÷ paradas ejecutadas × 100. Se mide con la venta, no con el `visit.successful` que declara el vendedor. `null` sin paradas ejecutadas |
+| `baseline` | Promedio de las jornadas **anteriores** a la primera. Las tasas promedian solo las jornadas que tienen tasa. `null` con menos de dos jornadas |
+| `change_rate` | Venta de la última jornada contra `baseline.amount`, en %. `null` sin `baseline` o si el promedio es 0 |
+
+**Alcance frente a la decisión del 13/10.** El PO retiró de las cards de PCRM-178 la venta por día-ruta (efectividad) y las paradas ejecutadas / planificadas. PCRM-188 (creada el 14/10) las pide explícitamente para esta comparación. Viven solo en este endpoint: las cards del endpoint 11 no cambian.
+
+**Decisiones por defecto de los "Por definir" del ticket**, pendientes de confirmar con el PO: se comparan las últimas 5 jornadas (configurable con `limit`) y la ruta se compara aunque cambie de vendedor.
+
+Códigos: `400` por `day` o `limit` fuera de rango o id que no es uuid, `404` por ruta inexistente o borrada, `403` para Vendedor.
 
 ---
 

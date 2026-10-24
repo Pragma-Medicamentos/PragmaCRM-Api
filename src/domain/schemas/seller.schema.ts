@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { booleanQueryParam, paginationQuerySchema } from './pagination.schema';
 
 // The seller's id in Efactsoft (`venta.id_usuario`): the key the import uses
 // to map sales to this user.
@@ -41,11 +42,10 @@ export const sellerParamsSchema = z.object({
 
 export type SellerParams = z.infer<typeof sellerParamsSchema>;
 
-export const listSellersQuerySchema = z.object({
-  active: z
-    .enum(['true', 'false'])
-    .transform((value) => value === 'true')
-    .optional(),
+export const listSellersQuerySchema = paginationQuerySchema.extend({
+  active: booleanQueryParam.optional(),
+  // Matches name or email, case-insensitive.
+  search: z.string().trim().min(1).max(120).optional(),
 });
 
 export type ListSellersQuery = z.infer<typeof listSellersQuerySchema>;

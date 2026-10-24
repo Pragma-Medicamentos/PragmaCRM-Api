@@ -4,7 +4,7 @@ import { CustomError } from '../domain/errors/CustomError';
 import { ROLES } from '../domain/types/auth.types';
 import { CreateExtraStopInput } from '../domain/schemas/extra-stop.schema';
 import { ExtraStop, EXTRA_STOP_ERROR_CODES } from '../domain/types/extra-stop.types';
-import { customerHasGps } from '../repositories/extra-stop.repository';
+import { customerHasGps, prospectHasGps } from '../repositories/extra-stop.repository';
 import { DailyRoute } from '../domain/types/daily-route.types';
 import { ensureDailyStops, readDailyRoute, todayInBusinessZone } from './daily-route.service';
 
@@ -49,14 +49,7 @@ export const createExtraStop = async (
   if (!seller) throw CustomError.notFound('Seller not found', EXTRA_STOP_ERROR_CODES.SELLER_NOT_FOUND);
   if (!seller.active) throw CustomError.unprocessable('Seller is inactive', EXTRA_STOP_ERROR_CODES.SELLER_INACTIVE);
 
-  const customer = await client.customer.findFirst({
-    where: { id: input.customer_id, deleted_at: null, active: true },
-    select: { id: true, name: true },
-  });
-  if (!customer) throw CustomError.notFound('Customer not found', EXTRA_STOP_ERROR_CODES.CUSTOMER_NOT_FOUND);
-
-  const hasGps = await customerHasGps(client, customer.id);
-  if (!hasGps) throw CustomError.unprocessable('Customer has no GPS location', EXTRA_STOP_ERROR_CODES.CUSTOMER_NO_GPS);
+  const target = await resolveTarget(client, input);
 
   const assignment = await resolveAssignment(client, sellerId, input);
 
@@ -72,10 +65,13 @@ export const createExtraStop = async (
   // even if nobody had opened the seller's day yet.
   await ensureDailyStops(client, sellerId, input.date);
 
+  // For prospects this check is the only guard: `scheduled_visit_extra_uq`
+  // is keyed on customer_id, which is NULL on their rows. The advisory lock
+  // above is what keeps it race-free.
   const duplicate = await client.scheduled_visit.findFirst({
     where: {
       visit_date: visitDate,
-      customer_id: input.customer_id,
+      ...target.where,
       stop_type: input.stop_type,
       deleted_at: null,
       route_user: { user_id: sellerId },
@@ -83,7 +79,7 @@ export const createExtraStop = async (
     select: { id: true },
   });
   if (duplicate) {
-    throw CustomError.conflict('Customer already has a stop of this type on that date', EXTRA_STOP_ERROR_CODES.EXTRA_STOP_DUPLICATE);
+    throw CustomError.conflict(`${target.label} already has a stop of this type on that date`, EXTRA_STOP_ERROR_CODES.EXTRA_STOP_DUPLICATE);
   }
 
   let created;
@@ -92,7 +88,7 @@ export const createExtraStop = async (
       data: {
         route_user_id: assignment.id,
         visit_date: visitDate,
-        customer_id: input.customer_id,
+        ...target.where,
         stop_type: input.stop_type,
         reason: input.reason ?? null,
         is_extra: true,
@@ -113,8 +109,10 @@ export const createExtraStop = async (
     route_id: assignment.route_id,
     route_name: assignment.route.name,
     date: input.date,
-    customer_id: input.customer_id,
-    customer_name: customer.name,
+    customer_id: target.kind === 'customer' ? target.id : null,
+    customer_name: target.kind === 'customer' ? target.name : null,
+    prospect_id: target.kind === 'prospect' ? target.id : null,
+    prospect_name: target.kind === 'prospect' ? target.name : null,
     stop_type: input.stop_type,
     reason: input.reason ?? null,
     is_extra: true,
@@ -215,9 +213,60 @@ export const getExtraStopsDay = async (
 
 /*
  * ============================================================================
- * 2. OTHER METHODS — assignment resolution behind createExtraStop.
+ * 2. OTHER METHODS — target and assignment resolution behind createExtraStop.
  * ============================================================================
  */
+
+interface Target {
+  kind: 'customer' | 'prospect';
+  id: string;
+  name: string;
+  /** Used in error messages. */
+  label: 'Customer' | 'Prospect';
+  /** The scheduled_visit column the stop hangs off, for both the lookup and the insert. */
+  where: { customer_id: string } | { prospect_id: string };
+}
+
+/**
+ * The customer or prospect the stop targets; the schema guarantees exactly
+ * one of the two ids. Both need a GPS pin: the stop shows on the seller's map.
+ *
+ * Only an active prospect takes a stop: one converted to a customer
+ * (PCRM-186) answers 409 PROSPECT_CONVERTED.
+ */
+const resolveTarget = async (client: Client, input: CreateExtraStopInput): Promise<Target> => {
+  if (input.prospect_id) {
+    const prospect = await client.prospect.findFirst({
+      where: { id: input.prospect_id, deleted_at: null },
+      select: { id: true, name: true, active: true, customer_id: true },
+    });
+    if (!prospect) throw CustomError.notFound('Prospect not found', EXTRA_STOP_ERROR_CODES.PROSPECT_NOT_FOUND);
+    // A converted prospect is a customer now (PCRM-186): its pending stops
+    // already moved to the customer, so a new one goes on the customer too.
+    if (!prospect.active || prospect.customer_id) {
+      throw CustomError.conflict(
+        'Prospect was converted to a customer; add the stop on the customer instead',
+        EXTRA_STOP_ERROR_CODES.PROSPECT_CONVERTED
+      );
+    }
+
+    const hasGps = await prospectHasGps(client, prospect.id);
+    if (!hasGps) throw CustomError.unprocessable('Prospect has no GPS location', EXTRA_STOP_ERROR_CODES.PROSPECT_NO_GPS);
+
+    return { kind: 'prospect', id: prospect.id, name: prospect.name, label: 'Prospect', where: { prospect_id: prospect.id } };
+  }
+
+  const customer = await client.customer.findFirst({
+    where: { id: input.customer_id, deleted_at: null, active: true },
+    select: { id: true, name: true },
+  });
+  if (!customer) throw CustomError.notFound('Customer not found', EXTRA_STOP_ERROR_CODES.CUSTOMER_NOT_FOUND);
+
+  const hasGps = await customerHasGps(client, customer.id);
+  if (!hasGps) throw CustomError.unprocessable('Customer has no GPS location', EXTRA_STOP_ERROR_CODES.CUSTOMER_NO_GPS);
+
+  return { kind: 'customer', id: customer.id, name: customer.name, label: 'Customer', where: { customer_id: customer.id } };
+};
 
 interface Assignment {
   id: string;

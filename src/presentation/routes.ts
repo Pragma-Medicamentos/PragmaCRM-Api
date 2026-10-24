@@ -9,8 +9,10 @@ import { ProductsRoutes } from './products/routes';
 import { DailyRouteRoutes } from './daily-route/routes';
 import { RoutesRoutes } from './routes/routes';
 import { VisitsRoutes } from './visits/routes';
+import { ProductRequestsRoutes } from './product-requests/routes';
 import { MetricsRoutes } from './metrics/routes';
 import { ProspectsRoutes } from './prospects/routes';
+import { ReportsRoutes } from './reports/routes';
 import { SellerDailyRouteRoutes } from './seller-daily-route/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
@@ -109,6 +111,15 @@ export class AppRoutes {
       VisitsRoutes.routes
     );
 
+    // RF-11 (PCRM-65): off-catalog products requested during a visit. The
+    // seller registers them; the admin report (PCRM-67) reads them elsewhere.
+    router.use(
+      '/api/v1/product-requests',
+      requireAuth,
+      requireRole(ROLES.SELLER),
+      ProductRequestsRoutes.routes
+    );
+
     // RF-09: base metrics panel. Admin only: it aggregates the whole team's
     // sales and field activity.
     router.use(
@@ -117,11 +128,17 @@ export class AppRoutes {
       requireRole(ROLES.ADMIN),
       MetricsRoutes.routes
     );
+    // RF-09: the metrics above as downloadable .xlsx / .pdf reports. Same
+    // audience as the panel, so the same guard.
+    router.use(
+      '/api/v1/reports',
+      requireAuth,
+      requireRole(ROLES.ADMIN),
+      ReportsRoutes.routes
+    );
     // PCRM-62: prospects. Auth here; role per verb inside ProspectsRoutes
     // (SELLER POST, ADMIN GET) so PCRM-64 can list without a second mount.
     router.use('/api/v1/prospects', requireAuth, ProspectsRoutes.routes);
-
-    // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
 
     return router;
   }

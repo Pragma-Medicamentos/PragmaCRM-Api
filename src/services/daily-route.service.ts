@@ -4,6 +4,7 @@ import { Client } from '../lib/prisma';
 import { CustomError } from '../domain/errors/CustomError';
 import {
   SetStopLocationInput,
+  SetStopNoteInput,
   StopType,
 } from '../domain/schemas/daily-route.schema';
 import {
@@ -11,10 +12,14 @@ import {
   DailyRouteStop,
   RouteRef,
   StopCustomerLocation,
+  StopCustomerMetrics,
+  StopNote,
   TargetKind,
 } from '../domain/types/daily-route.types';
+import { getCustomerSummary, getRecentVisitNotes } from './customer.service';
 import { GPS_RADIUS_METERS } from './visit.service';
 import { generateDailyStops } from '../repositories/daily-route.repository';
+import { historicalStopVisibleSql } from '../repositories/route-history/route-history.sql';
 
 // --- Business constants -----------------------------------------------------
 //
@@ -48,6 +53,8 @@ const UNPLANNED_SORT_ORDER = 32767;
  *
  *      GET   /api/v1/me/route                     -> getDailyRoute
  *      PATCH /api/v1/me/route/stops/:id/location  -> setStopCustomerLocation
+ *      PATCH /api/v1/me/route/stops/:id/note      -> setStopNote
+ *      GET   /api/v1/me/route/stops/:id/customer  -> getStopCustomerMetrics
  * ============================================================================
  */
 
@@ -70,7 +77,8 @@ export const getDailyRoute = async (
   userId: string,
   date?: string
 ): Promise<DailyRoute> => {
-  const visitDate = date ?? todayInBusinessZone();
+  const today = todayInBusinessZone();
+  const visitDate = date ?? today;
 
   await ensureDailyStops(client, userId, visitDate);
 
@@ -88,7 +96,7 @@ export const readDailyRoute = async (
   date: string
 ): Promise<DailyRoute> => {
   const rows = await client.$queryRaw<DailyRouteStopRow[]>(
-    dailyRouteSql(userId, date)
+    dailyRouteSql(userId, date, date < todayInBusinessZone())
   );
 
   return {
@@ -129,20 +137,7 @@ export const setStopCustomerLocation = async (
     );
   }
 
-  const stop = await client.scheduled_visit.findFirst({
-    where: { id: stopId, deleted_at: null },
-    select: {
-      customer_id: true,
-      route_user: { select: { user_id: true, deleted_at: true } },
-    },
-  });
-  if (!stop || stop.route_user.deleted_at !== null) {
-    throw CustomError.notFound('Scheduled visit not found');
-  }
-
-  if (stop.route_user.user_id !== sellerId) {
-    throw CustomError.forbidden('This stop is not assigned to you');
-  }
+  const stop = await findOwnedStop(client, sellerId, stopId);
 
   // `prospect.location` exists, but prospects are registered with their pin
   // (PCRM-62) and a visit cannot be executed on one anyway.
@@ -167,6 +162,115 @@ export const setStopCustomerLocation = async (
   return {
     customer_id: stop.customer_id,
     location: { lat: input.latitude, lng: input.longitude },
+  };
+};
+
+/**
+ * RF-07: the seller adds or rewrites the note of a stop he already completed.
+ *
+ * The note lives on `visit`, the execution, so a stop with no linked visit
+ * has nothing to attach it to and gets a 409 — it is a state the seller can
+ * still leave by confirming the stop, which can carry the note itself.
+ *
+ * Editable only on the stop's planned day, in the business timezone. RF-08
+ * shows these notes to the admin as the record of what happened in the
+ * field; a seller rewriting last week's note would be rewriting that record.
+ *
+ * The note replaces the previous one rather than appending to it, so a retry
+ * from an offline client is idempotent.
+ */
+export const setStopNote = async (
+  client: Client,
+  sellerId: string,
+  stopId: string,
+  input: SetStopNoteInput
+): Promise<StopNote> => {
+  const stop = await client.scheduled_visit.findFirst({
+    where: { id: stopId, deleted_at: null },
+    select: {
+      visit_date: true,
+      route_user: { select: { user_id: true, deleted_at: true } },
+    },
+  });
+  if (!stop || stop.route_user.deleted_at !== null) {
+    throw CustomError.notFound('Scheduled visit not found');
+  }
+
+  if (stop.route_user.user_id !== sellerId) {
+    throw CustomError.forbidden('This stop is not assigned to you');
+  }
+
+  // `visit_date` is a `date` column, handed back as UTC midnight of that day.
+  const stopDate = DateTime.fromJSDate(stop.visit_date, { zone: 'utc' }).toISODate();
+  if (stopDate !== todayInBusinessZone()) {
+    throw CustomError.unprocessable(
+      'Notes can only be added on the planned day of the stop'
+    );
+  }
+
+  // Looked up by the column, not through the 1:1 relation: the unique index
+  // behind it is partial on deleted_at, so a soft-deleted visit can coexist
+  // with the live one.
+  const visit = await client.visit.findFirst({
+    where: { scheduled_visit_id: stopId, deleted_at: null },
+    select: { id: true },
+  });
+  if (!visit) {
+    throw CustomError.conflict('This stop has not been completed yet');
+  }
+
+  // updated_at is stamped by the visit_set_updated_at trigger.
+  const updated = await client.visit.update({
+    where: { id: visit.id },
+    data: { notes: input.notes },
+    select: { id: true, updated_at: true },
+  });
+
+  return {
+    id: stopId,
+    visit_id: updated.id,
+    notes: input.notes,
+    updated_at: updated.updated_at,
+  };
+};
+
+/**
+ * PCRM-164: the commercial figures of a stop's customer, so the seller can
+ * prepare the visit without leaving the route.
+ *
+ * The admin's GET /customers/:id stays admin-only (RF-02). This is the
+ * seller's narrower door to the same numbers: keyed by the stop, so it opens
+ * only for customers on the seller's own agenda — the same proof
+ * setStopCustomerLocation relies on — and it reuses the profile's readers, so
+ * the app and the dashboard cannot disagree on a figure. Sales history and
+ * the credit tab are not exposed.
+ */
+export const getStopCustomerMetrics = async (
+  client: Client,
+  sellerId: string,
+  stopId: string
+): Promise<StopCustomerMetrics> => {
+  const stop = await findOwnedStop(client, sellerId, stopId);
+
+  // Prospects have no sales, visits or credit yet: there is nothing to show.
+  if (!stop.customer_id) {
+    throw CustomError.unprocessable(
+      'Metrics are only available on customer stops'
+    );
+  }
+
+  const [summary, notes] = await Promise.all([
+    getCustomerSummary(client, stop.customer_id),
+    getRecentVisitNotes(client, stop.customer_id),
+  ]);
+
+  const { category, ...metrics } = summary;
+
+  return {
+    customer_id: stop.customer_id,
+    category,
+    summary: metrics,
+    recent_notes: notes,
   };
 };
 
@@ -197,9 +301,9 @@ export const ensureDailyStops = async (
 
 /*
  * ============================================================================
- * 2. OTHER METHODS — the date default and the row→DTO mappers. Private: the
- *    endpoint is the only consumer, and the mappers only make sense against
- *    the row shape produced by section 3.
+ * 2. OTHER METHODS — the date default, the stop ownership check and the
+ *    row→DTO mappers. Private: the endpoints are the only consumers, and the
+ *    mappers only make sense against the row shape produced by section 3.
  * ============================================================================
  */
 
@@ -221,6 +325,38 @@ export const todayInBusinessZone = (): string => {
   }
 
   return today;
+};
+
+/**
+ * The stop, provided it is on `sellerId`'s agenda. Going through
+ * `scheduled_visit -> route_user` is what authorises the stop endpoints: any
+ * date is accepted, like confirmVisit, because the stop being assigned to the
+ * seller is the authorisation.
+ *
+ * 404 for a stop that does not exist or whose assignment was deleted; 403 for
+ * one that belongs to another seller.
+ */
+const findOwnedStop = async (
+  client: Client,
+  sellerId: string,
+  stopId: string
+): Promise<{ customer_id: string | null }> => {
+  const stop = await client.scheduled_visit.findFirst({
+    where: { id: stopId, deleted_at: null },
+    select: {
+      customer_id: true,
+      route_user: { select: { user_id: true, deleted_at: true } },
+    },
+  });
+  if (!stop || stop.route_user.deleted_at !== null) {
+    throw CustomError.notFound('Scheduled visit not found');
+  }
+
+  if (stop.route_user.user_id !== sellerId) {
+    throw CustomError.forbidden('This stop is not assigned to you');
+  }
+
+  return { customer_id: stop.customer_id };
 };
 
 /**
@@ -257,6 +393,8 @@ const toStop = (row: DailyRouteStopRow): DailyRouteStop => {
   const {
     lat,
     lng,
+    checkin_lat,
+    checkin_lng,
     route_id,
     route_name,
     // Route metadata that belongs to `routes[]`, not to the stop card.
@@ -270,6 +408,10 @@ const toStop = (row: DailyRouteStopRow): DailyRouteStop => {
     ...rest,
     route: { id: route_id, name: route_name },
     location: lat !== null && lng !== null ? { lat, lng } : null,
+    checkin_location:
+      checkin_lat !== null && checkin_lng !== null
+        ? { lat: checkin_lat, lng: checkin_lng }
+        : null,
   };
 };
 
@@ -317,6 +459,10 @@ interface DailyRouteStopRow {
   is_extra: boolean;
   reason: string | null;
   completed_at: Date | null;
+  notes: string | null;
+  checkin_lat: number | null;
+  checkin_lng: number | null;
+  distance_meters: number | null;
 }
 
 /**
@@ -332,7 +478,9 @@ interface DailyRouteStopRow {
  * `route_user`, `route`, `scheduled_visit`, `customer`, `prospect` and
  * `visit`. On the LEFT JOINs the predicate sits in the ON clause: moved to
  * the WHERE it would turn them into inner joins and drop the very stops it
- * was meant to keep.
+ * was meant to keep. The one exception is a past day (`isPastDay`): there
+ * `route_user` and `route` go through historicalStopVisibleSql instead
+ * (PCRM-203), so a reassignment does not erase the seller's history.
  *
  * Four things worth reading twice:
  *
@@ -368,7 +516,11 @@ interface DailyRouteStopRow {
  *     query cannot even report how many it dropped: they are gone before the
  *     projection runs. See the comments at each site.
  */
-const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
+const dailyRouteSql = (
+  userId: string,
+  date: string,
+  isPastDay: boolean
+): Prisma.Sql => Prisma.sql`
   SELECT sv.id::text              AS id,
          ru.id::text              AS route_user_id,
          r.id::text               AS route_id,
@@ -395,7 +547,11 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
          (CASE WHEN sv.is_extra OR sv.prospect_id IS NOT NULL THEN NULL ELSE sv.sort_order END)::int AS sort_order,
          (sv.is_extra OR sv.prospect_id IS NOT NULL) AS is_extra,
          sv.reason,
-         v.started_at             AS completed_at
+         v.started_at             AS completed_at,
+         v.notes                  AS notes,
+         extensions.st_y(v.checkin_location::extensions.geometry)::float8 AS checkin_lat,
+         extensions.st_x(v.checkin_location::extensions.geometry)::float8 AS checkin_lng,
+         v.distance_meters::float8 AS distance_meters
   FROM   route_user ru
   /* INNER on purpose, not the LEFT JOIN the rest of this query uses.
      route.name is NOT NULL and RouteRef.name is typed as a plain string; a
@@ -407,7 +563,7 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
      which belongs to its own ticket -- this query only refuses to invent a
      name it does not have. */
   JOIN   route r ON r.id = ru.route_id
-               AND r.deleted_at IS NULL
+               ${isPastDay ? Prisma.empty : Prisma.sql`AND r.deleted_at IS NULL`}
   JOIN   scheduled_visit sv ON sv.route_user_id = ru.id
                            AND sv.visit_date = ${date}::date
                            AND sv.deleted_at IS NULL
@@ -418,7 +574,11 @@ const dailyRouteSql = (userId: string, date: string): Prisma.Sql => Prisma.sql`
   LEFT   JOIN visit v ON v.scheduled_visit_id = sv.id
                      AND v.deleted_at IS NULL
   WHERE  ru.user_id = ${userId}::uuid
-    AND  ru.deleted_at IS NULL
+    /* Today and later follow the live assignment. A past day is the record
+       of what the seller had, so a later reassignment or route deletion must
+       not erase it (PCRM-203): see historicalStopVisibleSql, which the
+       history list applies too, so its counts match this detail. */
+    AND  ${isPastDay ? historicalStopVisibleSql : Prisma.sql`ru.deleted_at IS NULL`}
     /* A stop whose target was soft-deleted would project name and target_id
        as NULL, and the contract says name is never null. Dropping it is the
        only honest option: the business deleted the target, so the card has

@@ -12,8 +12,13 @@ import {
   metricsTrendsQuerySchema,
 } from '../../domain/schemas/metrics.schema';
 import { metricsProductParamsSchema } from '../../domain/schemas/productMetrics.schema';
-import { metricsRouteParamsSchema } from '../../domain/schemas/routeMetrics.schema';
+import {
+  metricsRouteParamsSchema,
+  metricsRouteWorkdaysQuerySchema,
+} from '../../domain/schemas/routeMetrics.schema';
 import { ProductMetricsController } from './productMetrics.controller';
+import { SalesComparisonController } from './salesComparison.controller';
+import { salesComparisonQuerySchema } from '../../domain/schemas/salesComparison.schema';
 
 export class MetricsRoutes {
   static get routes(): Router {
@@ -21,6 +26,7 @@ export class MetricsRoutes {
     const controller = new MetricsController();
     const productController = new ProductMetricsController();
     const routeController = new RouteMetricsController();
+    const salesController = new SalesComparisonController();
 
     // requireAuth + requireRole(ADMIN) are applied when the group is mounted
     // in presentation/routes.ts, not here (convention in CLAUDE.md 8.1).
@@ -72,6 +78,13 @@ export class MetricsRoutes {
       productController.customers
     );
 
+    // Sales against the previous period, by customer and seller (PCRM-187).
+    router.get(
+      '/sales/comparison',
+      validateQuery(salesComparisonQuerySchema),
+      salesController.comparison
+    );
+
     // Per-route metrics (PCRM-178). Registered last so they do not shadow any
     // of the paths above; '/routes/:id' is a route.id, the same uuid the
     // routes API uses.
@@ -81,6 +94,13 @@ export class MetricsRoutes {
       validateParams(metricsRouteParamsSchema),
       validateQuery(metricsRangeQuerySchema),
       routeController.routeDetail
+    );
+    // Workday comparison of one route (PCRM-188).
+    router.get(
+      '/routes/:id/workdays',
+      validateParams(metricsRouteParamsSchema),
+      validateQuery(metricsRouteWorkdaysQuerySchema),
+      routeController.routeWorkdays
     );
 
     return router;

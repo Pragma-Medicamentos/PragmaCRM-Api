@@ -7,6 +7,7 @@ import {
   CreateProspectInput,
   ListProspectsQuery,
   ProspectParams,
+  UpdateProspectInput,
   UpdateProspectLocationInput,
 } from '../../domain/schemas/prospect.schema';
 import {
@@ -14,10 +15,13 @@ import {
   ProspectListItem,
 } from '../../domain/types/prospect.types';
 import { Paginated } from '../../domain/types/pagination.types';
+import { ProspectConversion } from '../../domain/types/prospectConversion.types';
+import { convertProspectByName } from '../../services/prospectConversion.service';
 import {
   createProspect,
   createProspectAsAdmin,
   listProspects,
+  updateProspect,
   updateProspectLocation,
 } from '../../services/prospect.service';
 
@@ -104,6 +108,45 @@ export class ProspectsController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'ProspectsController.updateLocation');
+    }
+  }
+
+  /** PCRM-185: edit a prospect's name, phone and fiscal data. */
+  public async update(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as ProspectParams;
+      const data = req.body as UpdateProspectInput;
+      const prospect = await updateProspect(prisma, id, data);
+
+      const response: ApiResponse<ProspectListItem> = {
+        success: true,
+        message: 'Prospect updated successfully',
+        data: prospect,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProspectsController.update');
+    }
+  }
+
+  /**
+   * PCRM-186: retry the name match for one prospect. 409 with a `code` when it
+   * is already converted, inactive, has no customer with its name, or its
+   * name matches several customers (the alert: nothing is linked).
+   */
+  public async convert(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as ProspectParams;
+      const conversion = await prisma.$transaction((tx) => convertProspectByName(tx, id));
+
+      const response: ApiResponse<ProspectConversion> = {
+        success: true,
+        message: 'Prospect converted to customer',
+        data: conversion,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProspectsController.convert');
     }
   }
 }

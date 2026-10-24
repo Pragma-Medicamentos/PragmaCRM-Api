@@ -1,5 +1,6 @@
 import { z } from 'zod';
-import { paginationQuerySchema } from './pagination.schema';
+import { booleanQueryParam, paginationQuerySchema } from './pagination.schema';
+import { fiscalFields } from './fiscal.schema';
 
 /**
  * ISO 8601 with an explicit offset ("2026-09-21T14:05:00-06:00" or "...Z").
@@ -27,12 +28,15 @@ export const createProspectSchema = z.object({
   latitude: z.number().min(-90).max(90),
   longitude: z.number().min(-180).max(180),
   captured_at: isoTimestamp,
+  ...fiscalFields,
 });
 export type CreateProspectInput = z.infer<typeof createProspectSchema>;
 
 /** PCRM-64: admin list of prospects. */
 export const listProspectsQuerySchema = paginationQuerySchema.extend({
   user_id: z.string().uuid('Invalid user id').optional(),
+  /** PCRM-186: `false` lists the converted ones, `true` the ones still open. */
+  active: booleanQueryParam.optional(),
 });
 export type ListProspectsQuery = z.infer<typeof listProspectsQuerySchema>;
 
@@ -54,6 +58,7 @@ export const createProspectAdminSchema = z
     phone: z.string().trim().min(1, 'phone is required').max(40),
     latitude: z.number().min(-90).max(90).optional(),
     longitude: z.number().min(-180).max(180).optional(),
+    ...fiscalFields,
   })
   .refine(
     (data) => (data.latitude === undefined) === (data.longitude === undefined),
@@ -72,3 +77,27 @@ export const updateProspectLocationSchema = z.object({
 export type UpdateProspectLocationInput = z.infer<
   typeof updateProspectLocationSchema
 >;
+
+/**
+ * PCRM-185: admin edits a prospect's identity and fiscal data. Partial: an
+ * omitted field is left as is, null clears an optional one. `name` and
+ * `phone` stay mandatory on the row, so they accept a value but never null.
+ * Strict, so a typo or a field this endpoint does not own (location, user_id)
+ * answers 400 instead of being dropped silently.
+ */
+export const updateProspectSchema = z
+  .object({
+    name: z.string().trim().min(1, 'name cannot be empty').max(200).optional(),
+    phone: z
+      .string()
+      .trim()
+      .min(1, 'phone cannot be empty')
+      .max(40)
+      .optional(),
+    ...fiscalFields,
+  })
+  .strict()
+  .refine((data) => Object.values(data).some((value) => value !== undefined), {
+    message: 'At least one field is required',
+  });
+export type UpdateProspectInput = z.infer<typeof updateProspectSchema>;

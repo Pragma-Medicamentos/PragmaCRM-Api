@@ -537,3 +537,88 @@ describe('reconciliation: the CRM mirrors the file within its range', () => {
     expect(await isLive(900_142)).toBe(true);
   });
 });
+
+describe('prospect conversion on import (PCRM-186)', () => {
+  // March 2026: away from the dates the other tests reconcile.
+  const march = (day: string) => ({
+    fecha_emision: `2026-03-${day} 10:00:00`,
+    updated_at: `${day}/03/2026 10:00:00`,
+  });
+  const SALE_IDS = [900_186, 900_187];
+  const CUSTOMER_ERP_IDS = [98_601, 98_602, 98_603];
+  const prospectIds: string[] = [];
+
+  beforeAll(async () => {
+    // Already in the CRM before the upload, sharing a name with one coming in.
+    await prisma.customer.create({
+      data: { erp_customer_id: 98_601, name: 'FARMACIA  GEMELA IMPORT', origin: 'efactsoft' },
+    });
+    for (const name of ['farmacia   conversión  import', 'Farmacia Gemela Import']) {
+      const p = await prisma.prospect.create({ data: { user_id: adminId, name } });
+      prospectIds.push(p.id);
+    }
+  });
+
+  afterAll(async () => {
+    await prisma.balance_snapshot.deleteMany({ where: { erp_sale_id: { in: SALE_IDS } } });
+    await prisma.sale.deleteMany({ where: { erp_sale_id: { in: SALE_IDS } } });
+    await prisma.prospect.deleteMany({ where: { id: { in: prospectIds } } });
+    await prisma.customer.deleteMany({ where: { erp_customer_id: { in: CUSTOMER_ERP_IDS } } });
+  });
+
+  it('converts the prospect with one matching customer and only alerts on a shared name', async () => {
+    const res = await upload(
+      toBuffer([
+        sale(SALE_IDS[0], { id_cliente: 98_602, cliente: 'Farmacia Conversion Import', ...march('10') }),
+        sale(SALE_IDS[1], { id_cliente: 98_603, cliente: 'Farmacia Gemela Import', ...march('11') }),
+      ])
+    );
+
+    expect(res.status).toBe(201);
+    const [converted, ambiguous] = prospectIds;
+    // The run scans every active prospect, so a seeded database adds its own
+    // rows: look only at the two this test created.
+    const ownConversions = res.body.data.prospects.converted.filter(
+      (c: { prospect_id: string }) => prospectIds.includes(c.prospect_id)
+    );
+    const ownAlerts = res.body.data.prospects.alerts.filter(
+      (a: { prospect_id: string }) => prospectIds.includes(a.prospect_id)
+    );
+    expect(ownConversions).toEqual([
+      expect.objectContaining({
+        prospect_id: converted,
+        customer_name: 'Farmacia Conversion Import',
+        moved_stops: 0,
+      }),
+    ]);
+    expect(ownAlerts).toEqual([expect.objectContaining({ prospect_id: ambiguous })]);
+    expect(ownAlerts[0].candidates.map((c: { erp_customer_id: number }) => c.erp_customer_id)).toEqual([
+      98_601, 98_603,
+    ]);
+    expect(res.body.message).toMatch(/converted to customer/);
+    expect(res.body.message).toMatch(/more than one customer by name/);
+
+    const rows = await prisma.prospect.findMany({
+      where: { id: { in: prospectIds } },
+      select: { id: true, active: true, customer_id: true, converted_at: true },
+    });
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+    expect(byId[converted]).toMatchObject({ active: false });
+    expect(byId[converted].customer_id).not.toBeNull();
+    expect(byId[converted].converted_at).not.toBeNull();
+    expect(byId[ambiguous]).toMatchObject({ active: true, customer_id: null, converted_at: null });
+  });
+
+  it('does not convert again on a re-upload', async () => {
+    const res = await upload(
+      toBuffer([sale(SALE_IDS[0], { id_cliente: 98_602, cliente: 'Farmacia Conversion Import', ...march('10') })])
+    );
+
+    expect(res.status).toBe(201);
+    expect(
+      res.body.data.prospects.converted.filter((c: { prospect_id: string }) =>
+        prospectIds.includes(c.prospect_id)
+      )
+    ).toEqual([]);
+  });
+});

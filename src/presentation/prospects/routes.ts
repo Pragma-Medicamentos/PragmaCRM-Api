@@ -13,6 +13,7 @@ import {
   listProspectsQuerySchema,
   prospectParamsSchema,
   updateProspectLocationSchema,
+  updateProspectSchema,
 } from '../../domain/schemas/prospect.schema';
 
 export class ProspectsRoutes {
@@ -50,6 +51,22 @@ export class ProspectsRoutes {
       validateParams(prospectParamsSchema),
       validateBody(updateProspectLocationSchema),
       controller.updateLocation
+    );
+
+    // PCRM-186: manual retry of the name match the sales import runs.
+    router.post(
+      '/:id/convert',
+      requireRole(ROLES.ADMIN),
+      validateParams(prospectParamsSchema),
+      controller.convert
+    );
+
+    router.patch(
+      '/:id',
+      requireRole(ROLES.ADMIN),
+      validateParams(prospectParamsSchema),
+      validateBody(updateProspectSchema),
+      controller.update
     );
 
     return router;
