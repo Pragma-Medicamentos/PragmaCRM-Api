@@ -6,6 +6,7 @@ import { CustomError } from '../../../domain/errors/CustomError';
 import {
   createProspect,
   createProspectAsAdmin,
+  deleteProspect,
   listProspects,
   updateProspect,
   updateProspectLocation,
@@ -35,6 +36,7 @@ jest.mock('../../../lib/prisma', () => ({
 jest.mock('../../../services/prospect.service', () => ({
   createProspect: jest.fn(),
   createProspectAsAdmin: jest.fn(),
+  deleteProspect: jest.fn(),
   listProspects: jest.fn(),
   updateProspect: jest.fn(),
   updateProspectLocation: jest.fn(),
@@ -43,6 +45,7 @@ jest.mock('../../../services/prospect.service', () => ({
 const createProspectMock = createProspect as jest.Mock;
 const createProspectAsAdminMock = createProspectAsAdmin as jest.Mock;
 const listProspectsMock = listProspects as jest.Mock;
+const deleteProspectMock = deleteProspect as jest.Mock;
 const updateProspectLocationMock = updateProspectLocation as jest.Mock;
 const updateProspectMock = updateProspect as jest.Mock;
 const findUserMock = findUserByAuthUserId as jest.Mock;
@@ -699,5 +702,46 @@ describe('POST /api/v1/prospects/:id/convert (PCRM-186)', () => {
     const res = await request(app).post('/api/v1/prospects/not-a-uuid/convert').set(AUTH);
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe('DELETE /api/v1/prospects/:id', () => {
+  beforeEach(() => {
+    findUserMock.mockResolvedValue(user('Administrador', ADMIN_ID));
+    deleteProspectMock.mockReset();
+  });
+
+  it('deletes inside a transaction and answers 200 with the removed stops', async () => {
+    deleteProspectMock.mockResolvedValue({ id: PROSPECT_ID, deleted: true, removed_stops: 2 });
+
+    const res = await request(app).delete(`/api/v1/prospects/${PROSPECT_ID}`).set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ id: PROSPECT_ID, deleted: true, removed_stops: 2 });
+    expect(deleteProspectMock).toHaveBeenCalledWith(expect.anything(), PROSPECT_ID);
+  });
+
+  it('maps a missing or already deleted prospect to 404', async () => {
+    deleteProspectMock.mockRejectedValue(CustomError.notFound('Prospect not found'));
+
+    const res = await request(app).delete(`/api/v1/prospects/${PROSPECT_ID}`).set(AUTH);
+
+    expect(res.status).toBe(404);
+  });
+
+  it('forbids the Vendedor', async () => {
+    findUserMock.mockResolvedValue(user('Vendedor'));
+
+    const res = await request(app).delete(`/api/v1/prospects/${PROSPECT_ID}`).set(AUTH);
+
+    expect(res.status).toBe(403);
+    expect(deleteProspectMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid id', async () => {
+    const res = await request(app).delete('/api/v1/prospects/not-a-uuid').set(AUTH);
+
+    expect(res.status).toBe(400);
+    expect(deleteProspectMock).not.toHaveBeenCalled();
   });
 });
