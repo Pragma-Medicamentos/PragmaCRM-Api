@@ -571,6 +571,8 @@ prospect
 - **"Nuevos prospectos" no cambia:** cuenta el prospecto al registrarse; convertirlo lo desactiva, no lo borra.
 - **Sin otra llave de cruce:** el JSON trae el nombre (149/150 clientes) y el celular (3/150); los campos DTE (`dte`, `dte_firm`…) llegan vacíos porque las ventas son "Recibo". Si Pragma emitiera CCF o factura electrónica, el `receptor` del DTE traería NRC/NIT y serviría como llave más confiable.
 
+**Eliminar prospectos (26/10/2026).** `DELETE /api/v1/prospects/:id` (solo Administrador) cierra el caso de uso "Editar y eliminar prospectos". Es **soft delete** (`deleted_at`) y, en la misma transacción, borra (soft) sus paradas **pendientes**: `scheduled_visit` de hoy en adelante (zona de negocio) sin visita. Las paradas pasadas y las visitas (`visit.prospect_id`) se conservan: el historial las lee con `LEFT JOIN prospect` sin filtrar `deleted_at`. Responde `{ id, deleted, removed_stops }`; 404 si no existe o ya estaba borrado. Un prospecto borrado sale del listado, del selector de paradas extra y del KPI "Nuevos prospectos" (que filtra `deleted_at IS NULL`). También se puede borrar uno convertido; sus paradas pendientes ya pasaron al cliente.
+
 ### 7.4 Rutas
 
 ```

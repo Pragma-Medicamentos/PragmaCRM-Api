@@ -69,6 +69,13 @@ export class ProspectsRoutes {
       controller.update
     );
 
+    router.delete(
+      '/:id',
+      requireRole(ROLES.ADMIN),
+      validateParams(prospectParamsSchema),
+      controller.remove
+    );
+
     return router;
   }
 }
