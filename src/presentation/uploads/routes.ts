@@ -16,6 +16,9 @@ export class UploadsRoutes {
     // it takes no body.
     router.get('/sales/in-progress', controller.salesImportInProgress);
 
+    // Range the daily Efactsoft sync exports (scripts/efactsoft-daily-sync.ts).
+    router.get('/sales/sync-range', controller.salesSyncRange);
+
     return router;
   }
 }

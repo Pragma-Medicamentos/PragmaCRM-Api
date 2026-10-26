@@ -64,6 +64,19 @@ export const envs = {
   // 1f: the client has not signed a value yet (CLAUDE.md 5.8, Anexo B #4).
   // Each metrics request can still override it with `?inactivity_days=`.
   INACTIVITY_THRESHOLD_DAYS: get('INACTIVITY_THRESHOLD_DAYS').default('30').asIntPositive(),
+
+  // Bounds of the range the daily Efactsoft sync re-exports
+  // (GET /api/v1/uploads/sales/sync-range). Efactsoft filters its export on
+  // the quotation's created_at, so the minimum has to cover quotations
+  // converted to sales days later; it also absorbs a few failed daily runs.
+  // The maximum keeps one ancient unpaid invoice from dragging the export
+  // back for years; the endpoint reports how many pending sales it leaves out.
+  SALES_SYNC_MIN_LOOKBACK_DAYS: get('SALES_SYNC_MIN_LOOKBACK_DAYS')
+    .default('30')
+    .asIntPositive(),
+  SALES_SYNC_MAX_LOOKBACK_DAYS: get('SALES_SYNC_MAX_LOOKBACK_DAYS')
+    .default('180')
+    .asIntPositive(),
   // Base URL of the Supabase project. Issuer and JWKS endpoint are derived
   // from it, so there is no point declaring three variables for one value.
   SUPABASE_URL: get('SUPABASE_URL').required().asUrlString(),
