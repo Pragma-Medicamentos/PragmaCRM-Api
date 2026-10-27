@@ -362,21 +362,21 @@ En este repositorio, las constantes que sean configurables por entorno van en `s
 **Decisión confirmada (11 de septiembre de 2026): Supabase Auth es el proveedor de identidad y RLS es el control de acceso.** Sustituye a la decisión anterior basada en Clerk, que queda retirada.
 
 - **Supabase Auth es dueño de la autenticación.** `app_user.auth_user_id uuid` guarda el `auth.users.id`, que es el claim `sub` del JWT. Ese es el vínculo.
-- **Los clientes consultan Supabase directamente** con `supabase-js`. Las políticas RLS deciden qué ve cada quien.
-- **El rol vive en `app_user.role`, no en los claims.** Cambiarlo es un `UPDATE` y aplica en la consulta siguiente. Por eso las políticas lo resuelven con las funciones de `app_auth` y no leyendo el token.
+- ~~**Los clientes consultan Supabase directamente** con `supabase-js`.~~ **Cerrado por PCRM-138 (26/10/2026):** web y móvil usan `supabase-js` solo para Auth y todo dato pasa por la API. El camino directo quedó sin GRANT y sin políticas (ver "Estado de los permisos").
+- **El rol vive en `app_user.role`, no en los claims.** Cambiarlo es un `UPDATE` y aplica en la consulta siguiente. Por eso `requireAuth` lo lee de la base y no del token, igual que las funciones de `app_auth`.
 - **No hay webhook de sincronización y no hace falta**: la API crea la identidad en Supabase Auth y la fila de `app_user` en la misma operación, así que conoce el `sub` en el acto.
 - La tabla de usuarios sigue sin campos de contraseña ni credenciales: los gestiona Supabase Auth.
 
-**Dos caminos, y solo uno pasa por RLS.**
+**Un solo camino a los datos (PCRM-138).**
 
 | Camino | Quién autoriza |
 |---|---|
-| Cliente → Supabase (`supabase-js`) | Las políticas RLS |
+| Cliente → Supabase (`supabase-js`) | Solo Auth. A las tablas, nadie: `42501` |
 | Cliente → PragmaCRM-Api | `requireAuth` + `requireRole` |
 
-La API se conecta con `DATABASE_URL` como rol `postgres`, que **bypassea RLS**. No es una sola fuente de verdad: es una división por camino. La frontera, que hay que respetar al agregar funcionalidad: **`app_user` se escribe solo desde la API** — crear una identidad exige la `service_role` key — **y el resto del dominio se lee y escribe por RLS**.
+La API se conecta con `DATABASE_URL` como rol `postgres`, que **bypassea RLS**. Toda autorización de datos vive en la API; RLS habilitado sin políticas es la red que deja cerrada cualquier tabla a `anon` y `authenticated`.
 
-**Cómo se escribe una política.** Las funciones `app_auth.current_app_user_id()`, `app_auth.role_name()` y `app_auth.is_admin()` (migración `rls_helper_functions`) resuelven al usuario. Son `SECURITY DEFINER` a propósito: una política que consultara `app_user` directamente dispararía las políticas de `app_user` y Postgres abortaría con `42P17: infinite recursion detected in policy`.
+**Si algún día se reabre el camino directo** (decisión de equipo, no de implementación), así se escribe una política. Las funciones `app_auth.current_app_user_id()`, `app_auth.role_name()` y `app_auth.is_admin()` (migración `rls_helper_functions`) resuelven al usuario. Son `SECURITY DEFINER` a propósito: una política que consultara `app_user` directamente dispararía las políticas de `app_user` y Postgres abortaría con `42P17: infinite recursion detected in policy`.
 
 Cuatro reglas que no son opcionales:
 
@@ -387,7 +387,7 @@ Cuatro reglas que no son opcionales:
 
 **`FORCE ROW LEVEL SECURITY` está prohibido sobre `app_user`.** Activarlo reintroduce la recursión *y* deja ciega a la API, que se conecta como `postgres`.
 
-**Estado de los permisos.** `anon` no tiene ningún privilegio, deliberadamente: la anon key viaja dentro del bundle web y del APK. `authenticated` tiene solo el DML que necesita, tabla por tabla. Las tablas sin política siguen en deny-all: `upload` y `sale_staging` entre ellas, que son exclusivas de la API.
+**Estado de los permisos (PCRM-138, 26/10/2026).** Ni `anon` ni `authenticated` tienen privilegios sobre tablas ni secuencias de `public`, y **no queda ninguna política** en `public`: las 16 de la migración `rls_policies_and_grants` se eliminaron (migración `revoke_data_api_table_access`). Con RLS habilitado y sin políticas, cada tabla es deny-all aunque una migración futura agregue un GRANT por error. Motivo: la Data API está habilitada en los proyectos remotos, y con su JWT y la publishable key del APK un Vendedor podía insertar o corregir `visit` con cualquier `distance_meters` —la validación GPS de RF-06 solo corre en la API— y leer crédito y datos fiscales de toda la cartera (`customer_select` es `USING (true)`). Ningún cliente usaba ese camino. **Las funciones `app_auth` se conservan** como base de una política futura; reabrir una tabla exige un GRANT **y** una política nueva, escrita con las reglas de arriba y revisada contra las validaciones de la API (la distancia de RF-06 en `visit`, por ejemplo). Auditoría completa en [docs/SECURITY.md](./docs/SECURITY.md).
 
 
 ## 6. Integración con Efactsoft
@@ -892,16 +892,18 @@ Implementada con `jose` (verificación del JWT) y `@supabase/supabase-js` (Admin
 - `requireRole(...roles)` se encadena después. Los roles son la constante `ROLES`.
 - Los guards se aplican **por grupo de rutas** en `routes.ts`, nunca dentro del controlador. En rutas con subida de archivos van necesariamente ahí, por delante de multer, para rechazar a un anónimo antes de bufferizar el archivo.
 - Códigos: **401** por token ausente, inválido, expirado o de otro emisor. **403** por usuario no enlazado, `active = false`, `role` desconocido o rol insuficiente. **503** si el JWKS no responde — el token podría ser válido, y mandar a todos al login por un problema de red sería peor.
-- `/api/v1/me` devuelve usuario y rol. Es la vía por el camino de la API, pero no la única: como el rol vive en `app_user.role` y no en el token, un cliente que habla directo con Supabase también puede leerlo, vía `app_user_select` (ver 5.9). Filtrando por `auth_user_id = session.user.id`, la policy siempre devuelve como máximo la fila propia — sin ese filtro, un Administrador recibiría además las filas de otros usuarios, porque la policy también habilita `is_admin()` para sostener el dashboard de gestión de vendedores (RF-01). Un usuario deshabilitado o borrado no recibe fila alguna por ninguna de las dos vías, porque `app_auth.current_app_user_id()` resuelve a `NULL`.
+- `/api/v1/me` devuelve usuario y rol. Es la única vía: el rol vive en `app_user.role`, no en el token, y la tabla no es legible por Supabase (ver 5.9). Un usuario deshabilitado o borrado recibe 403.
 - `/api/health` es la única ruta pública.
 
 **Alta de vendedores.** `use-cases/create-seller.use-case.ts` crea primero la identidad (`services/supabaseAdmin.service.ts`, con la `service_role` key) y después el perfil, con `auth_user_id` ya poblado; si el perfil falla, borra la identidad. No hay ventana con el enlace en NULL ni paso manual. El `inviteLink` se devuelve una sola vez en el 201 y no se almacena.
 
-**Deshabilitar** corta por los dos caminos: la API responde 403, las funciones `app_auth.*` filtran por `active` y las políticas dejan de devolver filas, y además se banea la cuenta para que muera la sesión viva.
+**Deshabilitar** hace que la API responda 403 y además banea la cuenta para que muera la sesión viva.
 
 **Probar endpoints protegidos:** pedir un token a `/auth/v1/token?grant_type=password` con la anon key (ver README). En los tests se mockea `lib/supabaseJwt`; la criptografía real se prueba en `lib/__tests__/supabaseJwt.test.ts`, que firma tokens ES256 de verdad sin red.
 
-**Lo que no está hecho:** las políticas RLS están escritas solo para las tablas que web y móvil consumen en este sprint. El resto sigue en deny-all — no rompe nada porque nadie las consulta, pero quien agregue una funcionalidad nueva tendrá que escribir su política y su GRANT, o verá cero filas sin explicación.
+**Acceso directo a tablas:** cerrado (PCRM-138). Toda funcionalidad nueva va por la API; un cliente que consulte una tabla con `supabase-js` recibe `42501 permission denied`. Abrirlo exige un GRANT explícito y una política nueva, y es una decisión de equipo, no un detalle de implementación.
+
+**Rate limit:** `/api/v1/auth/otp`, `/login` y `/refresh` llevan límite por IP (`presentation/middleware/rateLimit.ts`, store en memoria, una sola instancia). Se omite con `NODE_ENV=test`.
 
 
 ### Ramas y CI

@@ -218,12 +218,10 @@ ver [docs/CI_CD.md](./docs/CI_CD.md).
 **Supabase Auth** es el proveedor de identidad. La API no guarda contraseñas: recibe el token que
 emite Supabase, verifica su firma y resuelve el rol contra `app_user.auth_user_id`.
 
-Hay **dos caminos** hacia los datos, y conviene tenerlos claros:
-
-| Camino | Quién decide | Cuándo |
-|---|---|---|
-| Cliente → Supabase (`supabase-js`) | **Las políticas RLS** | La mayoría de las consultas de web y móvil |
-| Cliente → esta API | **`requireAuth` / `requireRole`** | Import del ERP, alta de vendedores, `/me` |
+Web y móvil usan `supabase-js` **solo para Auth**. Todo dato pasa por esta API, que autoriza con
+`requireAuth` / `requireRole`. Las tablas de `public` no tienen GRANT ni políticas para `anon` ni
+`authenticated`: una consulta directa por la Data API recibe `42501` (PCRM-138, ver
+[docs/SECURITY.md](./docs/SECURITY.md)).
 
 Además, **toda petición a esta API (excepto `/api/health`) debe traer la `API_KEY` estática del entorno en el header `x-api-key`** (`requireApiKey`, ver `src/presentation/middleware/apiKey.ts`). Es una compuerta de transporte, no de identidad: no reemplaza al JWT ni otorga rol; solo garantiza que quien llama comparte el secreto.
 
@@ -370,9 +368,8 @@ definir, Supabase usa `site_url` —que es la API— y el vendedor aterriza en u
 Si el enlace caduca sin usarse, el vendedor queda sin contraseña y no puede entrar: hay que generarle
 uno nuevo. Hoy eso se hace volviendo a invitarlo desde el dashboard de Supabase.
 
-Deshabilitar a un vendedor (`PATCH /:id/active`) lo corta por los dos caminos: la API responde 403,
-las políticas RLS dejan de devolverle filas, y además se banea su cuenta para que la sesión viva
-muera en vez de durar hasta que expire el token.
+Deshabilitar a un vendedor (`PATCH /:id/active`) hace que la API le responda 403, y además se banea
+su cuenta para que la sesión viva muera en vez de durar hasta que expire el token.
 
 ## Estructura
 
