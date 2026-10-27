@@ -1,15 +1,38 @@
 import request from 'supertest';
-import { Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import { Server } from '../../server';
-import { AUTH_RATE_LIMITS, createRateLimiter } from '../rateLimit';
+import { ROLES } from '../../../domain/types/auth.types';
+import {
+  API_RATE_LIMITS,
+  AUTH_RATE_LIMITS,
+  createRateLimiter,
+  userKey,
+} from '../rateLimit';
 
 // Server rather than a bare express() so the 429 goes through the global
 // error handler and the real ApiResponse envelope is asserted.
-const buildApp = (limit: number) => {
+// Stands in for requireAuth: the per-user limiters only run after it.
+const fakeAuth = (req: Request, _res: Response, next: NextFunction) => {
+  const id = req.header('x-test-user');
+  if (id) {
+    req.authUser = {
+      id,
+      authUserId: id,
+      role: ROLES.ADMIN,
+      name: 'Test',
+      email: null,
+      passwordSetAt: null,
+    };
+  }
+  next();
+};
+
+const buildApp = (limit: number, keyGenerator?: (req: Request) => string) => {
   const router = Router();
   router.post(
     '/api/test/limited',
-    createRateLimiter('test', { limit, windowMs: 60_000 }),
+    fakeAuth,
+    createRateLimiter('test', { limit, windowMs: 60_000, keyGenerator }),
     (_req, res) => {
       res.status(200).json({ success: true, message: 'ok' });
     }
@@ -62,6 +85,44 @@ describe('createRateLimiter', () => {
     expect(first.status).toBe(200);
     expect(other.status).toBe(200);
     expect(repeat.status).toBe(429);
+  });
+});
+
+describe('per-user limiters', () => {
+  it('give each user behind the same IP their own budget', async () => {
+    const app = buildApp(1, userKey);
+
+    const first = await request(app)
+      .post('/api/test/limited')
+      .set('X-Forwarded-For', '203.0.113.1')
+      .set('x-test-user', 'user-a');
+    const other = await request(app)
+      .post('/api/test/limited')
+      .set('X-Forwarded-For', '203.0.113.1')
+      .set('x-test-user', 'user-b');
+    const repeat = await request(app)
+      .post('/api/test/limited')
+      .set('X-Forwarded-For', '203.0.113.2')
+      .set('x-test-user', 'user-a');
+
+    expect(first.status).toBe(200);
+    expect(other.status).toBe(200);
+    // Same user from another IP still shares its budget.
+    expect(repeat.status).toBe(429);
+  });
+});
+
+describe('API_RATE_LIMITS', () => {
+  it('keeps the expensive endpoints well under the global budget', () => {
+    const perMinute = ({ limit, windowMs }: { limit: number; windowMs: number }) =>
+      limit / (windowMs / 60_000);
+
+    expect(perMinute(API_RATE_LIMITS.uploads)).toBeLessThan(
+      perMinute(API_RATE_LIMITS.reports)
+    );
+    expect(perMinute(API_RATE_LIMITS.reports)).toBeLessThan(
+      perMinute(API_RATE_LIMITS.global)
+    );
   });
 });
 

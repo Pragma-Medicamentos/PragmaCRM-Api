@@ -903,7 +903,12 @@ Implementada con `jose` (verificación del JWT) y `@supabase/supabase-js` (Admin
 
 **Acceso directo a tablas:** cerrado (PCRM-138). Toda funcionalidad nueva va por la API; un cliente que consulte una tabla con `supabase-js` recibe `42501 permission denied`. Abrirlo exige un GRANT explícito y una política nueva, y es una decisión de equipo, no un detalle de implementación.
 
-**Rate limit:** `/api/v1/auth/otp`, `/login` y `/refresh` llevan límite por IP (`presentation/middleware/rateLimit.ts`, store en memoria, una sola instancia). Se omite con `NODE_ENV=test`.
+**Rate limit (PCRM-138):** `presentation/middleware/rateLimit.ts`, store en memoria (una sola instancia). Se omite con `NODE_ENV=test`.
+
+- **Global, por IP:** 1200/min sobre todo `/api/v1/*`, montado en `routes.ts` antes de `requireApiKey`. Un endpoint nuevo queda cubierto sin hacer nada.
+- **Por usuario:** `/reports` 30 cada 5 min y `POST /uploads/sales` 10 cada 15 min (el polling de `in-progress` no cuenta).
+- **Auth pública, por IP:** `/auth/otp` 5, `/login` 10 y `/refresh` 60 cada 15 min.
+- Un endpoint caro nuevo lleva su propio `apiRateLimiter` después de `requireAuth`. Los números y el uso de web y móvil que los justifica están en [docs/SECURITY.md](./docs/SECURITY.md#2-rate-limit).
 
 
 ### Ramas y CI

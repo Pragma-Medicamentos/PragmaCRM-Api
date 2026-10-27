@@ -9,7 +9,7 @@ Revisión previa a la integración y el despliegue. Cubre guards por endpoint, v
 | # | Hallazgo | Severidad | Estado |
 |---|---|---|---|
 | 1 | Un Vendedor podía escribir `visit` y leer toda `customer` por la Data API de Supabase | **Crítica** | Corregido |
-| 2 | Sin rate limit en `/api/v1/auth/{otp,login,refresh}` | Alta | Corregido |
+| 2 | Sin rate limit en ningún endpoint, incluida la auth pública | Alta | Corregido |
 | 3 | `multer` 2.0–2.4 con DoS conocido (GHSA-q7qp-rjg7-q26m), en la ruta de subida | Alta | Corregido (2.5.0) |
 | 4 | Sin cabeceras defensivas; `X-Powered-By: Express` | Baja | Corregido |
 | 5 | Funciones `SECURITY DEFINER` con `EXECUTE` para `anon` | Baja | Corregido |
@@ -38,19 +38,33 @@ Revisión previa a la integración y el despliegue. Cubre guards por endpoint, v
 
 **Reabrir el camino directo** para una tabla exige un GRANT y una política nueva, revisada contra las validaciones de la API. Es decisión de equipo (CLAUDE.md 5.9).
 
-## 2. Rate limit en la auth pública
+## 2. Rate limit
 
-Todo login llega a GoTrue desde la IP del servidor, así que los límites por IP de Supabase no distinguen a un atacante del resto del equipo: alguien probando contraseñas agotaba la cuota de todos. `/otp` además envía un correo por llamada.
+`src/presentation/middleware/rateLimit.ts` usa `express-rate-limit` (MIT) con store en memoria, porque la API corre como una sola instancia; con dos haría falta un store compartido. La IP del cliente sale de `trust proxy 1` (Traefik). Al excederse responde **429** con el envelope `ApiResponse` y `RateLimit-*` / `Retry-After`.
 
-`src/presentation/middleware/rateLimit.ts` (`express-rate-limit`, store en memoria) aplica, por IP del cliente (`trust proxy 1`, Traefik):
+| Limitador | Alcance | Clave | Límite | Dónde se monta |
+|---|---|---|---|---|
+| `api.global` | Todo `/api/v1/*` (no `/api/health`) | IP | 1200 / 1 min | `presentation/routes.ts`, antes de `requireApiKey` |
+| `api.reports` | `/api/v1/reports/*` | Usuario | 30 / 5 min | `presentation/routes.ts`, tras `requireRole` |
+| `api.uploads` | `POST /api/v1/uploads/sales` | Usuario | 10 / 15 min | `uploads/routes.ts`, antes de multer |
+| `auth.otp` | `POST /api/v1/auth/otp` | IP | 5 / 15 min | `auth/routes.ts` |
+| `auth.login` | `POST /api/v1/auth/login` | IP | 10 / 15 min | `auth/routes.ts` |
+| `auth.refresh` | `POST /api/v1/auth/refresh` | IP | 60 / 15 min | `auth/routes.ts` |
 
-| Ruta | Límite |
-|---|---|
-| `POST /api/v1/auth/otp` | 5 / 15 min |
-| `POST /api/v1/auth/login` | 10 / 15 min |
-| `POST /api/v1/auth/refresh` | 60 / 15 min |
+**Auth.** Todo login llega a GoTrue desde la IP del servidor, así que los límites por IP de Supabase no distinguen a un atacante del resto del equipo: alguien probando contraseñas agotaba la cuota de todos. `/otp` además envía un correo por llamada.
 
-Al excederse responde **429** con el envelope `ApiResponse` y `RateLimit-*` / `Retry-After`. Si algún día hay más de una instancia, se necesita un store compartido.
+**Cómo se dimensionó el resto.** Con el uso real de los clientes, medido el 26/10 en `PragmaCRM-Web` (`feat/pcrm-159-frontend-for-reports`) y `PragmaCRM-Mobile` (`origin/prod`). **Ninguno cachea**: cada recarga, pestaña o filtro repite todas las llamadas de la pantalla.
+
+- **Web, peor ráfaga.** El planificador `/rutas` hace 9 + N llamadas (N = rutas activas, una por ruta en `useRoutePlanner.ts`) al cargar y en **cada** arrastre de asignación. También al refrescar el token, más o menos cada hora, porque `useCurrentAppUser` desmonta la página. Con N = 50 y un arrastre cada 3 s son unas 1200 por minuto: es el techo del `global`.
+- **Web, resto.** `/metricas` con comparación son 7 llamadas por cambio de periodo, y `/clientes` unas 4. El único polling es `GET /uploads/sales/in-progress` cada 15 s durante una importación, y por eso `api.uploads` solo cubre el POST. No hay reintentos automáticos y la web no llama a `/auth/refresh`.
+- **Móvil.** Sin polling ni cola offline, y el GPS no llega a la API. Login y refresh van directo a Supabase. Uso intenso: 30–60 llamadas cada 15 min, con picos de unas 6 por segundo.
+- **Por IP vs. por usuario.** El `global` va por IP porque corre antes de autenticar y toda la oficina puede compartir una IP; por eso es holgado. `reports` y `uploads` van por usuario (`req.authUser.id`): son los endpoints que consumen CPU y memoria, y dos personas detrás del mismo wifi no comparten cupo.
+
+**Ajuste.** Cada 429 deja un `logger.warn('Rate limit exceeded')` con `limiter`, ruta y `user_id`. Si aparece con usuarios reales, se sube el número en `API_RATE_LIMITS`; si nunca aparece, el número está bien.
+
+**Recomendaciones al frontend web** (fuera de este ticket):
+- El planificador debería pedir las asignaciones en una sola llamada, no una por ruta.
+- `useCurrentAppUser` no debería desmontar la página en cada refresh de token.
 
 ## 3–5. Dependencias, cabeceras, funciones
 
