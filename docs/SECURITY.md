@@ -18,6 +18,7 @@ Revisión previa a la integración y el despliegue. Cubre guards por endpoint, v
 | 8 | `public.normalize_name` con `search_path` mutable | Baja | **Postergado** |
 | 9 | Refresh token sin `timebox` en GoTrue | Baja | **Postergado** |
 | 10 | Mensajes y comentarios en español en `src/` | Convención | **Postergado** |
+| 11 | `/api/health` sin rate limit y sin protección DDoS en el borde | Baja | **Postergado** ([PCRM-207](https://catolica-team-zgozl0ds.atlassian.net/browse/PCRM-207)) |
 
 ## 1. Escritura directa de `visit` y lectura de `customer` (crítica)
 
@@ -87,5 +88,9 @@ Revisión previa a la integración y el despliegue. Cubre guards por endpoint, v
 8. **`normalize_name`.** Fijar `search_path`; usa `unaccent`, así que hay que calificarlo con su schema.
 9. **Sesiones.** GoTrue no expira refresh tokens sin `[auth.sessions].timebox`. Hoy el único límite es la cookie de 30 días del navegador.
 10. **Idioma.** `middleware/auth.ts`, `request-login-otp.use-case.ts` y `presentation/routes.ts` conservan mensajes o comentarios en español (CLAUDE.md 11). Cambiar los mensajes afecta lo que muestra la web.
+11. **`/api/health` y DDoS** ([PCRM-207](https://catolica-team-zgozl0ds.atlassian.net/browse/PCRM-207)). Health se monta antes del límite global, así que no tiene límite ni suma en el cupo de la IP. No toca la base, y un 429 cuesta lo mismo que un 200, pero limitarlo mal tumba la API: el `HEALTHCHECK` del `Dockerfile` lo consulta cada 30 s por loopback y, si falla, el contenedor queda `unhealthy`. Propuesta: 60/min por IP que también cuente en el global, excluyendo el loopback por `req.socket.remoteAddress`. Contra un DDoS no sirve ningún límite en la app, y esto va en el despliegue:
+    - Cloudflare Free delante del dominio.
+    - `rateLimit` por IP en Traefik.
+    - Rotación de logs de Docker (`max-size` / `max-file`): `requestMetadata` loguea cada petición y un flood puede llenar el disco del VPS.
 
 Opcional, como segunda capa: apagar la Data API en el dashboard (Settings → API). No afecta a Supabase Auth.
