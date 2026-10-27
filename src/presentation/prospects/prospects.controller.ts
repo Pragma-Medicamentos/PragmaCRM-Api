@@ -12,6 +12,7 @@ import {
 } from '../../domain/schemas/prospect.schema';
 import {
   CreatedProspect,
+  DeletedProspect,
   ProspectListItem,
 } from '../../domain/types/prospect.types';
 import { Paginated } from '../../domain/types/pagination.types';
@@ -20,6 +21,7 @@ import { convertProspectByName } from '../../services/prospectConversion.service
 import {
   createProspect,
   createProspectAsAdmin,
+  deleteProspect,
   listProspects,
   updateProspect,
   updateProspectLocation,
@@ -126,6 +128,26 @@ export class ProspectsController {
       res.status(200).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'ProspectsController.update');
+    }
+  }
+
+  /**
+   * Soft-delete a prospect and its pending stops, in one transaction. 404 if
+   * it does not exist or was already deleted.
+   */
+  public async remove(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as ProspectParams;
+      const deleted = await prisma.$transaction((tx) => deleteProspect(tx, id));
+
+      const response: ApiResponse<DeletedProspect> = {
+        success: true,
+        message: 'Prospect deleted successfully',
+        data: deleted,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProspectsController.remove');
     }
   }
 

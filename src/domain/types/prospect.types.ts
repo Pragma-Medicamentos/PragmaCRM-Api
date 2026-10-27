@@ -18,6 +18,14 @@ export interface CreatedProspect {
   email: string | null;
 }
 
+/** DELETE /api/v1/prospects/:id: soft delete plus its pending stops removed. */
+export interface DeletedProspect {
+  id: string;
+  deleted: true;
+  /** Pending stops (today on, not executed) soft-deleted with the prospect. */
+  removed_stops: number;
+}
+
 export interface ProspectListItem {
   id: string;
   name: string;
