@@ -29,6 +29,15 @@ describe('GET /api/health', () => {
 
     expect(res.headers['x-request-id']).toEqual(expect.any(String));
   });
+
+  // PCRM-138: no framework fingerprint, and helmet's defensive headers.
+  it('does not advertise Express and sets security headers', async () => {
+    const res = await request(app).get('/api/health');
+
+    expect(res.headers['x-powered-by']).toBeUndefined();
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['strict-transport-security']).toEqual(expect.any(String));
+  });
 });
 
 describe('unknown routes', () => {

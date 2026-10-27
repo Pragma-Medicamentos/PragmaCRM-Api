@@ -11,9 +11,12 @@ import {
 } from '../domain/schemas/prospect.schema';
 import {
   CreatedProspect,
+  DeletedProspect,
   ProspectListItem,
 } from '../domain/types/prospect.types';
 import { Paginated, buildPage } from '../domain/types/pagination.types';
+import { localToday } from '../lib/localDateRange';
+import { softDeleteProspect } from '../repositories/prospect.repository';
 
 /*
  * ============================================================================
@@ -24,6 +27,7 @@ import { Paginated, buildPage } from '../domain/types/pagination.types';
  *      POST  /api/v1/prospects/admin     -> createProspectAsAdmin
  *      PATCH /api/v1/prospects/:id/location -> updateProspectLocation
  *      PATCH /api/v1/prospects/:id        -> updateProspect
+ *      DELETE /api/v1/prospects/:id       -> deleteProspect
  * ============================================================================
  */
 
@@ -382,4 +386,28 @@ export const updateProspect = async (
   });
 
   return getProspectById(client, id);
+};
+
+/**
+ * Admin deletes a prospect (use case "Editar y eliminar prospectos"). Soft
+ * delete, like the rest of the schema: the row stays for the visits and past
+ * stops that reference it, which the history queries read with a LEFT JOIN
+ * that does not filter `deleted_at`.
+ *
+ * Its pending stops (today on, not executed) are soft-deleted too, so the
+ * seller's route stops showing a target that no longer exists. Runs inside
+ * the caller's transaction: both writes land or neither does.
+ *
+ * A converted prospect (PCRM-186) can be deleted as well; its pending stops
+ * already moved to the customer, so none are removed.
+ */
+export const deleteProspect = async (
+  client: Client,
+  id: string,
+  now: Date = new Date()
+): Promise<DeletedProspect> => {
+  const result = await softDeleteProspect(client, id, localToday(now));
+  if (!result) throw CustomError.notFound('Prospect not found');
+
+  return { id, deleted: true, removed_stops: result.removed_stops };
 };

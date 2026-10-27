@@ -120,9 +120,9 @@ export const deleteAuthUser = async (authUserId: string): Promise<void> => {
 };
 
 /**
- * RLS already hides everything from a disabled seller, because the app_auth
- * helpers filter by active. Banning additionally kills the refresh, so the
- * session dies instead of lingering until the access token expires.
+ * The API already answers 403 to a disabled seller. Banning additionally
+ * kills the refresh, so the session dies instead of lingering until the
+ * access token expires.
  */
 /**
  * Sets the GoTrue password for an account that already signed in (OTP or
