@@ -15,3 +15,29 @@ export const metricsRouteParamsSchema = z.object({
   id: z.guid('Invalid route id'),
 });
 export type MetricsRouteParams = z.infer<typeof metricsRouteParamsSchema>;
+
+/** Workdays GET /metrics/routes/:id/workdays returns when `limit` is omitted (PCRM-188). */
+export const ROUTE_WORKDAYS_DEFAULT_LIMIT = 5;
+export const ROUTE_WORKDAYS_MAX_LIMIT = 12;
+
+/**
+ * Query of the workday comparison. `day` is the ISO weekday of `route_user.day`
+ * (1 Monday … 7 Sunday); omitted, the service takes the day of the route's
+ * latest workday. `limit` counts the latest workday too, so the minimum of 2
+ * is the smallest comparison there is.
+ */
+export const metricsRouteWorkdaysQuerySchema = z.object({
+  day: z.coerce
+    .number()
+    .int()
+    .min(1, 'day must be between 1 and 7')
+    .max(7, 'day must be between 1 and 7')
+    .optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(2, `limit must be between 2 and ${ROUTE_WORKDAYS_MAX_LIMIT}`)
+    .max(ROUTE_WORKDAYS_MAX_LIMIT, `limit must be between 2 and ${ROUTE_WORKDAYS_MAX_LIMIT}`)
+    .default(ROUTE_WORKDAYS_DEFAULT_LIMIT),
+});
+export type MetricsRouteWorkdaysQuery = z.infer<typeof metricsRouteWorkdaysQuerySchema>;

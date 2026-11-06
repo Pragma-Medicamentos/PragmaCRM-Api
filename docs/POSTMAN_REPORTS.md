@@ -205,3 +205,42 @@ Los errores siempre vuelven en **JSON**, no como archivo:
 | `/reports/sellers/00000000-0000-0000-0000-000000000000` | `404`, `Seller not found` |
 | `/reports/products?limit=0` | `400` |
 | `/reports/trends?granularity=day` | `400` |
+| `/reports/sales/department` | `400`, grupo desconocido |
+| `/reports/abc/seller` | `400`, entidad desconocida |
+| `/reports/sales/seller?user_id=ana` | `400`, `Invalid seller id` |
+| `/reports/sales/seller?user_id=00000000-0000-4000-8000-000000000000` | `404`, `Seller not found` |
+| `/reports/sales/route?route_id=00000000-0000-4000-8000-000000000000` | `404`, `Route not found` |
+| `/reports/rankings?limit=501` | `400` |
+
+---
+
+## Reportes gerenciales (PCRM-159)
+
+Además de los params comunes, todos aceptan los filtros `zone`, `user_id` y `route_id`, que se combinan entre sí. Ver [`REPORTS_API.md`](./REPORTS_API.md#reportes-gerenciales-pcrm-159) para saber qué filtra cada uno.
+
+| Param | Formato |
+|---|---|
+| `zone` | texto, la zona de la ruta (sin distinguir mayúsculas) |
+| `user_id` | uuid del vendedor |
+| `route_id` | uuid de la ruta |
+
+Ejemplos:
+
+```
+{{baseUrl}}/api/v1/reports/sales/seller?from=2026-09-01&to=2026-09-30
+{{baseUrl}}/api/v1/reports/sales/route?from=2026-09-01&to=2026-09-30&zone=Norte&format=pdf
+{{baseUrl}}/api/v1/reports/sales/customer?user_id={{sellerId}}
+{{baseUrl}}/api/v1/reports/sales/sellers-comparison?from=2026-09-01&to=2026-09-30
+{{baseUrl}}/api/v1/reports/abc/customer?from=2026-07-01&to=2026-09-30
+{{baseUrl}}/api/v1/reports/rankings?limit=20&format=pdf
+{{baseUrl}}/api/v1/reports/goals?from=2026-09-01&to=2026-09-30
+{{baseUrl}}/api/v1/reports/visits/planned-vs-done?route_id={{routeId}}
+{{baseUrl}}/api/v1/reports/visits/effectiveness
+{{baseUrl}}/api/v1/reports/customers/new
+{{baseUrl}}/api/v1/reports/customers/recovered?inactivity_days=45
+{{baseUrl}}/api/v1/reports/customers/no-purchase?zone=Norte
+{{baseUrl}}/api/v1/reports/collections?from=2026-09-01&to=2026-09-30
+{{baseUrl}}/api/v1/reports/overdue-portfolio?user_id={{sellerId}}&format=pdf
+```
+
+Archivo: `pragma-crm_<reporte>_<from>_<to>.<ext>`, con `<reporte>` en español (`ventas-por-vendedor`, `cartera-vencida`, …; ver la tabla de `REPORTS_API.md`).

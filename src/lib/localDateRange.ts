@@ -52,6 +52,10 @@ export const resolveRange = (
   return build(first, last);
 };
 
+/** Today's local day in El Salvador, `YYYY-MM-DD`. */
+export const localToday = (now: Date = new Date()): string =>
+  DateTime.fromJSDate(now, { zone: ERP_TIMEZONE }).toISODate() as string;
+
 /** Number of local days covered by the range, both ends included. */
 export const rangeDays = (range: LocalDateRange): number =>
   Math.round(localDay(range.to).diff(localDay(range.from), 'days').days) + 1;
@@ -88,4 +92,37 @@ export const monthsTouched = (range: LocalDateRange): YearMonth[] => {
   }
 
   return months;
+};
+
+/**
+ * One slice of a range per calendar month it touches, for goal compliance
+ * (PCRM-173). `start`/`end` bound the part of the range inside that month;
+ * `factor` is the share of the month it covers, so a monthly goal can be
+ * prorated: 7 days of October weigh 7/31 of October's goal.
+ */
+export interface GoalMonth extends YearMonth {
+  start: Date;
+  end: Date;
+  factor: number;
+}
+
+export const goalMonths = (range: LocalDateRange): GoalMonth[] => {
+  const first = localDay(range.from);
+  const last = localDay(range.to);
+
+  return monthsTouched(range).map(({ year, month }) => {
+    const monthStart = DateTime.fromObject({ year, month, day: 1 }, { zone: ERP_TIMEZONE });
+    const monthLast = monthStart.endOf('month').startOf('day');
+    const sliceFirst = first > monthStart ? first : monthStart;
+    const sliceLast = last < monthLast ? last : monthLast;
+    const sliceDays = Math.round(sliceLast.diff(sliceFirst, 'days').days) + 1;
+
+    return {
+      year,
+      month,
+      start: sliceFirst.toJSDate(),
+      end: sliceLast.plus({ days: 1 }).toJSDate(),
+      factor: sliceDays / monthStart.daysInMonth!,
+    };
+  });
 };

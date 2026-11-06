@@ -7,6 +7,8 @@ import {
   getCustomerProfile,
   listCustomerSales,
   listCustomers,
+  updateCustomerCommercialProfile,
+  updateCustomerFiscalData,
   updateCustomerContact,
   updateCustomerLocation,
 } from '../../../services/customer.service';
@@ -39,6 +41,8 @@ jest.mock('../../../services/customer.service', () => ({
   assertCustomerExists: jest.fn(),
   updateCustomerLocation: jest.fn(),
   updateCustomerContact: jest.fn(),
+  updateCustomerCommercialProfile: jest.fn(),
+  updateCustomerFiscalData: jest.fn(),
 }));
 
 const listCustomersMock = listCustomers as jest.Mock;
@@ -47,6 +51,9 @@ const listCustomerSalesMock = listCustomerSales as jest.Mock;
 const getCreditStatusMock = getCreditStatus as jest.Mock;
 const updateCustomerLocationMock = updateCustomerLocation as jest.Mock;
 const updateCustomerContactMock = updateCustomerContact as jest.Mock;
+const updateCustomerCommercialProfileMock =
+  updateCustomerCommercialProfile as jest.Mock;
+const updateCustomerFiscalDataMock = updateCustomerFiscalData as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
 server.setup();
@@ -352,5 +359,188 @@ describe('PATCH /api/v1/customers/:id/contact', () => {
       CUSTOMER_ID,
       body
     );
+  });
+});
+
+describe('PATCH /api/v1/customers/:id/commercial-profile', () => {
+  const patch = (id: string, body: Record<string, unknown>) =>
+    request(app)
+      .patch(`/api/v1/customers/${id}/commercial-profile`)
+      .set(AUTH)
+      .send(body);
+
+  beforeEach(() => updateCustomerCommercialProfileMock.mockReset());
+
+  it('rejects an id that is not a uuid', async () => {
+    const res = await patch('not-a-uuid', { personality: 'rojo' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe('id');
+  });
+
+  it('rejects an empty body', async () => {
+    const res = await patch(CUSTOMER_ID, {});
+
+    expect(res.status).toBe(400);
+    expect(updateCustomerCommercialProfileMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an unknown colour', { personality: 'morado' }, 'personality'],
+    ['a capitalised colour', { personality: 'Rojo' }, 'personality'],
+    ['an unknown potential', { potential: 'alta' }, 'potential'],
+  ])('rejects %s', async (_label, body, field) => {
+    const res = await patch(CUSTOMER_ID, body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe(field);
+    expect(updateCustomerCommercialProfileMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects fields outside the commercial profile', async () => {
+    const res = await patch(CUSTOMER_ID, {
+      personality: 'azul',
+      interests: ['genéricos'],
+    });
+
+    expect(res.status).toBe(400);
+    expect(updateCustomerCommercialProfileMock).not.toHaveBeenCalled();
+  });
+
+  it('propagates the service 404', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    updateCustomerCommercialProfileMock.mockRejectedValue(
+      CustomError.notFound('Customer not found')
+    );
+
+    const res = await patch(CUSTOMER_ID, { potential: 'bajo' });
+
+    expect(res.status).toBe(404);
+    expect(res.body.message).toBe('Customer not found');
+  });
+
+  it('saves colour and potential and returns the customer', async () => {
+    const body = { personality: 'verde', potential: 'alto' };
+    updateCustomerCommercialProfileMock.mockResolvedValue({
+      id: CUSTOMER_ID,
+      name: 'Farmacia San José',
+      ...body,
+    });
+
+    const res = await patch(CUSTOMER_ID, body);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject(body);
+    expect(updateCustomerCommercialProfileMock).toHaveBeenCalledWith(
+      expect.anything(),
+      CUSTOMER_ID,
+      body
+    );
+  });
+
+  it('passes null through so the service can clear the field', async () => {
+    updateCustomerCommercialProfileMock.mockResolvedValue({
+      id: CUSTOMER_ID,
+      personality: null,
+    });
+
+    const res = await patch(CUSTOMER_ID, { personality: null });
+
+    expect(res.status).toBe(200);
+    expect(updateCustomerCommercialProfileMock).toHaveBeenCalledWith(
+      expect.anything(),
+      CUSTOMER_ID,
+      { personality: null }
+    );
+  });
+});
+
+describe('PATCH /api/v1/customers/:id/fiscal-data', () => {
+  const patch = (id: string, body: Record<string, unknown>) =>
+    request(app)
+      .patch(`/api/v1/customers/${id}/fiscal-data`)
+      .set(AUTH)
+      .send(body);
+
+  beforeEach(() => updateCustomerFiscalDataMock.mockReset());
+
+  it('saves the fields, email lowercased, and returns the customer', async () => {
+    updateCustomerFiscalDataMock.mockResolvedValue({ id: CUSTOMER_ID, nrc: '230204-4' });
+
+    const res = await patch(CUSTOMER_ID, {
+      sanitary_registration: 'RS-2024-00123',
+      nrc: '230204-4',
+      nit: '0614-250621-108-6',
+      email: 'Compras@Farmacia.com',
+    });
+
+    expect(res.status).toBe(200);
+    expect(updateCustomerFiscalDataMock).toHaveBeenCalledWith(expect.anything(), CUSTOMER_ID, {
+      sanitary_registration: 'RS-2024-00123',
+      nrc: '230204-4',
+      nit: '0614-250621-108-6',
+      email: 'compras@farmacia.com',
+    });
+  });
+
+  it('accepts the DUI homologated as NIT', async () => {
+    updateCustomerFiscalDataMock.mockResolvedValue({ id: CUSTOMER_ID });
+
+    const res = await patch(CUSTOMER_ID, { nit: '01234567-8' });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('passes null through, and turns a blank string into null', async () => {
+    updateCustomerFiscalDataMock.mockResolvedValue({ id: CUSTOMER_ID });
+
+    await patch(CUSTOMER_ID, { email: null, nrc: '' });
+
+    expect(updateCustomerFiscalDataMock).toHaveBeenCalledWith(expect.anything(), CUSTOMER_ID, {
+      email: null,
+      nrc: null,
+    });
+  });
+
+  it('rejects an empty body', async () => {
+    const res = await patch(CUSTOMER_ID, {});
+
+    expect(res.status).toBe(400);
+    expect(updateCustomerFiscalDataMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ nit: '06142506211086' }, 'nit'],
+    [{ nrc: '2302044' }, 'nrc'],
+    [{ email: 'not-an-email' }, 'email'],
+  ])('rejects %j', async (body, field) => {
+    const res = await patch(CUSTOMER_ID, body);
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe(field);
+    expect(updateCustomerFiscalDataMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects fields owned by another section', async () => {
+    const res = await patch(CUSTOMER_ID, { nrc: '230204-4', phone: '2222-2222' });
+
+    expect(res.status).toBe(400);
+    expect(updateCustomerFiscalDataMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects an id that is not a uuid', async () => {
+    const res = await patch('not-a-uuid', { nrc: '230204-4' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe('id');
+  });
+
+  it('propagates the service 404', async () => {
+    const { CustomError } = jest.requireActual('../../../domain/errors/CustomError');
+    updateCustomerFiscalDataMock.mockRejectedValue(CustomError.notFound('Customer not found'));
+
+    const res = await patch(CUSTOMER_ID, { nrc: '230204-4' });
+
+    expect(res.status).toBe(404);
   });
 });

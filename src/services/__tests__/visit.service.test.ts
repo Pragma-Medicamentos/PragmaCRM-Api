@@ -6,6 +6,7 @@ const SELLER_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const STOP_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CUSTOMER_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const ROUTE_USER_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const PROSPECT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 // 2026-09-21 23:00 in El Salvador (UTC-6).
 const NOW = new Date('2026-09-22T05:00:00.000Z');
@@ -35,6 +36,7 @@ const visitRow = (overrides: Record<string, unknown> = {}) => ({
   id: 'visit-1',
   scheduled_visit_id: STOP_ID,
   customer_id: CUSTOMER_ID,
+  prospect_id: null,
   visit_type: 'visit',
   started_at: CAPTURED_AT,
   finished_at: null,
@@ -226,13 +228,47 @@ describe('confirmVisit', () => {
     });
   });
 
-  it('answers 422 for a stop on a prospect', async () => {
+  it('confirms a stop on a prospect against the prospect pin, with customer_id NULL', async () => {
+    const { client, mocks, queryRaw } = buildClient({
+      stop: stop({ customer_id: null, prospect_id: PROSPECT_ID, is_extra: true }),
+      queries: [[], [{ distance: 5 }], [visitRow({ customer_id: null, prospect_id: PROSPECT_ID })]],
+    });
+
+    const result = await confirmVisit(client, SELLER_ID, input());
+
+    expect(result).toMatchObject({ customer_id: null, prospect_id: PROSPECT_ID, replayed: false });
+    expect(mocks.route_customer.findFirst).not.toHaveBeenCalled();
+
+    const distanceSql = sqlOf(queryRaw.mock.calls[1][0]);
+    expect(distanceSql).toMatch(/FROM prospect t/);
+    expect(queryRaw.mock.calls[1][0].values).toContain(PROSPECT_ID);
+
+    const insert = queryRaw.mock.calls[2][0];
+    expect(sqlOf(insert)).toMatch(/customer_id, prospect_id,/);
+    expect(insert.values.slice(0, 2)).toEqual([null, PROSPECT_ID]);
+  });
+
+  it('answers 422 when the prospect has no GPS pin', async () => {
     const { client } = buildClient({
-      stop: stop({ customer_id: null, prospect_id: 'prospect-1' }),
+      stop: stop({ customer_id: null, prospect_id: PROSPECT_ID }),
+      queries: [[], [{ distance: null }]],
     });
 
     await expect(confirmVisit(client, SELLER_ID, input())).rejects.toMatchObject({
       statusCode: 422,
+      message: 'Prospect has no GPS location assigned',
+    });
+  });
+
+  it('answers 404 when the prospect no longer exists', async () => {
+    const { client } = buildClient({
+      stop: stop({ customer_id: null, prospect_id: PROSPECT_ID }),
+      queries: [[], []],
+    });
+
+    await expect(confirmVisit(client, SELLER_ID, input())).rejects.toMatchObject({
+      statusCode: 404,
+      message: 'Prospect not found',
     });
   });
 

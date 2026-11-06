@@ -8,6 +8,7 @@ import {
   RouteSeller,
   RouteSellerPerformance,
   RouteWeekdaySales,
+  RouteWorkday,
 } from '../domain/types/routeMetrics.types';
 import {
   routeMetricsSql,
@@ -18,11 +19,17 @@ import {
   routeWeekdaySalesSql,
 } from './metrics/routes.sql';
 import { routeSalesTotalsSql } from './metrics/routeSales.sql';
+import {
+  routeWorkdayDatesSql,
+  routeWorkdayHeaderSql,
+  routeWorkdayMetricsSql,
+} from './metrics/routeWorkdays.sql';
 
 /*
- * Data access of the per-route metrics (PCRM-178). The SQL text lives in
- * ./metrics/routes.sql.ts and ./metrics/routeSales.sql.ts; routeMetrics.
- * service only resolves the period and shapes the rows.
+ * Data access of the per-route metrics (PCRM-178) and of the workday
+ * comparison (PCRM-188). The SQL text lives in ./metrics/routes.sql.ts,
+ * ./metrics/routeSales.sql.ts and ./metrics/routeWorkdays.sql.ts;
+ * routeMetrics.service only resolves the period and shapes the rows.
  */
 
 /** Attributed sale of a route (or of every route) as a single row. */
@@ -124,3 +131,47 @@ export const findRoutePortfolioCoverage = async (
 
   return rows[0] ?? { scheduled_customers: 0, purchasing_customers: 0 };
 };
+
+/** The route and the ISO weekday of its latest workday. Null when it does not exist. */
+export interface RouteWorkdayHeaderRow {
+  route_id: string;
+  name: string;
+  active: boolean;
+  latest_day: number | null;
+}
+
+export const findRouteWorkdayHeader = async (
+  client: Client,
+  routeId: string,
+  today: string
+): Promise<RouteWorkdayHeaderRow | null> => {
+  const rows = await client.$queryRaw<RouteWorkdayHeaderRow[]>(
+    routeWorkdayHeaderSql(routeId, today)
+  );
+
+  return rows[0] ?? null;
+};
+
+/** The latest `limit` workdays of the route on ISO weekday `day`, newest first. */
+export const findRouteWorkdayDates = async (
+  client: Client,
+  routeId: string,
+  day: number,
+  today: string,
+  limit: number
+): Promise<string[]> => {
+  const rows = await client.$queryRaw<{ date: string }[]>(
+    routeWorkdayDatesSql(routeId, day, today, limit)
+  );
+
+  return rows.map((row) => row.date);
+};
+
+/** Metrics of each workday in `dates`, newest first. */
+export const findRouteWorkdayMetrics = (
+  client: Client,
+  routeId: string,
+  dates: string[],
+  span: DateSpan
+): Promise<RouteWorkday[]> =>
+  client.$queryRaw<RouteWorkday[]>(routeWorkdayMetricsSql(routeId, dates, span));

@@ -99,6 +99,7 @@ describe('POST /api/v1/uploads/sales — size limit', () => {
       updated: 0,
       sync_failed: 0,
       removed: { annulled: 0, missing: 0 },
+      prospects: { converted: [], alerts: [] },
       sellers: { created_count: 0, created: [], unmapped: [] },
     });
     const small = Buffer.from(JSON.stringify([]), 'utf-8');

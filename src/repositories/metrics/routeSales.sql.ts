@@ -25,10 +25,16 @@ import { DateSpan, SALE_AT, inRange } from './fragments.sql';
  * (average ticket per route) reads `routeSalesTotalsSql` for the same reason.
  */
 
-/** One row per sale attributed to a route, with the route it belongs to. */
+/**
+ * One row per sale attributed to a route, with the route it belongs to and the
+ * stop (and its agenda day) whose visit made it. The stop columns let the
+ * workday comparison (PCRM-188) group sales by route-day.
+ */
 export const attributedSalesCte = (range: DateSpan): Prisma.Sql => Prisma.sql`
   attributed_sales AS (
     SELECT ru.route_id,
+           sv.id AS scheduled_visit_id,
+           sv.visit_date,
            s.erp_sale_id,
            s.customer_id,
            s.user_id,

@@ -1,14 +1,20 @@
 import { Client } from '../lib/prisma';
 import { CustomError } from '../domain/errors/CustomError';
 import { MetricsRangeQuery } from '../domain/schemas/metrics.schema';
-import { ROUTE_TOP_LIMIT } from '../domain/schemas/routeMetrics.schema';
+import {
+  MetricsRouteWorkdaysQuery,
+  ROUTE_TOP_LIMIT,
+} from '../domain/schemas/routeMetrics.schema';
 import {
   MetricsRouteDetailResponse,
   MetricsRoutesResponse,
+  MetricsRouteWorkdaysResponse,
   RouteMetrics,
   RoutePortfolioCoverage,
+  RouteWorkday,
+  RouteWorkdayBaseline,
 } from '../domain/types/routeMetrics.types';
-import { previousRange } from '../lib/localDateRange';
+import { localToday, previousRange, resolveRange } from '../lib/localDateRange';
 import {
   RouteMetricsRow,
   RoutePortfolioCoverageRow,
@@ -19,6 +25,9 @@ import {
   findRouteTopCustomers,
   findRouteTopProducts,
   findRouteWeekdaySales,
+  findRouteWorkdayDates,
+  findRouteWorkdayHeader,
+  findRouteWorkdayMetrics,
 } from '../repositories/routeMetrics.repository';
 import { buildContext } from './metrics.service';
 
@@ -27,6 +36,7 @@ import { buildContext } from './metrics.service';
  *
  *     GET /api/v1/metrics/routes      -> listRouteMetrics (the route cards)
  *     GET /api/v1/metrics/routes/:id  -> getRouteMetricsDetail
+ *     GET /api/v1/metrics/routes/:id/workdays -> getRouteWorkdayComparison (PCRM-188)
  *
  * Every figure of sale comes from the attribution rule of CLAUDE.md 5.4,
  * written once in repositories/metrics/routeSales.sql.ts: a sale belongs to
@@ -96,6 +106,54 @@ export const getRouteMetricsDetail = async (
   };
 };
 
+/**
+ * The route against itself on the same weekday (PCRM-188): its latest
+ * `limit` workdays, newest first, and the latest one against the average of
+ * the others.
+ *
+ * Without `day`, the weekday of the route's latest workday is used, which is
+ * what "this Tuesday against previous Tuesdays" means when the dashboard
+ * opens; a route that never had an agenda falls back to today's weekday and
+ * answers with no workdays. The comparison runs even if the seller changed:
+ * each workday carries its sellers so the dashboard can say so.
+ */
+export const getRouteWorkdayComparison = async (
+  client: Client,
+  routeId: string,
+  query: MetricsRouteWorkdaysQuery,
+  now: Date = new Date()
+): Promise<MetricsRouteWorkdaysResponse> => {
+  const today = localToday(now);
+  const header = await findRouteWorkdayHeader(client, routeId, today);
+
+  if (!header) {
+    throw CustomError.notFound('Route not found');
+  }
+
+  const day = query.day ?? header.latest_day ?? isoWeekday(today);
+  const route = { route_id: header.route_id, name: header.name, active: header.active };
+  const dates = await findRouteWorkdayDates(client, routeId, day, today, query.limit);
+
+  if (dates.length === 0) {
+    return { route, day, limit: query.limit, workdays: [], baseline: null, change_rate: null };
+  }
+
+  // Up to today and not to the latest workday: a stop's sale may be invoiced
+  // a day later and still belongs to the workday whose visit made it.
+  const span = resolveRange(dates[dates.length - 1], today);
+  const workdays = await findRouteWorkdayMetrics(client, routeId, dates, span);
+  const baseline = workdayBaseline(workdays.slice(1));
+
+  return {
+    route,
+    day,
+    limit: query.limit,
+    workdays,
+    baseline,
+    change_rate: baseline ? changeRate(baseline.amount, workdays[0].amount) : null,
+  };
+};
+
 /*
  * ============================================================================
  * Helpers.
@@ -129,3 +187,35 @@ const portfolioCoverage = (row: RoutePortfolioCoverageRow): RoutePortfolioCovera
       ? null
       : Math.round((row.purchasing_customers / row.scheduled_customers) * 1000) / 10,
 });
+
+/** ISO weekday (1 Monday … 7 Sunday) of a `YYYY-MM-DD` day. */
+const isoWeekday = (isoDate: string): number => {
+  const weekday = new Date(`${isoDate}T00:00:00Z`).getUTCDay();
+  return weekday === 0 ? 7 : weekday;
+};
+
+const round1 = (value: number): number => Math.round(value * 10) / 10;
+
+/** Average of the rates that exist; null when no workday has one. */
+const averageRate = (rates: (number | null)[]): number | null => {
+  const present = rates.filter((rate): rate is number => rate !== null);
+  return present.length === 0
+    ? null
+    : round1(present.reduce((sum, rate) => sum + rate, 0) / present.length);
+};
+
+/** Average of the previous workdays. Null when there are none. */
+const workdayBaseline = (previous: RouteWorkday[]): RouteWorkdayBaseline | null => {
+  if (previous.length === 0) return null;
+
+  const amount = previous.reduce((sum, workday) => sum + Number(workday.amount), 0);
+  const orders = previous.reduce((sum, workday) => sum + workday.orders_count, 0);
+
+  return {
+    workdays: previous.length,
+    amount: (amount / previous.length).toFixed(2),
+    orders_count: round1(orders / previous.length),
+    visit_coverage_rate: averageRate(previous.map((workday) => workday.visit_coverage_rate)),
+    order_rate: averageRate(previous.map((workday) => workday.order_rate)),
+  };
+};

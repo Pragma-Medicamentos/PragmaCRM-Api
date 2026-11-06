@@ -44,6 +44,7 @@ const ADMIN_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const SELLER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const CUSTOMER_ID = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const STOP_ID = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+const PROSPECT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 
 const BASE = `/api/v1/sellers/${SELLER_ID}/daily-route`;
 
@@ -108,6 +109,35 @@ describe('POST /api/v1/sellers/:sellerId/daily-route/extra-stops', () => {
     ['invalid stop_type', { stop_type: 'delivery' }, 'stop_type'],
     ['bad date', { date: '30-09-2026' }, 'date'],
     ['bad customer id', { customer_id: 'nope' }, 'customer_id'],
+  ])('rejects %s', async (_label, override, field) => {
+    const res = await request(app)
+      .post(`${BASE}/extra-stops`)
+      .set(AUTH)
+      .send(body(override));
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe(field);
+    expect(createExtraStopMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts a visit stop on a prospect instead of a customer', async () => {
+    const prospectBody = body({ customer_id: undefined, prospect_id: PROSPECT_ID });
+
+    const res = await request(app).post(`${BASE}/extra-stops`).set(AUTH).send(prospectBody);
+
+    expect(res.status).toBe(201);
+    expect(createExtraStopMock).toHaveBeenCalledWith(
+      expect.anything(),
+      SELLER_ID,
+      expect.objectContaining({ prospect_id: PROSPECT_ID })
+    );
+  });
+
+  it.each([
+    ['both customer_id and prospect_id', { prospect_id: PROSPECT_ID }, 'customer_id'],
+    ['neither customer_id nor prospect_id', { customer_id: undefined }, 'customer_id'],
+    ['a non-visit stop on a prospect', { customer_id: undefined, prospect_id: PROSPECT_ID, stop_type: 'collection' }, 'stop_type'],
+    ['bad prospect id', { customer_id: undefined, prospect_id: 'nope' }, 'prospect_id'],
   ])('rejects %s', async (_label, override, field) => {
     const res = await request(app)
       .post(`${BASE}/extra-stops`)

@@ -3,8 +3,10 @@ import { CustomError } from '../domain/errors/CustomError';
 import { ROLES } from '../domain/types/auth.types';
 import {
   CreateSellerInput,
+  ListSellersQuery,
   UpdateSellerInput,
 } from '../domain/schemas/seller.schema';
+import { Paginated, buildPage } from '../domain/types/pagination.types';
 
 export interface SellerRecord {
   id: string;
@@ -28,19 +30,45 @@ const SELLER_SELECT = {
   updated_at: true,
 } as const;
 
-export const listSellers = (
+/** Every seller by status, ignoring the list filters: the page header counts. */
+export interface SellerTotals {
+  active: number;
+  inactive: number;
+}
+
+export const listSellers = async (
   client: Client,
-  filters: { active?: boolean }
-): Promise<SellerRecord[]> =>
-  client.app_user.findMany({
-    where: {
-      role: ROLES.SELLER,
-      deleted_at: null,
-      ...(filters.active !== undefined ? { active: filters.active } : {}),
-    },
-    select: SELLER_SELECT,
-    orderBy: { name: 'asc' },
-  });
+  query: ListSellersQuery
+): Promise<Paginated<SellerRecord> & { totals: SellerTotals }> => {
+  const base = { role: ROLES.SELLER, deleted_at: null };
+  const where = {
+    ...base,
+    ...(query.active !== undefined ? { active: query.active } : {}),
+    ...(query.search
+      ? {
+          OR: [
+            { name: { contains: query.search, mode: 'insensitive' as const } },
+            { email: { contains: query.search, mode: 'insensitive' as const } },
+          ],
+        }
+      : {}),
+  };
+
+  const [items, total, active, inactive] = await Promise.all([
+    client.app_user.findMany({
+      where,
+      select: SELLER_SELECT,
+      orderBy: { name: 'asc' },
+      skip: (query.page - 1) * query.limit,
+      take: query.limit,
+    }),
+    client.app_user.count({ where }),
+    client.app_user.count({ where: { ...base, active: true } }),
+    client.app_user.count({ where: { ...base, active: false } }),
+  ]);
+
+  return { ...buildPage(items, total, query.page, query.limit), totals: { active, inactive } };
+};
 
 export const getSellerById = async (
   client: Client,

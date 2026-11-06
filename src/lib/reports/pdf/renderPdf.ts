@@ -65,6 +65,9 @@ const header = (definition: ReportDefinition): Content => {
             )}`,
             style: 'muted',
           },
+          ...(definition.generatedBy
+            ? [{ text: `Generado por: ${definition.generatedBy}`, style: 'muted' }]
+            : []),
         ],
       },
     ],

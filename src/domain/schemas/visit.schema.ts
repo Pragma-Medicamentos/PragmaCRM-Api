@@ -11,6 +11,12 @@ const isoTimestamp = z
   .transform((value) => new Date(value));
 
 /**
+ * RF-07 visit note. Shared by the confirmation and by the note a seller adds
+ * to an already completed stop, so both paths accept exactly the same text.
+ */
+export const visitNotes = z.string().trim().min(1).max(1000);
+
+/**
  * RF-06: stop confirmation sent by the mobile app.
  *
  * `captured_at` is the moment the seller tapped the button on the device, not
@@ -26,7 +32,7 @@ export const confirmVisitSchema = z
     // Optional RF-07 / outcome fields, so the seller can complete the stop in
     // one request. `finished_at` is the device time the seller closed the stop.
     finished_at: isoTimestamp.optional(),
-    notes: z.string().trim().min(1).max(1000).optional(),
+    notes: visitNotes.optional(),
     successful: z.boolean().optional(),
     no_order_reason: z.string().trim().min(1).max(500).optional(),
   })

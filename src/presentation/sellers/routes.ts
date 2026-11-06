@@ -12,6 +12,8 @@ import {
   updateSellerSchema,
   updateSellerStatusSchema,
 } from '../../domain/schemas/seller.schema';
+import { goalHistoryQuerySchema, setGoalSchema } from '../../domain/schemas/goal.schema';
+import { paginationQuerySchema } from '../../domain/schemas/pagination.schema';
 
 export class SellersRoutes {
   static get routes(): Router {
@@ -39,6 +41,25 @@ export class SellersRoutes {
       '/:id/resend-otp',
       validateParams(sellerParamsSchema),
       controller.resendOtp
+    );
+    // PCRM-173: monthly goal, set for the current month only and never deleted.
+    router.get(
+      '/:id/goals',
+      validateParams(sellerParamsSchema),
+      validateQuery(paginationQuerySchema),
+      controller.listGoals
+    );
+    router.get(
+      '/:id/goals/history',
+      validateParams(sellerParamsSchema),
+      validateQuery(goalHistoryQuerySchema),
+      controller.goalHistory
+    );
+    router.put(
+      '/:id/goals',
+      validateParams(sellerParamsSchema),
+      validateBody(setGoalSchema),
+      controller.setGoal
     );
 
     return router;

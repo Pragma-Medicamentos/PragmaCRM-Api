@@ -225,6 +225,8 @@ Registrar producto fuera de catálogo
 
 Ejemplo del uso de la personalidad, según el cliente: el color rojo indica un cliente directo que quiere ir al grano.
 
+**RF-12 implementado parcialmente (15/10/2026).** `PATCH /api/v1/customers/:id/commercial-profile` (solo Administrador) guarda `personality` (`rojo|azul|amarillo|verde`) y `potential` (`alto|medio|bajo`); ambos admiten `null` para volver a "sin clasificar". El vocabulario está cerrado con los CHECK `customer_personality_check` y `customer_potential_check`, porque el dashboard también puede escribir esas columnas por supabase-js. **Intereses y afinidad a laboratorios quedan fuera, por decisión del equipo:** no hay columnas para ellos ni tabla de laboratorios, y modelarlos exige una migración que no se aprobó. El endpoint responde 400 si llegan en el body, para que el frontend no los dé por guardados. No reintroducir sin conversación.
+
 ### 4.3 Fuera del MVP (RF-13 y RF-14)
 
 | RF | Descripción | Por qué está fuera |
@@ -272,6 +274,10 @@ Es el punto donde más errores de interpretación ocurren. Los cuatro son entida
 **Regla mental:** la composición de ruta es planeación, `visit` es ejecución de esa planeación.
 
 **Consecuencia de que la asignación sea recurrente:** las jornadas concretas no están almacenadas. Se **generan en runtime** con `generate_series` sobre el día de la semana, uniendo la composición vigente a esa fecha. Esto sostiene tanto "próximas visitas" como "cobertura de ruta".
+
+**Ruta semanal del vendedor (PCRM-170).** `GET /api/v1/me/route/week` devuelve la semana en curso (lunes a domingo, zona de negocio), con los 7 días siempre presentes, leyendo la asignación **viva**: `route_user` + `route_customer` más las paradas extra (`scheduled_visit.is_extra`) de esas fechas. Es de solo lectura y **nunca** genera días: `ensureDailyStops` congela el plan del día que genera, y esta vista existe justamente para que una reasignación (miércoles de Santa Ana a San Salvador) se vea al refrescar. Las paradas tienen el mismo shape que las de `/me/route`; las de plantilla llevan `route_customer.id` como `id`.
+
+**Historial de rutas del vendedor (PCRM-203).** `GET /api/v1/me/route/history?before=YYYY-MM-DD&limit=` lista los días anteriores a hoy (zona de negocio) que tuvieron paradas, del más reciente al más viejo, con `total`, `completed`, `skipped` y las paradas sin marcar. Pagina por fecha: `next_before` es el `before` de la página siguiente. El detalle de un día es `GET /me/route?date=`, que ahora trae también `checkin_location` y `distance_meters` de cada visita. **En un día pasado no se filtra el `route_user` ni la `route` borrados** (`historicalStopVisibleSql`): una reasignación borra la asignación vieja y, con el filtro vivo, desaparecería todo el historial del vendedor en esa ruta. Se conserva toda parada ejecutada, y las no ejecutadas solo si su fecha es anterior al día en que se retiró la asignación o la ruta. "Omitida" significa "sin marcar": todavía no existe el flujo de omitir con motivo (wireframe 7 móvil), así que no hay motivo que mostrar.
 
 **✅ Discrepancia resuelta en el esquema aplicado.** El DER dibujaba `ruta_usuario.fecha date`; la decisión confirmada pedía día de la semana con vigencia. **La base implementada le dio la razón a la decisión:** `route_user.day smallint` + `created_at` / `deleted_at`, con índice único parcial `(route_id, user_id, day) WHERE deleted_at IS NULL`. El punto 1 del Anexo B queda cerrado.
 
@@ -343,6 +349,7 @@ Estas no viven en el modelo de datos y **deben quedar en el manual técnico**, n
 |---|---|---|
 | Plazo de crédito | 60 días | Recálculo retroactivo de cartera vencida y mora |
 | **Umbral de inactividad** | **30 días, provisional** (wireframe `1f`). Configurable con `INACTIVITY_THRESHOLD_DAYS` y por petición con `?inactivity_days=`; las respuestas de métricas lo devuelven en `thresholds`. **Pendiente de firma del cliente** | Determina clientes inactivos, recuperados y "clientes sin visita". La especificación menciona cortes de 30/60/90 días para reportes pero no fija cuál usan los KPIs |
+| **Meta prorrateada** | Un periodo que no es mes completo se compara contra la meta prorrateada por días (7 días de octubre = 7/31 de la meta). Decidido el 16/10/2026 (PCRM-173) | Cumplimiento de meta global y por vendedor. El global cuenta a todo vendedor con meta vigente, esté habilitado o no: si no vendió, su venta es 0 |
 | Radio de validación GPS | 80 metros | Recálculo retroactivo del histórico de alertas fuera de radio |
 | Zona horaria | `America/El_Salvador`, en `BUSINESS_TIMEZONE` | Ver 5.7. Recalcula a qué día local pertenece todo el histórico |
 | Estado de venta válido | `erp_status = 2` | Excluye cotizaciones de todo cálculo |
@@ -355,21 +362,21 @@ En este repositorio, las constantes que sean configurables por entorno van en `s
 **Decisión confirmada (11 de septiembre de 2026): Supabase Auth es el proveedor de identidad y RLS es el control de acceso.** Sustituye a la decisión anterior basada en Clerk, que queda retirada.
 
 - **Supabase Auth es dueño de la autenticación.** `app_user.auth_user_id uuid` guarda el `auth.users.id`, que es el claim `sub` del JWT. Ese es el vínculo.
-- **Los clientes consultan Supabase directamente** con `supabase-js`. Las políticas RLS deciden qué ve cada quien.
-- **El rol vive en `app_user.role`, no en los claims.** Cambiarlo es un `UPDATE` y aplica en la consulta siguiente. Por eso las políticas lo resuelven con las funciones de `app_auth` y no leyendo el token.
+- ~~**Los clientes consultan Supabase directamente** con `supabase-js`.~~ **Cerrado por PCRM-138 (26/10/2026):** web y móvil usan `supabase-js` solo para Auth y todo dato pasa por la API. El camino directo quedó sin GRANT y sin políticas (ver "Estado de los permisos").
+- **El rol vive en `app_user.role`, no en los claims.** Cambiarlo es un `UPDATE` y aplica en la consulta siguiente. Por eso `requireAuth` lo lee de la base y no del token, igual que las funciones de `app_auth`.
 - **No hay webhook de sincronización y no hace falta**: la API crea la identidad en Supabase Auth y la fila de `app_user` en la misma operación, así que conoce el `sub` en el acto.
 - La tabla de usuarios sigue sin campos de contraseña ni credenciales: los gestiona Supabase Auth.
 
-**Dos caminos, y solo uno pasa por RLS.**
+**Un solo camino a los datos (PCRM-138).**
 
 | Camino | Quién autoriza |
 |---|---|
-| Cliente → Supabase (`supabase-js`) | Las políticas RLS |
+| Cliente → Supabase (`supabase-js`) | Solo Auth. A las tablas, nadie: `42501` |
 | Cliente → PragmaCRM-Api | `requireAuth` + `requireRole` |
 
-La API se conecta con `DATABASE_URL` como rol `postgres`, que **bypassea RLS**. No es una sola fuente de verdad: es una división por camino. La frontera, que hay que respetar al agregar funcionalidad: **`app_user` se escribe solo desde la API** — crear una identidad exige la `service_role` key — **y el resto del dominio se lee y escribe por RLS**.
+La API se conecta con `DATABASE_URL` como rol `postgres`, que **bypassea RLS**. Toda autorización de datos vive en la API; RLS habilitado sin políticas es la red que deja cerrada cualquier tabla a `anon` y `authenticated`.
 
-**Cómo se escribe una política.** Las funciones `app_auth.current_app_user_id()`, `app_auth.role_name()` y `app_auth.is_admin()` (migración `rls_helper_functions`) resuelven al usuario. Son `SECURITY DEFINER` a propósito: una política que consultara `app_user` directamente dispararía las políticas de `app_user` y Postgres abortaría con `42P17: infinite recursion detected in policy`.
+**Si algún día se reabre el camino directo** (decisión de equipo, no de implementación), así se escribe una política. Las funciones `app_auth.current_app_user_id()`, `app_auth.role_name()` y `app_auth.is_admin()` (migración `rls_helper_functions`) resuelven al usuario. Son `SECURITY DEFINER` a propósito: una política que consultara `app_user` directamente dispararía las políticas de `app_user` y Postgres abortaría con `42P17: infinite recursion detected in policy`.
 
 Cuatro reglas que no son opcionales:
 
@@ -380,7 +387,7 @@ Cuatro reglas que no son opcionales:
 
 **`FORCE ROW LEVEL SECURITY` está prohibido sobre `app_user`.** Activarlo reintroduce la recursión *y* deja ciega a la API, que se conecta como `postgres`.
 
-**Estado de los permisos.** `anon` no tiene ningún privilegio, deliberadamente: la anon key viaja dentro del bundle web y del APK. `authenticated` tiene solo el DML que necesita, tabla por tabla. Las tablas sin política siguen en deny-all: `upload` y `sale_staging` entre ellas, que son exclusivas de la API.
+**Estado de los permisos (PCRM-138, 26/10/2026).** Ni `anon` ni `authenticated` tienen privilegios sobre tablas ni secuencias de `public`, y **no queda ninguna política** en `public`: las 16 de la migración `rls_policies_and_grants` se eliminaron (migración `revoke_data_api_table_access`). Con RLS habilitado y sin políticas, cada tabla es deny-all aunque una migración futura agregue un GRANT por error. Motivo: la Data API está habilitada en los proyectos remotos, y con su JWT y la publishable key del APK un Vendedor podía insertar o corregir `visit` con cualquier `distance_meters` —la validación GPS de RF-06 solo corre en la API— y leer crédito y datos fiscales de toda la cartera (`customer_select` es `USING (true)`). Ningún cliente usaba ese camino. **Las funciones `app_auth` se conservan** como base de una política futura; reabrir una tabla exige un GRANT **y** una política nueva, escrita con las reglas de arriba y revisada contra las validaciones de la API (la distancia de RF-06 en `visit`, por ejemplo). Auditoría completa en [docs/SECURITY.md](./docs/SECURITY.md).
 
 
 ## 6. Integración con Efactsoft
@@ -492,9 +499,9 @@ Además de la nomenclatura, tres decisiones que el DER dejaba abiertas ya están
 La segunda es la más importante y cambia el modelo mental de la sección 5.1: **planificación y ejecución son dos tablas**, no una.
 
 - `scheduled_visit` — la agenda. Cuelga de `route_user_id`, tiene `visit_date`, `stop_type` y acepta **`customer_id` o `prospect_id`, ambos nullable**. Esto absorbió la entidad propuesta `parada_unica`: una parada ad-hoc es una fila de `scheduled_visit` con `reason` explicando el motivo.
-- `visit` — la ejecución. Cuelga de `customer_id` (obligatorio), `user_id`, y opcionalmente `route_user_id` y `route_customer_id`.
+- `visit` — la ejecución. Cuelga de `customer_id` **o** `prospect_id` (exactamente uno, `visit_target_chk`), `user_id`, y opcionalmente `route_user_id` y `route_customer_id`.
 
-**Consecuencia directa sobre el Anexo A punto 3:** se puede **planificar** una parada sobre un prospecto (`scheduled_visit.prospect_id` existe y tiene índice parcial), pero **no se puede ejecutar**: `visit.customer_id` sigue siendo obligatorio y `visit` no tiene `prospect_id`. La brecha entre modelo y wireframe sigue abierta, ahora con contorno exacto.
+**Paradas sobre prospectos (21/10/2026, cierra B-8).** Una parada sobre un prospecto se planifica (`scheduled_visit.prospect_id`; el Administrador la agrega como parada extra, solo de tipo Visita) y **se ejecuta**: la migración `20261021120000_visit_prospect_id` hizo nullable `visit.customer_id` y agregó `visit.prospect_id`, con la misma regla de uno-de-dos que `scheduled_visit`. `confirmVisit` valida los 80 m contra el pin del prospecto. Las métricas de clientes (cobertura, clientes visitados, clientes sin visita) las ignoran por construcción, porque cruzan o cuentan por `v.customer_id`; las que cuentan todas las visitas (paradas ejecutadas, por tipo, tiempo promedio, efectividad) **sí las incluyen**.
 
 ### 7.2 Identidad
 
@@ -516,8 +523,9 @@ app_user
 customer
   PK  id                  uuid
       erp_customer_id     integer  UNIQUE parcial
-      personality         text                   -- RF-12: rojo|azul|verde|amarillo
-      potential           text                   -- RF-12: alto|medio|bajo
+      personality         text  CHECK            -- RF-12: rojo|azul|verde|amarillo, NULL = sin clasificar
+      potential           text  CHECK            -- RF-12: alto|medio|bajo, NULL = sin clasificar
+      sanitary_registration / nrc / nit / email  text  -- PCRM-185, opcionales, captura manual
       name                text
       trade_name          text
       establishment_type  text                   -- cadena|independiente|droguería
@@ -540,8 +548,30 @@ prospect
       name / trade_name / address / phone
       location     geography(Point,4326)
       status       text
+      sanitary_registration / nrc / nit / email  text  -- PCRM-185, opcionales
+      active       boolean  default true     -- PCRM-186: false al convertirse
+  FK  customer_id  uuid -> customer.id  NULL -- PCRM-186: cliente en que se convirtió
+      converted_at timestamptz          NULL -- PCRM-186: junto con customer_id
       created_at / updated_at / deleted_at
 ```
+
+**Datos fiscales de clientes y prospectos (PCRM-185).** `sanitary_registration` (registro sanitario, texto libre sin formato conocido), `nrc`, `nit` y `email`, todos opcionales, en `prospect` (16/10/2026) y en `customer` (confirmado por el PO el 18/10/2026). El formato lo valida la API con un solo esquema compartido (`domain/schemas/fiscal.schema.ts`), no un CHECK: NRC `230204-4`, NIT de 14 dígitos (`0614-250621-108-6`) **o** el DUI homologado como NIT de persona natural (`01234567-8`), y correo guardado en minúsculas. Un string vacío del formulario se guarda como `NULL`.
+
+- Prospectos: se aceptan al crear (vendedor y admin) y `PATCH /api/v1/prospects/:id` (solo Administrador) edita nombre, teléfono y estos cuatro campos de forma parcial.
+- Clientes: `PATCH /api/v1/customers/:id/fiscal-data` (solo Administrador), parcial y `strict`, como las otras secciones del perfil (`/contact`, `/location`, `/commercial-profile`). Se leen en `GET /api/v1/customers/:id`; el listado y la ruta móvil no los traen.
+
+**En `customer` son captura manual: el importador no los toca.** El JSON de Efactsoft no trae NRC, NIT ni correo del cliente: las llaves `nrc`, `nif`, `email`, `telefono` y `razon_social` del payload son del **emisor** (Pragma), con un único valor en todas las ventas. `upsertCustomer` (`salesSync.service.ts`) solo escribe nombre y crédito, así que una carga posterior no borra lo capturado.
+
+**Conversión de prospecto a cliente (PCRM-186, decidido el 20/10/2026).** Los clientes nacen en Efactsoft, así que convertir es **enlazar** el prospecto con el cliente que trae el JSON, no crearlo en el CRM. El enlace es **solo por nombre**, el único dato que Efactsoft comparte con el prospecto, comparado con `public.normalize_name` (minúsculas, sin tildes, espacios simples): `"FARMACIA  elena cortéz 17"` = `"Farmacia Elena Cortez 17"`. Los trabajadores de Pragma se comprometen a usar el mismo nombre en ambos lados.
+
+- **Automático al importar** (PASO 3 de `importSalesFile`, en la misma transacción que la reconciliación): un prospecto activo con **exactamente un** cliente del mismo nombre se convierte. La respuesta del upload trae `prospects.converted` y `prospects.alerts`.
+- **Dos o más clientes con el nombre: solo alerta**, no se enlaza y el admin no elige cliente. Sin coincidencias no hay alerta: el prospecto todavía no compra.
+- Al convertir: `active = false`, `customer_id` y `converted_at`. Sus paradas **pendientes** (hoy en adelante, sin visita) pasan al cliente como paradas extra; las pasadas quedan como histórico del prospecto. Sus visitas (`visit.prospect_id`) también se quedan en el prospecto. Un prospecto convertido ya no acepta paradas extra: `POST …/daily-route/extra-stops` responde 409 `PROSPECT_CONVERTED` y la parada va sobre el cliente.
+- `POST /api/v1/prospects/:id/convert` (solo Administrador) reintenta el cruce para un prospecto, p. ej. tras corregir su nombre. 409 con `code`: `PROSPECT_ALREADY_CONVERTED`, `PROSPECT_INACTIVE`, `PROSPECT_NO_MATCHING_CUSTOMER`, `PROSPECT_NAME_AMBIGUOUS`. `GET /api/v1/prospects?active=true|false` filtra abiertos y convertidos.
+- **"Nuevos prospectos" no cambia:** cuenta el prospecto al registrarse; convertirlo lo desactiva, no lo borra.
+- **Sin otra llave de cruce:** el JSON trae el nombre (149/150 clientes) y el celular (3/150); los campos DTE (`dte`, `dte_firm`…) llegan vacíos porque las ventas son "Recibo". Si Pragma emitiera CCF o factura electrónica, el `receptor` del DTE traería NRC/NIT y serviría como llave más confiable.
+
+**Eliminar prospectos (26/10/2026).** `DELETE /api/v1/prospects/:id` (solo Administrador) cierra el caso de uso "Editar y eliminar prospectos". Es **soft delete** (`deleted_at`) y, en la misma transacción, borra (soft) sus paradas **pendientes**: `scheduled_visit` de hoy en adelante (zona de negocio) sin visita. Las paradas pasadas y las visitas (`visit.prospect_id`) se conservan: el historial las lee con `LEFT JOIN prospect` sin filtrar `deleted_at`. Responde `{ id, deleted, removed_stops }`; 404 si no existe o ya estaba borrado. Un prospecto borrado sale del listado, del selector de paradas extra y del KPI "Nuevos prospectos" (que filtra `deleted_at IS NULL`). También se puede borrar uno convertido; sus paradas pendientes ya pasaron al cliente.
 
 ### 7.4 Rutas
 
@@ -583,7 +613,8 @@ scheduled_visit                         -- AGENDA: la parada planificada
 
 visit                                   -- EJECUCIÓN: lo que pasó en campo
   PK  id                 uuid
-  FK  customer_id        uuid -> customer.id        NOT NULL
+  FK  customer_id        uuid -> customer.id        NULL   -- uno de los dos (visit_target_chk)
+  FK  prospect_id        uuid -> prospect.id        NULL
   FK  user_id            uuid -> app_user.id
   FK  route_user_id      uuid -> route_user.id      NULL
   FK  route_customer_id  uuid -> route_customer.id  NULL
@@ -690,6 +721,8 @@ goal                               -- meta mensual de venta por vendedor
       goal_amount  numeric(14,2)
   UQ  (user_id, year, month) WHERE deleted_at IS NULL
 ```
+
+**Semántica de `goal` (PCRM-173, decidido por el equipo el 16/10/2026).** La meta es fija por vendedor: una fila `(user_id, year, month)` vale **desde ese mes en adelante**, hasta que otra fila posterior la reemplace. La meta de un mes M es la fila no borrada más reciente con `(year, month) <= M`; `goal_amount = 0` es "sin meta desde ese mes". **La meta solo se fija para el mes en curso y no se elimina (decidido el 18/10/2026):** cambiarla otra vez en el mismo mes sobrescribe la fila de ese mes; el primer cambio de un mes nuevo agrega una fila, así que los meses cerrados conservan la suya y su cumplimiento no cambia. Se administra con `GET/PUT /api/v1/sellers/:id/goals` (solo Administrador). El PUT recibe solo `goal_amount` (el mes lo pone el servidor, en `America/El_Salvador`); no hay DELETE. El GET pagina `history`, con el último mes de cada meta en `until` (`null` la vigente), y calcula `current` sobre todas las filas. `GET /api/v1/sellers/:id/goals/history?months=12` (PCRM-198, máx. 24) devuelve por mes, del más antiguo al en curso, la meta vigente (`null` sin meta), la venta y el % (`goal_compliance`, `null` sin meta), sin prorrateo: el mes en curso compara la venta hasta hoy contra la meta completa; las métricas leen la misma regla en `goalSlicesCte` (`src/repositories/metrics/fragments.sql.ts`). Sin migración: el índice único parcial existente basta.
 
 **⚠ `goal` no tiene RF asociado.** Sostiene dos KPIs marcados como Esenciales (cumplimiento de meta gerencial y del vendedor) pero no aparece en el GPI. Requiere un RF nuevo o una excepción documentada. **Sin resolver.**
 
@@ -861,16 +894,23 @@ Implementada con `jose` (verificación del JWT) y `@supabase/supabase-js` (Admin
 - `requireRole(...roles)` se encadena después. Los roles son la constante `ROLES`.
 - Los guards se aplican **por grupo de rutas** en `routes.ts`, nunca dentro del controlador. En rutas con subida de archivos van necesariamente ahí, por delante de multer, para rechazar a un anónimo antes de bufferizar el archivo.
 - Códigos: **401** por token ausente, inválido, expirado o de otro emisor. **403** por usuario no enlazado, `active = false`, `role` desconocido o rol insuficiente. **503** si el JWKS no responde — el token podría ser válido, y mandar a todos al login por un problema de red sería peor.
-- `/api/v1/me` devuelve usuario y rol. Es la vía por el camino de la API, pero no la única: como el rol vive en `app_user.role` y no en el token, un cliente que habla directo con Supabase también puede leerlo, vía `app_user_select` (ver 5.9). Filtrando por `auth_user_id = session.user.id`, la policy siempre devuelve como máximo la fila propia — sin ese filtro, un Administrador recibiría además las filas de otros usuarios, porque la policy también habilita `is_admin()` para sostener el dashboard de gestión de vendedores (RF-01). Un usuario deshabilitado o borrado no recibe fila alguna por ninguna de las dos vías, porque `app_auth.current_app_user_id()` resuelve a `NULL`.
+- `/api/v1/me` devuelve usuario y rol. Es la única vía: el rol vive en `app_user.role`, no en el token, y la tabla no es legible por Supabase (ver 5.9). Un usuario deshabilitado o borrado recibe 403.
 - `/api/health` es la única ruta pública.
 
 **Alta de vendedores.** `use-cases/create-seller.use-case.ts` crea primero la identidad (`services/supabaseAdmin.service.ts`, con la `service_role` key) y después el perfil, con `auth_user_id` ya poblado; si el perfil falla, borra la identidad. No hay ventana con el enlace en NULL ni paso manual. El `inviteLink` se devuelve una sola vez en el 201 y no se almacena.
 
-**Deshabilitar** corta por los dos caminos: la API responde 403, las funciones `app_auth.*` filtran por `active` y las políticas dejan de devolver filas, y además se banea la cuenta para que muera la sesión viva.
+**Deshabilitar** hace que la API responda 403 y además banea la cuenta para que muera la sesión viva.
 
 **Probar endpoints protegidos:** pedir un token a `/auth/v1/token?grant_type=password` con la anon key (ver README). En los tests se mockea `lib/supabaseJwt`; la criptografía real se prueba en `lib/__tests__/supabaseJwt.test.ts`, que firma tokens ES256 de verdad sin red.
 
-**Lo que no está hecho:** las políticas RLS están escritas solo para las tablas que web y móvil consumen en este sprint. El resto sigue en deny-all — no rompe nada porque nadie las consulta, pero quien agregue una funcionalidad nueva tendrá que escribir su política y su GRANT, o verá cero filas sin explicación.
+**Acceso directo a tablas:** cerrado (PCRM-138). Toda funcionalidad nueva va por la API; un cliente que consulte una tabla con `supabase-js` recibe `42501 permission denied`. Abrirlo exige un GRANT explícito y una política nueva, y es una decisión de equipo, no un detalle de implementación.
+
+**Rate limit (PCRM-138):** `presentation/middleware/rateLimit.ts`, store en memoria (una sola instancia). Se omite con `NODE_ENV=test`.
+
+- **Global, por IP:** 1200/min sobre todo `/api/v1/*`, montado en `routes.ts` antes de `requireApiKey`. Un endpoint nuevo queda cubierto sin hacer nada.
+- **Por usuario:** `/reports` 30 cada 5 min y `POST /uploads/sales` 10 cada 15 min (el polling de `in-progress` no cuenta).
+- **Auth pública, por IP:** `/auth/otp` 5, `/login` 10 y `/refresh` 60 cada 15 min.
+- Un endpoint caro nuevo lleva su propio `apiRateLimiter` después de `requireAuth`. Los números y el uso de web y móvil que los justifica están en [docs/SECURITY.md](./docs/SECURITY.md#2-rate-limit).
 
 
 ### Ramas y CI
@@ -913,7 +953,7 @@ Flujo `feat/* → dev → staging → prod`. `ci.yml` corre en cada PR (lint, ts
 | # | Discrepancia | Estado |
 |---|---|---|
 | 1 | Falta campo `tipo` en las tablas de fase de planificación | **Resuelto** vía `scheduled_visit.stop_type` y `visit.visit_type` |
-| 2 | `visit` no soporta prospectos (`customer_id` obligatorio, sin `prospect_id`) | **Abierta.** `scheduled_visit` sí acepta prospectos; `visit` no. Ningún KPI lo requiere, pero el wireframe de ruta ejecutada dibuja prospectos visitados como pin hueco |
+| 2 | `visit` no soporta prospectos (`customer_id` obligatorio, sin `prospect_id`) | **Resuelto (21/10/2026)** con `visit.prospect_id` y `customer_id` nullable (ver 7.1) |
 | 3 | Falta de validez temporal en la asignación de ruta | **Resuelto:** `route_user` con `day` + vigencia por `created_at` / `deleted_at` |
 | 4 | Tabla de usuarios sin campos de contraseña ni credenciales | **Resuelto**: las gestiona Supabase Auth |
 | 5 | Comportamiento GPS fuera de rango contradictorio entre tres documentos | **Abierta.** Requiere decisión del cliente |
@@ -1035,7 +1075,7 @@ Ninguno bloquea el desarrollo, pero todos afectan la calidad del resultado y deb
 
 **2. Ventas sin ruta atribuible.** Ahora que la atribución pasa exclusivamente por `sale.visit_id` (ver 5.4), **toda venta sin visita asociada queda fuera del reporte de venta por ruta** aunque sí entre en venta total. Ocurre cuando el vendedor no marcó la parada, cuando el día no tenía ruta asignada, o cuando el `id_usuario` de Efactsoft no mapea contra `app_user.erp_user_id`. El importador debería dejar un conteo de control de los tres casos para que la diferencia entre reportes sea explicable.
 
-**3. Ejecución de paradas sobre prospectos.** `visit.customer_id` es obligatorio y no existe `visit.prospect_id`, así que un check-in sobre un prospecto no tiene dónde registrarse — aunque `scheduled_visit.prospect_id` sí permite planificarlo. Ningún KPI lo requiere, pero el wireframe de ruta ejecutada dibuja los prospectos visitados como pin hueco en el mapa.
+**3. ~~Ejecución de paradas sobre prospectos.~~ Resuelto el 21/10/2026:** `visit.prospect_id` existe y `confirmVisit` registra el check-in sobre un prospecto (ver 7.1). Queda pendiente dibujarlos en la vista de ruta ejecutada (pin hueco del wireframe).
 
 **4. Deuda documental de nomenclatura.** El DER, la guía de KPIs y este documento hablan en español; la base está en inglés. Mientras no se unifique, toda consulta escrita a partir del DER hay que traducirla con la tabla de 7.0. Riesgo de errores silenciosos al copiar SQL de la documentación.
 
@@ -1052,7 +1092,7 @@ Ninguno bloquea el desarrollo, pero todos afectan la calidad del resultado y deb
 | 5 | ¿Qué hace el sistema cuando el vendedor está **fuera del radio GPS**? ¿Bloquea, advierte o registra con bandera? | Define el flujo central de RF-06 | Cliente | ⚠ Abierta |
 | 6 | ¿`goal` obtiene un RF nuevo o una excepción documentada? | Trazabilidad del GPI | Andrés / equipo | ⚠ Abierta |
 | 7 | ¿`customer.place_id` se mantiene? Implica Google Places API sin presupuesto | Costo y alcance | Cliente / equipo | ⚠ Abierta |
-| 8 | ¿Se resuelve el check-in sobre prospectos en `visit`? | Coherencia entre modelo y wireframes | Equipo | ⚠ Abierta |
+| 8 | ¿Se resuelve el check-in sobre prospectos en `visit`? | Coherencia entre modelo y wireframes | Equipo | ✅ **Cerrada (21/10/2026).** `visit.prospect_id` + `customer_id` nullable |
 | 9 | ¿Se purga `sale_staging` tras procesar cada carga? | Crecimiento de la base | Equipo | ⚠ Abierta |
 | 10 | ¿Se actualiza el DER a los nombres reales en inglés, o se publica la tabla de equivalencias? | Deuda documental | Jimmy / equipo | ⚠ Abierta |
 

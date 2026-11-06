@@ -4,9 +4,9 @@ import { CustomError } from '../domain/errors/CustomError';
 import { getSellerById, setSellerStatus, SellerRecord } from '../services/seller.service';
 import { setAuthUserBanned } from '../services/supabaseAdmin.service';
 
-// RLS already hides every row from a disabled seller, because the app_auth
-// helpers filter by active. Banning is what kills the live session: without it
-// the seller keeps a usable access token until it expires.
+// The API already answers 403 to a disabled seller. Banning is what kills the
+// live session: without it the seller keeps a usable access token until it
+// expires.
 export const setSellerStatusEverywhere = async (
   client: Client,
   id: string,

@@ -81,13 +81,12 @@ export const confirmVisit = async (
     throw CustomError.forbidden('This stop is not assigned to you');
   }
 
-  // Planning a stop on a prospect is allowed, executing it is not: visit has
-  // no prospect_id (CLAUDE.md 7.1, open decision B-8).
-  if (!stop.customer_id) {
-    throw CustomError.unprocessable(
-      'Stops on prospects cannot be confirmed yet: visits only support customers'
-    );
-  }
+  // scheduled_visit_target_chk guarantees exactly one of the two. A stop on a
+  // prospect is confirmed like any other since visit got prospect_id
+  // (migration 20261021120000, closes B-8).
+  const target: VisitTarget = stop.customer_id
+    ? { kind: 'customer', id: stop.customer_id }
+    : { kind: 'prospect', id: stop.prospect_id as string };
 
   const day = plannedDayRange(stop.visit_date);
   assertCapturedAt(input.captured_at, day, 'captured_at');
@@ -105,9 +104,9 @@ export const confirmVisit = async (
     return toConfirmed(existing, true);
   }
 
-  const distance = await getDistanceToCustomer(
+  const distance = await getDistanceToTarget(
     client,
-    stop.customer_id,
+    target,
     input.latitude,
     input.longitude
   );
@@ -115,13 +114,13 @@ export const confirmVisit = async (
   // An admin-added extra stop (PCRM-158) never links to the route's planned
   // composition, even when the customer also happens to be a route member —
   // the lookup would then find that unrelated membership and misattribute
-  // this one-off check-in to it.
-  const routeCustomer = stop.is_extra
+  // this one-off check-in to it. A prospect is never a route member.
+  const routeCustomer = stop.is_extra || target.kind === 'prospect'
     ? null
     : await client.route_customer.findFirst({
         where: {
           route_id: stop.route_user.route_id,
-          customer_id: stop.customer_id,
+          customer_id: target.id,
           deleted_at: null,
         },
         select: { id: true },
@@ -130,7 +129,7 @@ export const confirmVisit = async (
   const rows = await client.$queryRaw<VisitRow[]>(
     insertVisitSql({
       sellerId,
-      customerId: stop.customer_id,
+      target,
       routeUserId: stop.route_user_id,
       routeCustomerId: routeCustomer?.id ?? null,
       scheduledVisitId: stop.id,
@@ -153,6 +152,9 @@ interface DayRange {
   start: Date;
   end: Date;
 }
+
+/** What the confirmed stop was planned on: one of the two, never both. */
+type VisitTarget = { kind: 'customer'; id: string } | { kind: 'prospect'; id: string };
 
 /**
  * [start, end) of the planned day in the customer's timezone.
@@ -182,19 +184,24 @@ const assertCapturedAt = (value: Date, day: DayRange, field: string): void => {
 };
 
 /**
- * Distance in meters from the reported position to the customer's pin.
- * geography ST_Distance is a spheroidal distance, so it is already in meters.
+ * Distance in meters from the reported position to the customer's or the
+ * prospect's pin. geography ST_Distance is a spheroidal distance, so it is
+ * already in meters.
  */
-const getDistanceToCustomer = async (
+const getDistanceToTarget = async (
   client: Client,
-  customerId: string,
+  target: VisitTarget,
   latitude: number,
   longitude: number
 ): Promise<number> => {
+  // Fixed identifiers picked from the union, never from input.
+  const table = Prisma.raw(target.kind === 'customer' ? 'customer' : 'prospect');
+  const label = target.kind === 'customer' ? 'Customer' : 'Prospect';
+
   const rows = await client.$queryRaw<{ distance: number | null }[]>(Prisma.sql`
     SELECT ROUND(
              extensions.ST_Distance(
-               c.location,
+               t.location,
                extensions.ST_SetSRID(
                  extensions.ST_MakePoint(${longitude}, ${latitude}),
                  4326
@@ -202,18 +209,18 @@ const getDistanceToCustomer = async (
              )::numeric,
              2
            )::float8 AS distance
-    FROM   customer c
-    WHERE  c.id = ${customerId}::uuid
-      AND  c.deleted_at IS NULL
+    FROM   ${table} t
+    WHERE  t.id = ${target.id}::uuid
+      AND  t.deleted_at IS NULL
   `);
 
-  if (rows.length === 0) throw CustomError.notFound('Customer not found');
+  if (rows.length === 0) throw CustomError.notFound(`${label} not found`);
 
   const distance = rows[0].distance;
   if (distance === null) {
     // Without a pin there is nothing to validate against. Better to refuse than
     // to store a visit that nobody can audit.
-    throw CustomError.unprocessable('Customer has no GPS location assigned');
+    throw CustomError.unprocessable(`${label} has no GPS location assigned`);
   }
 
   return distance;
@@ -246,6 +253,7 @@ const toConfirmed = (row: VisitRow, replayed: boolean): ConfirmedVisit => ({
   id: row.id,
   scheduled_visit_id: row.scheduled_visit_id,
   customer_id: row.customer_id,
+  prospect_id: row.prospect_id,
   visit_type: row.visit_type,
   started_at: row.started_at,
   finished_at: row.finished_at,
@@ -270,7 +278,8 @@ const toConfirmed = (row: VisitRow, replayed: boolean): ConfirmedVisit => ({
 interface VisitRow {
   id: string;
   scheduled_visit_id: string;
-  customer_id: string;
+  customer_id: string | null;
+  prospect_id: string | null;
   visit_type: string;
   started_at: Date;
   finished_at: Date | null;
@@ -288,6 +297,7 @@ const visitColumns = (alias: string): Prisma.Sql =>
     ${alias}.id::text                                             AS id,
     ${alias}.scheduled_visit_id::text                             AS scheduled_visit_id,
     ${alias}.customer_id::text                                    AS customer_id,
+    ${alias}.prospect_id::text                                    AS prospect_id,
     ${alias}.visit_type,
     ${alias}.started_at,
     ${alias}.finished_at,
@@ -301,7 +311,7 @@ const visitColumns = (alias: string): Prisma.Sql =>
 
 const insertVisitSql = (args: {
   sellerId: string;
-  customerId: string;
+  target: VisitTarget;
   routeUserId: string;
   routeCustomerId: string | null;
   scheduledVisitId: string;
@@ -309,16 +319,19 @@ const insertVisitSql = (args: {
   distance: number;
   input: ConfirmVisitInput;
 }): Prisma.Sql => {
-  const { input } = args;
+  const { input, target } = args;
+  const customerId = target.kind === 'customer' ? target.id : null;
+  const prospectId = target.kind === 'prospect' ? target.id : null;
 
   return Prisma.sql`
     INSERT INTO visit AS v (
-      customer_id, user_id, route_user_id, route_customer_id, scheduled_visit_id,
+      customer_id, prospect_id, user_id, route_user_id, route_customer_id, scheduled_visit_id,
       started_at, finished_at, checkin_location, distance_meters,
       visit_type, successful, no_order_reason, notes
     )
     VALUES (
-      ${args.customerId}::uuid,
+      ${customerId}::uuid,
+      ${prospectId}::uuid,
       ${args.sellerId}::uuid,
       ${args.routeUserId}::uuid,
       ${args.routeCustomerId}::uuid,

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { ReportsController } from './reports.controller';
+import { ManagementReportsRoutes } from './management.routes';
 import { validateParams, validateQuery } from '../middleware/validate';
 import {
   metricsKpiParamsSchema,
@@ -42,6 +43,9 @@ export class ReportsRoutes {
       validateQuery(reportRangeQuerySchema),
       controller.purchaseFrequency
     );
+
+    // Management reports (PCRM-159): their own SQL and filters.
+    router.use(ManagementReportsRoutes.routes);
 
     return router;
   }

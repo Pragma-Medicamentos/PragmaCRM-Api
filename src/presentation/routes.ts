@@ -9,20 +9,27 @@ import { ProductsRoutes } from './products/routes';
 import { DailyRouteRoutes } from './daily-route/routes';
 import { RoutesRoutes } from './routes/routes';
 import { VisitsRoutes } from './visits/routes';
+import { ProductRequestsRoutes } from './product-requests/routes';
 import { MetricsRoutes } from './metrics/routes';
 import { ProspectsRoutes } from './prospects/routes';
 import { ReportsRoutes } from './reports/routes';
 import { SellerDailyRouteRoutes } from './seller-daily-route/routes';
 import { requireAuth, requireRole } from './middleware/auth';
 import { requireApiKey } from './middleware/apiKey';
+import { apiRateLimiter } from './middleware/rateLimit';
 import { ROLES } from '../domain/types/auth.types';
 
 export class AppRoutes {
   static get routes(): Router {
     const router = Router();
 
-    // Publica: la consume el monitoreo del VPS.
+    // Public: polled by the VPS monitoring, so it is not rate limited.
     router.use('/api/health', HealthRoutes.routes);
+
+    // PCRM-138: one per-IP budget for everything below, mounted before the
+    // API key check so requests without a key count too. Heavier groups add
+    // their own per-user limit after requireAuth.
+    router.use(apiRateLimiter('global'));
 
     // Transport-level gate: every request to the CRM (everything except
     // /api/health, mounted above) must present the static x-api-key from the
@@ -31,7 +38,8 @@ export class AppRoutes {
     router.use(requireApiKey);
 
     // CRM modules are mounted here under /api/v1/<resource>.
-    // RF-03: solo el Administrador puede importar el JSON del ERP.
+    // RF-03: only the Administrador imports the ERP JSON. The upload itself is
+    // rate limited per user inside UploadsRoutes, so the status polling is not.
     router.use(
       '/api/v1/uploads',
       requireAuth,
@@ -110,6 +118,15 @@ export class AppRoutes {
       VisitsRoutes.routes
     );
 
+    // RF-11 (PCRM-65): off-catalog products requested during a visit. The
+    // seller registers them; the admin report (PCRM-67) reads them elsewhere.
+    router.use(
+      '/api/v1/product-requests',
+      requireAuth,
+      requireRole(ROLES.SELLER),
+      ProductRequestsRoutes.routes
+    );
+
     // RF-09: base metrics panel. Admin only: it aggregates the whole team's
     // sales and field activity.
     router.use(
@@ -119,18 +136,18 @@ export class AppRoutes {
       MetricsRoutes.routes
     );
     // RF-09: the metrics above as downloadable .xlsx / .pdf reports. Same
-    // audience as the panel, so the same guard.
+    // audience as the panel, so the same guard, plus a per-user limit because
+    // each download renders a whole report.
     router.use(
       '/api/v1/reports',
       requireAuth,
       requireRole(ROLES.ADMIN),
+      apiRateLimiter('reports'),
       ReportsRoutes.routes
     );
     // PCRM-62: prospects. Auth here; role per verb inside ProspectsRoutes
     // (SELLER POST, ADMIN GET) so PCRM-64 can list without a second mount.
     router.use('/api/v1/prospects', requireAuth, ProspectsRoutes.routes);
-
-    // router.use('/api/v1/goals', requireAuth, requireRole(ROLES.ADMIN), GoalsRoutes.routes);
 
     return router;
   }

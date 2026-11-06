@@ -10,6 +10,7 @@ import {
   syncStagedSalesChunk,
 } from '../../services/salesSync.service';
 import { deleteAuthUser } from '../../services/supabaseAdmin.service';
+import { convertProspectsByName } from '../../services/prospectConversion.service';
 
 jest.mock('../../lib/prisma', () => ({
   prisma: {
@@ -36,6 +37,10 @@ jest.mock('../../services/salesSync.service', () => {
   };
 });
 
+jest.mock('../../services/prospectConversion.service', () => ({
+  convertProspectsByName: jest.fn(),
+}));
+
 jest.mock('../../services/supabaseAdmin.service', () => ({
   deleteAuthUser: jest.fn(),
 }));
@@ -52,6 +57,7 @@ const finalizeMock = finalizeUploadSync as jest.Mock;
 const markProcessingMock = markUploadProcessing as jest.Mock;
 const deleteAuthUserMock = deleteAuthUser as jest.Mock;
 const removeSalesMock = removeSalesNotInUpload as jest.Mock;
+const convertProspectsMock = convertProspectsByName as jest.Mock;
 
 const stagingResult = {
   upload_id: 'upload-1',
@@ -80,6 +86,8 @@ describe('importSalesFile — chunked sync orchestration (PCRM-168)', () => {
     finalizeMock.mockReset();
     markProcessingMock.mockReset();
     markProcessingMock.mockResolvedValue(undefined);
+    convertProspectsMock.mockReset();
+    convertProspectsMock.mockResolvedValue({ converted: [], alerts: [] });
     deleteAuthUserMock.mockReset();
     deleteAuthUserMock.mockResolvedValue(undefined);
     removeSalesMock.mockReset();
@@ -192,6 +200,36 @@ describe('importSalesFile — chunked sync orchestration (PCRM-168)', () => {
     // Same tx client as finalize: both commit or neither does.
     expect(removeSalesMock.mock.calls[0][0]).toBe(finalizeMock.mock.calls[0][0]);
     expect(result.removed).toEqual({ annulled: 1, missing: 4 });
+  });
+
+  it('converts prospects after every chunk, in the finalize transaction (PCRM-186)', async () => {
+    const summary = {
+      converted: [{ prospect_id: 'p1', prospect_name: 'A', customer_id: 'c1', customer_name: 'A', moved_stops: 0 }],
+      alerts: [],
+    };
+    stageSalesFileMock.mockResolvedValue(stagingResult);
+    syncChunkMock.mockResolvedValue({ inserted: 10, updated: 0, sync_failed: 0, has_more: false });
+    removeSalesMock.mockResolvedValue({ annulled: 0, missing: 0 });
+    convertProspectsMock.mockResolvedValue(summary);
+
+    const result = await importSalesFile(Buffer.from('[]'), 'admin-1');
+
+    // After the customers exist, and in the same tx as finalize.
+    expect(convertProspectsMock.mock.invocationCallOrder[0]).toBeGreaterThan(
+      syncChunkMock.mock.invocationCallOrder[0]
+    );
+    expect(convertProspectsMock.mock.calls[0][0]).toBe(finalizeMock.mock.calls[0][0]);
+    expect(result.prospects).toEqual(summary);
+  });
+
+  it('does not finalize the upload when the conversion throws', async () => {
+    stageSalesFileMock.mockResolvedValue(stagingResult);
+    syncChunkMock.mockResolvedValue({ inserted: 10, updated: 0, sync_failed: 0, has_more: false });
+    removeSalesMock.mockResolvedValue({ annulled: 0, missing: 0 });
+    convertProspectsMock.mockRejectedValue(new Error('boom'));
+
+    await expect(importSalesFile(Buffer.from('[]'), 'admin-1')).rejects.toThrow('boom');
+    expect(finalizeMock).not.toHaveBeenCalled();
   });
 
   it('does not finalize the upload when the removal throws', async () => {

@@ -13,6 +13,7 @@ import { KpiWindow } from './metrics/fragments.sql';
 import { KPI_REGISTRY } from './metrics/kpiRegistry';
 import { sellerInactiveCustomersSql, sellerPerformanceSql } from './metrics/sellers.sql';
 import { trendsSql } from './metrics/trends.sql';
+import { goalHistorySql } from './metrics/goalHistory.sql';
 import { coverageSql } from './metrics/coverage.sql';
 import { purchaseFrequencySql } from './metrics/purchaseFrequency.sql';
 import { productRankingSql } from './metrics/products.sql';
@@ -109,6 +110,24 @@ export const findTrends = (
   sellerId?: string
 ): Promise<TrendPoint[]> =>
   client.$queryRaw<TrendPoint[]>(trendsSql(range, granularity, sellerId));
+
+/** A seller's goal and sales per month of the range (PCRM-198). */
+export interface GoalHistoryMonth {
+  year: number;
+  month: number;
+  /** Goal in force that month; null when there is none (or it is 0). */
+  goal_amount: Money | null;
+  total_sales: Money;
+  /** Percentage, one decimal; null when the month has no goal. */
+  goal_compliance: number | null;
+}
+
+export const findGoalHistory = (
+  client: Client,
+  range: LocalDateRange,
+  sellerId: string
+): Promise<GoalHistoryMonth[]> =>
+  client.$queryRaw<GoalHistoryMonth[]>(goalHistorySql(range, sellerId));
 
 /** Active customers, flagged visited when they had a visit in the range. */
 export const findCoverage = (

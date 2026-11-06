@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { fiscalFields } from './fiscal.schema';
 import { booleanQueryParam, paginationQuerySchema } from './pagination.schema';
 
 export const CUSTOMER_CATEGORIES = ['A', 'B', 'C', 'uncategorized'] as const;
@@ -78,4 +79,51 @@ export const updateCustomerContactSchema = z
   });
 export type UpdateCustomerContactInput = z.infer<
   typeof updateCustomerContactSchema
+>;
+
+// PCRM-185: sanitary registration, NRC, NIT and email, captured by hand —
+// Efactsoft does not export them per customer. Same formats as on prospects
+// (fiscal.schema.ts). Partial: omit = leave unchanged, null or "" = clear.
+// `.strict()` so a field owned by another section answers 400 instead of
+// being dropped silently.
+export const updateCustomerFiscalDataSchema = z
+  .object(fiscalFields)
+  .strict()
+  .refine((data) => Object.values(data).some((value) => value !== undefined), {
+    message: 'At least one field is required',
+  });
+export type UpdateCustomerFiscalDataInput = z.infer<
+  typeof updateCustomerFiscalDataSchema
+>;
+
+// RF-12: communication style as one of four colours and buying potential.
+// Same literals as the customer_personality_check / customer_potential_check
+// constraints; changing one side without the other makes valid requests 500.
+export const CUSTOMER_PERSONALITIES = [
+  'rojo',
+  'azul',
+  'amarillo',
+  'verde',
+] as const;
+export type CustomerPersonality = (typeof CUSTOMER_PERSONALITIES)[number];
+
+export const CUSTOMER_POTENTIALS = ['alto', 'medio', 'bajo'] as const;
+export type CustomerPotential = (typeof CUSTOMER_POTENTIALS)[number];
+
+// The web selector saves one field at a time, so both are optional: omit =
+// leave unchanged, null = back to "not classified". `.strict()` answers 400 to
+// interests / lab affinity: RF-12 lists them, but there is no column for them
+// yet, and silently dropping the field would look like a successful save.
+export const updateCustomerCommercialProfileSchema = z
+  .object({
+    personality: z.enum(CUSTOMER_PERSONALITIES).nullable().optional(),
+    potential: z.enum(CUSTOMER_POTENTIALS).nullable().optional(),
+  })
+  .strict()
+  .refine(
+    (data) => data.personality !== undefined || data.potential !== undefined,
+    { message: 'At least one field is required' }
+  );
+export type UpdateCustomerCommercialProfileInput = z.infer<
+  typeof updateCustomerCommercialProfileSchema
 >;

@@ -7,7 +7,7 @@ import {
   VISIT_AT,
   SALE_AT,
   inRange,
-  goalsCte,
+  goalSlicesCte,
 } from './fragments.sql';
 
 /**
@@ -23,7 +23,16 @@ export const sellerPerformanceSql = (
 
   return Prisma.sql`
     WITH
-    ${goalsCte(range)},
+    ${goalSlicesCte(range, 'goal_slices')},
+    goals AS (
+      -- Goal prorated to the period and the sales inside the months that
+      -- carry it (PCRM-173, see goalSlicesCte).
+      SELECT gs.user_id,
+             SUM(gs.goal_amount) AS goal_amount,
+             SUM(gs.sales)       AS goal_sales
+      FROM   goal_slices gs
+      GROUP  BY gs.user_id
+    ),
     vs AS (
       SELECT v.user_id,
              COUNT(*)                                             AS stops,
@@ -48,7 +57,10 @@ export const sellerPerformanceSql = (
              COUNT(*)     AS orders,
              SUM(s.total) AS sales,
              AVG(s.total) AS ticket,
-             COALESCE(SUM(s.total) FILTER (WHERE v.id IS NOT NULL), 0) AS route_sales
+             COALESCE(SUM(s.total) FILTER (WHERE v.id IS NOT NULL), 0) AS route_sales,
+             -- Portfolio is who sells to whom (PCRM-154): the customers this
+             -- seller sold to in the period, not the ones on their routes.
+             COUNT(DISTINCT s.customer_id) AS portfolio_customers
       FROM   sale s
       LEFT   JOIN visit v
              ON v.id = s.visit_id
@@ -73,20 +85,6 @@ export const sellerPerformanceSql = (
         AND  ${inRange(VISIT_AT, range)}
         AND  v.visit_type = 'dispatch'
       GROUP  BY v.user_id
-    ),
-    portfolio AS (
-      -- Current composition of the routes currently assigned: it describes
-      -- today, like "18 clientes en cartera" in 1f.
-      SELECT ru.user_id, COUNT(DISTINCT rc.customer_id) AS customers
-      FROM   route_user ru
-      JOIN   route_customer rc
-             ON rc.route_id = ru.route_id
-            AND rc.deleted_at IS NULL
-      JOIN   customer c
-             ON c.id = rc.customer_id
-            AND c.deleted_at IS NULL
-      WHERE  ru.deleted_at IS NULL
-      GROUP  BY ru.user_id
     )
     SELECT u.id::text AS user_id,
            u.name,
@@ -100,20 +98,19 @@ export const sellerPerformanceSql = (
            COALESCE(ss.sales, 0)::numeric(14,2)::text AS total_sales,
            ss.ticket::numeric(14,2)::text         AS average_ticket,
            g.goal_amount::numeric(14,2)::text     AS goal_amount,
-           ROUND(100.0 * COALESCE(ss.sales, 0)
+           ROUND(100.0 * g.goal_sales
                  / NULLIF(g.goal_amount, 0), 1)::float8 AS goal_compliance,
            COALESCE(ss.route_sales, 0)::numeric(14,2)::text AS route_sales,
            COALESCE(vs.route_days, 0)::int        AS executed_route_days,
            (ss.route_sales / NULLIF(vs.route_days, 0))::numeric(14,2)::text
              AS sales_per_route,
            COALESCE(o.dispatches, 0)::int         AS dispatches_for_others,
-           COALESCE(p.customers, 0)::int          AS portfolio_customers
+           COALESCE(ss.portfolio_customers, 0)::int AS portfolio_customers
     FROM   app_user u
     LEFT   JOIN vs        ON vs.user_id = u.id
     LEFT   JOIN ss        ON ss.user_id = u.id
     LEFT   JOIN goals g   ON g.user_id  = u.id
     LEFT   JOIN others o  ON o.user_id  = u.id
-    LEFT   JOIN portfolio p ON p.user_id = u.id
     WHERE  u.deleted_at IS NULL
       AND  u.role = ${ROLES.SELLER}
       AND  (u.active OR vs.stops IS NOT NULL OR ss.orders IS NOT NULL)

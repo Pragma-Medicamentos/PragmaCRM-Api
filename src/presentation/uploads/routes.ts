@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { uploadJsonFile } from '../middleware/uploadJsonFile';
 import { UploadsController } from './uploads.controller';
+import { apiRateLimiter } from '../middleware/rateLimit';
 
 export class UploadsRoutes {
   static get routes(): Router {
@@ -9,8 +10,14 @@ export class UploadsRoutes {
 
     // Manual upload of the ERP sales JSON (RF-03, HU-02).
     // No validateBody here: the body is multipart, not JSON, and content
-    // validation happens sale by sale inside the service.
-    router.post('/sales', uploadJsonFile, controller.importSales);
+    // validation happens sale by sale inside the service. The rate limit goes
+    // before multer so a rejected request never buffers its file.
+    router.post(
+      '/sales',
+      apiRateLimiter('uploads'),
+      uploadJsonFile,
+      controller.importSales
+    );
 
     // Read-only status of the running import (PCRM-169). No file middleware:
     // it takes no body.

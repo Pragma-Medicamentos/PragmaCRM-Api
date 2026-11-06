@@ -9,12 +9,14 @@ import { Prisma } from '../../generated/prisma/client';
  *
  * Idempotent by two layers, not one:
  *
- *   - The first `NOT EXISTS` is the gate: "has this seller/date already been
- *     generated at all", answered by any planned row (`NOT is_extra AND
+ *   - The first `NOT EXISTS` is the gate: "has this assignment/date already
+ *     been generated at all", answered by any planned row (`NOT is_extra AND
  *     customer_id IS NOT NULL`), live *or* soft-deleted. Once true, later
- *     edits to `route_customer` never regenerate or duplicate the day — this
- *     is what freezes a day's plan once it has been opened, per CLAUDE.md
- *     5.1's "planning vs execution" split.
+ *     edits to that route's `route_customer` never regenerate or duplicate
+ *     it — this is what freezes a day's plan once it has been opened, per
+ *     CLAUDE.md 5.1's "planning vs execution" split. It is per `route_user`,
+ *     not per seller: a route assigned after the day was opened still
+ *     generates, instead of being shut out by the routes already there.
  *
  *   - `scheduled_visit_planned_uq (route_user_id, visit_date, customer_id)
  *     WHERE NOT is_extra AND deleted_at IS NULL AND customer_id IS NOT NULL`
@@ -57,8 +59,7 @@ export const generateStopsSql = (
     AND  NOT EXISTS (
            SELECT 1
            FROM   scheduled_visit sv
-           JOIN   route_user ru2 ON ru2.id = sv.route_user_id
-           WHERE  ru2.user_id = ${sellerId}::uuid
+           WHERE  sv.route_user_id = ru.id
              AND  sv.visit_date = ${date}::date
              AND  NOT sv.is_extra
              AND  sv.customer_id IS NOT NULL

@@ -1,4 +1,5 @@
 import cors from 'cors';
+import helmet from 'helmet';
 import express, {
   NextFunction,
   Request,
@@ -48,8 +49,16 @@ export class Server {
     //* of `true` so a client cannot forge the header.
     this.app.set('trust proxy', 1);
 
+    //* Does not advertise the framework. helmet() would drop the header too,
+    //* but only for requests that reach it.
+    this.app.disable('x-powered-by');
+
     //* Middlewares
     this.app.use(requestMetadata);
+    // Defensive headers (nosniff, frame-ancestors, HSTS...). The API only
+    // serves JSON and report downloads, so the default CSP blocks nothing it
+    // needs. CORS below still governs which headers the dashboard can read.
+    this.app.use(helmet());
     // credentials: the browser will only attach the HttpOnly session cookies
     // (PCRM-109) when the response allows them and the web origin is echoed
     // back. `origin` is already an explicit list, never `*`.
@@ -99,8 +108,9 @@ export class Server {
     //* (EADDRINUSE, for instance), so the caller decides what to do instead of
     //* the failure surfacing as an uncaught 'error' event.
     await new Promise<void>((resolve, reject) => {
-      const listener = this.app.listen(this.port, () => {
-        logger.info(`Server running on port ${this.port}`);
+      // Explicit IPv4 wildcard: Fly's proxy reaches the machine over its IPv4 interface.
+      const listener = this.app.listen(this.port, '0.0.0.0', () => {
+        logger.info(`Server running on 0.0.0.0:${this.port}`);
         resolve();
       });
 

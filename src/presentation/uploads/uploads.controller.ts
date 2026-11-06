@@ -27,7 +27,16 @@ const buildMessage = (result: ImportSalesResult): string => {
     removedCount > 0
       ? ` ${removedCount} ${removedCount === 1 ? 'sale' : 'sales'} removed (${result.removed.annulled} annulled, ${result.removed.missing} no longer in the ERP).`
       : '';
-  return `${base}, ${rejectedPart}. ${syncPart}.${removedPart}${sellersPart}`;
+  const { converted, alerts } = result.prospects;
+  const prospectsPart =
+    converted.length > 0
+      ? ` ${converted.length} ${converted.length === 1 ? 'prospect' : 'prospects'} converted to customer.`
+      : '';
+  const alertsPart =
+    alerts.length > 0
+      ? ` ${alerts.length} ${alerts.length === 1 ? 'prospect matches' : 'prospects match'} more than one customer by name and ${alerts.length === 1 ? 'was' : 'were'} not converted.`
+      : '';
+  return `${base}, ${rejectedPart}. ${syncPart}.${removedPart}${sellersPart}${prospectsPart}${alertsPart}`;
 };
 
 export class UploadsController {
@@ -56,6 +65,8 @@ export class UploadsController {
         removed_missing: result.removed.missing,
         sellers_created: result.sellers.created_count,
         sellers_unmapped: result.sellers.unmapped.length,
+        prospects_converted: result.prospects.converted.length,
+        prospects_alerts: result.prospects.alerts.length,
         request_id: res.getHeader('X-Request-ID'),
       });
 
@@ -71,6 +82,7 @@ export class UploadsController {
           updated: result.updated,
           sync_failed: result.sync_failed,
           removed: result.removed,
+          prospects: result.prospects,
           sellers: result.sellers,
           range: {
             from: toIsoDate(result.range.from),

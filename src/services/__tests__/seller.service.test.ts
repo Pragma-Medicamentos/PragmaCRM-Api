@@ -31,16 +31,19 @@ const buildClient = (overrides: Record<string, jest.Mock> = {}) =>
       create: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
+      count: jest.fn().mockResolvedValue(0),
       ...overrides,
     },
   }) as unknown as Client;
 
 describe('listSellers', () => {
+  const PAGE = { page: 1, limit: 20 };
+
   it('filtra por role Vendedor y deleted_at IS NULL', async () => {
     const findMany = jest.fn().mockResolvedValue([seller()]);
     const client = buildClient({ findMany });
 
-    await listSellers(client, {});
+    await listSellers(client, PAGE);
 
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -53,13 +56,55 @@ describe('listSellers', () => {
     const findMany = jest.fn().mockResolvedValue([]);
     const client = buildClient({ findMany });
 
-    await listSellers(client, { active: false });
+    await listSellers(client, { ...PAGE, active: false });
 
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { role: ROLES.SELLER, deleted_at: null, active: false },
       })
     );
+  });
+
+  it('busca por nombre o correo sin distinguir mayúsculas', async () => {
+    const findMany = jest.fn().mockResolvedValue([]);
+    const client = buildClient({ findMany });
+
+    await listSellers(client, { ...PAGE, search: 'rosa' });
+
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [
+            { name: { contains: 'rosa', mode: 'insensitive' } },
+            { email: { contains: 'rosa', mode: 'insensitive' } },
+          ],
+        }),
+      })
+    );
+  });
+
+  it('pagina y devuelve los totales por estado sin los filtros', async () => {
+    const findMany = jest.fn().mockResolvedValue([seller()]);
+    const count = jest
+      .fn()
+      .mockResolvedValueOnce(21) // filtered total
+      .mockResolvedValueOnce(4) // active
+      .mockResolvedValueOnce(1); // inactive
+    const client = buildClient({ findMany, count });
+
+    const page = await listSellers(client, { page: 2, limit: 20, active: true });
+
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 20, take: 20 }));
+    expect(count).toHaveBeenNthCalledWith(3, {
+      where: { role: ROLES.SELLER, deleted_at: null, active: false },
+    });
+    expect(page).toMatchObject({
+      page: 2,
+      page_size: 20,
+      total: 21,
+      total_pages: 2,
+      totals: { active: 4, inactive: 1 },
+    });
   });
 });
 

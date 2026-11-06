@@ -4,6 +4,7 @@ import {
   StagingResult,
   SyncResult,
 } from '../domain/types/sales-import.types';
+import { ProspectConversionSummary } from '../domain/types/prospectConversion.types';
 import { Client, prisma } from '../lib/prisma';
 import { logger } from '../lib/adapters/logger';
 import { tryAcquireImportLock } from '../repositories/uploads.repository';
@@ -17,6 +18,7 @@ import {
   syncStagedSalesChunk,
 } from '../services/salesSync.service';
 import { stageSalesFile } from '../services/salesStaging.service';
+import { convertProspectsByName } from '../services/prospectConversion.service';
 
 /**
  * Import of an ERP sales file (RF-03).
@@ -27,7 +29,8 @@ import { stageSalesFile } from '../services/salesStaging.service';
  * file (~350–400 sales) cannot hit Prisma's 120 s timeout (PCRM-168).
  */
 
-export type ImportSalesResult = StagingResult & SyncResult & { removed: RemovedSalesResult };
+export type ImportSalesResult = StagingResult &
+  SyncResult & { removed: RemovedSalesResult; prospects: ProspectConversionSummary };
 
 /**
  * Transaction headroom per stage / sync-chunk TX. Prisma defaults to 5 s.
@@ -142,13 +145,16 @@ const runImport = async (
     hasMore = chunk.has_more;
   }
 
-  // STEP 3 — Remove what the file no longer carries, and finalize, in one
+  // STEP 3 — Remove what the file no longer carries, convert the prospects
+  // that now have a customer with their name (PCRM-186), and finalize, in one
   // transaction. Removal runs last on purpose: if staging or any chunk threw,
-  // the import never gets here and nothing is deleted.
-  const removed = await prisma.$transaction(async (tx: Client) => {
+  // the import never gets here and nothing is deleted. Conversion runs after
+  // every chunk so it sees all the customers this file created.
+  const { removed, prospects } = await prisma.$transaction(async (tx: Client) => {
     const removedSales = await removeSalesNotInUpload(tx, result.upload_id, result.export_range);
+    const conversions = await convertProspectsByName(tx);
     await finalizeUploadSync(tx, result.upload_id, { inserted, updated, sync_failed });
-    return removedSales;
+    return { removed: removedSales, prospects: conversions };
   }, txOptions);
 
   return {
@@ -158,6 +164,7 @@ const runImport = async (
     updated,
     sync_failed,
     removed,
+    prospects,
     sellers: {
       created_count: provisioning.created.length,
       created: provisioning.created,
