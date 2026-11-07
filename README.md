@@ -91,7 +91,6 @@ npm run smoke
 | `npm run test`             | Tests unitarios                                               |
 | `npm run test:integration` | Tests de integración (requiere `.env.test`)                   |
 | `npm run efactsoft:sync`   | Descarga ventas de Efactsoft y las importa (ver [Sincronización diaria](#sincronización-diaria-con-efactsoft)) |
-| `npm run typecheck:scripts` | Type-check de `scripts/`                                     |
 
 Detalle de puertos y variables de entorno (Api/Web/Mobile): [docs/dx-ports-env.md](./docs/dx-ports-env.md).
 

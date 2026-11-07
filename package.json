@@ -19,7 +19,6 @@
     "lint": "eslint src/",
     "tsc": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
-    "typecheck:scripts": "tsc -p scripts/tsconfig.json",
     "test": "jest",
     "test:integration": "jest --config jest.integration.config.js --runInBand",
     "efactsoft:sync": "tsx scripts/efactsoft-daily-sync.ts"
