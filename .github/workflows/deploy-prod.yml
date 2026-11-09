@@ -18,7 +18,7 @@ jobs:
 
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 3.1.0 # CLI 3 changed db push to target local by default; bump on purpose
 
       - run: supabase link --project-ref "$PROJECT_ID"
-      - run: supabase db push
+      - run: supabase db push --remote
