@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { rangeFields, withRangeChecks } from './metrics.schema';
 
 /**
  * Trims the name and collapses inner whitespace, so "Ibuprofeno  400 mg " and
@@ -31,3 +32,26 @@ export const createProductRequestSchema = z.object({
   requested_quantity: z.number().positive().max(999_999_999).optional(),
 });
 export type CreateProductRequestInput = z.infer<typeof createProductRequestSchema>;
+
+const demandRangeFields = rangeFields.pick({ from: true, to: true });
+export const offCatalogDemandQuerySchema = withRangeChecks(demandRangeFields);
+export type OffCatalogDemandQuery = z.infer<typeof demandRangeFields>;
+
+export const offCatalogProductParamsSchema = z.object({
+  id: z.string().uuid('Invalid product id'),
+});
+export type OffCatalogProductParams = z.infer<typeof offCatalogProductParamsSchema>;
+
+export const DEMANDED_PRODUCTS_DEFAULT_LIMIT = 8;
+export const DEMANDED_PRODUCTS_MAX_LIMIT = 20;
+
+export const demandedProductsQuerySchema = z.object({
+  search: z.string().trim().max(120).optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(DEMANDED_PRODUCTS_MAX_LIMIT)
+    .default(DEMANDED_PRODUCTS_DEFAULT_LIMIT),
+});
+export type DemandedProductsQuery = z.infer<typeof demandedProductsQuerySchema>;

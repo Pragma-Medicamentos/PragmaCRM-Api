@@ -2,9 +2,24 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../domain/interfaces';
 import { sendErrorResponse } from '../../lib/sendErrorResponse';
 import { prisma } from '../../lib/prisma';
-import { CreateProductRequestInput } from '../../domain/schemas/product-request.schema';
-import { CreatedProductRequest } from '../../domain/types/product-request.types';
-import { createProductRequest } from '../../services/product-request.service';
+import {
+  CreateProductRequestInput,
+  DemandedProductsQuery,
+  OffCatalogDemandQuery,
+  OffCatalogProductParams,
+} from '../../domain/schemas/product-request.schema';
+import {
+  CreatedProductRequest,
+  DemandedProduct,
+  OffCatalogDemandDetailResponse,
+  OffCatalogDemandResponse,
+} from '../../domain/types/product-request.types';
+import {
+  createProductRequest,
+  getOffCatalogDemand,
+  getOffCatalogProductDemand,
+  listDemandedProducts,
+} from '../../services/product-request.service';
 
 export class ProductRequestsController {
   /** RF-11: register an off-catalog product requested during a visit. */
@@ -26,6 +41,55 @@ export class ProductRequestsController {
       res.status(201).json(response);
     } catch (error) {
       sendErrorResponse(res, error, 'ProductRequestsController.create');
+    }
+  }
+
+  public async demand(req: Request, res: Response) {
+    try {
+      const query = req.query as unknown as OffCatalogDemandQuery;
+      const data = await getOffCatalogDemand(prisma, query);
+
+      const response: ApiResponse<OffCatalogDemandResponse> = {
+        success: true,
+        message: 'Off-catalog demand retrieved successfully',
+        data,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProductRequestsController.demand');
+    }
+  }
+
+  public async demandDetail(req: Request, res: Response) {
+    try {
+      const { id } = req.params as unknown as OffCatalogProductParams;
+      const query = req.query as unknown as OffCatalogDemandQuery;
+      const data = await getOffCatalogProductDemand(prisma, id, query);
+
+      const response: ApiResponse<OffCatalogDemandDetailResponse> = {
+        success: true,
+        message: 'Off-catalog product demand retrieved successfully',
+        data,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProductRequestsController.demandDetail');
+    }
+  }
+
+  public async demandedProducts(req: Request, res: Response) {
+    try {
+      const query = req.query as unknown as DemandedProductsQuery;
+      const data = await listDemandedProducts(prisma, query);
+
+      const response: ApiResponse<DemandedProduct[]> = {
+        success: true,
+        message: 'Demanded products retrieved successfully',
+        data,
+      };
+      res.status(200).json(response);
+    } catch (error) {
+      sendErrorResponse(res, error, 'ProductRequestsController.demandedProducts');
     }
   }
 }
