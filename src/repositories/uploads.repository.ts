@@ -1,11 +1,32 @@
 import { Client } from '../lib/prisma';
-import { importLockHeldSql, tryImportLockSql } from './uploads/uploads.sql';
+import {
+  importLockHeldSql,
+  pendingBalanceSummarySql,
+  tryImportLockSql,
+} from './uploads/uploads.sql';
 
 /*
  * Raw-SQL data access of the uploads module (RF-03, PCRM-169). The advisory
- * lock that serializes sales imports and the probe that tells the dashboard an
- * import is still running. The typed Prisma reads stay in the services.
+ * lock that serializes sales imports, the probe that tells the dashboard an
+ * import is still running and the pending-balance summary behind the daily
+ * sync range. The typed Prisma reads stay in the services.
  */
+
+export interface PendingBalanceSummary {
+  /** Null when no live sale owes money. */
+  oldest_quoted_at: Date | null;
+  pending_sales: number;
+  pending_before_cutoff: number;
+}
+
+/** Live sales with `pending_balance > 0`; see `pendingBalanceSummarySql`. */
+export const findPendingBalanceSummary = async (
+  client: Client,
+  cutoff: Date
+): Promise<PendingBalanceSummary> => {
+  const rows = await client.$queryRaw<PendingBalanceSummary[]>(pendingBalanceSummarySql(cutoff));
+  return rows[0] ?? { oldest_quoted_at: null, pending_sales: 0, pending_before_cutoff: 0 };
+};
 
 /**
  * Takes the import advisory lock on `client` without blocking. Returns false
