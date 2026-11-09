@@ -9,7 +9,7 @@ import { ROLES } from '../../domain/types/auth.types';
 
 /**
  * Off-catalog product requests (RF-11, PCRM-65) against real Postgres: the
- * visit lookup by stop, the case-insensitive reuse of `quoted_product` and the
+ * visit lookup by stop, the normalized-name reuse of `quoted_product` and the
  * advisory lock that keeps concurrent first requests from duplicating it.
  * Runs on the local Supabase database (loadEnv.ts forces .env.test). Token
  * verification is mocked.
@@ -69,7 +69,7 @@ const post = (body: Record<string, unknown>) =>
 const quotedProductsNamed = (name: string) =>
   prisma.$queryRaw<{ id: string }[]>`
     select id::text as id from quoted_product
-    where lower(name) = lower(${name}) and deleted_at is null`;
+    where public.normalize_name(name) = public.normalize_name(${name}) and deleted_at is null`;
 
 beforeAll(async () => {
   await prisma.$executeRaw`
@@ -221,6 +221,22 @@ describe('POST /api/v1/product-requests (real Postgres)', () => {
     expect(second.status).toBe(201);
     expect(second.body.data.quoted_product).toEqual(first.body.data.quoted_product);
     expect(await quotedProductsNamed(productName('Jarabe Infantil'))).toHaveLength(1);
+  });
+
+  it('reuses the product when the name differs only in accents', async () => {
+    const first = await post({
+      scheduled_visit_id: visitedStopId,
+      product_name: productName('Suero Pediátrico'),
+    });
+    const second = await post({
+      scheduled_visit_id: visitedStopId,
+      product_name: productName('suero pediatrico'),
+    });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+    expect(second.body.data.quoted_product).toEqual(first.body.data.quoted_product);
+    expect(await quotedProductsNamed(productName('Suero Pediatrico'))).toHaveLength(1);
   });
 
   it('creates a single product when the first requests arrive concurrently', async () => {

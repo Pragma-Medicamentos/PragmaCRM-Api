@@ -37,7 +37,6 @@ const buildClient = (opts: {
       ),
     },
     quoted_product: {
-      findFirst: jest.fn().mockResolvedValue(opts.existingProduct ?? null),
       create: jest.fn().mockResolvedValue({ id: 'product-new', name: 'Ibuprofeno 400 mg' }),
     },
     product_request: {
@@ -55,6 +54,7 @@ const buildClient = (opts: {
       ),
     },
     $executeRaw: jest.fn().mockResolvedValue(1),
+    $queryRaw: jest.fn().mockResolvedValue(opts.existingProduct ? [opts.existingProduct] : []),
   };
 
   return { client: client as unknown as Client, mocks: client };
@@ -109,23 +109,18 @@ describe('createProductRequest', () => {
     );
   });
 
-  it('reuses an existing product matched without case', async () => {
+  it('reuses an existing product matched by normalized name', async () => {
     const { client, mocks } = buildClient({
-      existingProduct: { id: 'product-old', name: 'IBUPROFENO 400 MG' },
+      existingProduct: { id: 'product-old', name: 'IBUPRÓFENO 400 MG' },
     });
 
     const result = await createProductRequest(client, SELLER_ID, input());
 
-    expect(mocks.quoted_product.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          name: { equals: 'Ibuprofeno 400 mg', mode: 'insensitive' },
-          deleted_at: null,
-        },
-      })
-    );
+    const [sql, ...values] = mocks.$queryRaw.mock.calls[0];
+    expect(sql.join('?')).toContain('public.normalize_name(name) = public.normalize_name(');
+    expect(values).toEqual(['Ibuprofeno 400 mg']);
     expect(mocks.quoted_product.create).not.toHaveBeenCalled();
-    expect(result.quoted_product).toEqual({ id: 'product-old', name: 'IBUPROFENO 400 MG' });
+    expect(result.quoted_product).toEqual({ id: 'product-old', name: 'IBUPRÓFENO 400 MG' });
   });
 
   it('locks on the product name before looking it up', async () => {
@@ -134,10 +129,11 @@ describe('createProductRequest', () => {
     await createProductRequest(client, SELLER_ID, input());
 
     expect(mocks.$executeRaw).toHaveBeenCalledTimes(1);
-    const values = mocks.$executeRaw.mock.calls[0].slice(1);
-    expect(values).toEqual(['quoted_product:ibuprofeno 400 mg']);
+    const [sql, ...values] = mocks.$executeRaw.mock.calls[0];
+    expect(sql.join('?')).toContain("'quoted_product:' || public.normalize_name(");
+    expect(values).toEqual(['Ibuprofeno 400 mg']);
     expect(mocks.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.quoted_product.findFirst.mock.invocationCallOrder[0]
+      mocks.$queryRaw.mock.invocationCallOrder[0]
     );
   });
 

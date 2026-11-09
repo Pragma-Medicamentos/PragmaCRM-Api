@@ -118,14 +118,8 @@ export class AppRoutes {
       VisitsRoutes.routes
     );
 
-    // RF-11 (PCRM-65): off-catalog products requested during a visit. The
-    // seller registers them; the admin report (PCRM-67) reads them elsewhere.
-    router.use(
-      '/api/v1/product-requests',
-      requireAuth,
-      requireRole(ROLES.SELLER),
-      ProductRequestsRoutes.routes
-    );
+    // RF-11: role per verb inside ProductRequestsRoutes (seller registers, admin reads the report).
+    router.use('/api/v1/product-requests', requireAuth, ProductRequestsRoutes.routes);
 
     // RF-09: base metrics panel. Admin only: it aggregates the whole team's
     // sales and field activity.
