@@ -1,49 +1,102 @@
 PROPRIETARY SOFTWARE LICENSE
 
-Pragma CRM
+Sistema de Gestión Pragma CRM
 
-Copyright (c) 2026 Droguería Pragma, El Salvador. Todos los derechos reservados.
+Copyright (c) 2026 Droguería Pragma, Santa Ana, El Salvador.
+Todos los derechos reservados.
 
-Este software (código fuente, documentación técnica, esquema de base de datos,
-migraciones y demás materiales de este repositorio) fue desarrollado por
-estudiantes de la Universidad Católica de El Salvador en el marco de la
-asignatura de Gestión de Proyectos Informáticos, para Droguería Pragma como
-cliente y patrocinador del proyecto. La titularidad del software, incluyendo
-el código fuente y todos sus derivados, corresponde a Droguería Pragma desde
-el momento de su entrega.
+Este software —código fuente, código objeto, documentación, esquema de base
+de datos, migraciones y demás materiales de este repositorio— forma parte de
+la obra "Sistema de Gestión Pragma CRM", desarrollada por estudiantes de la
+Universidad Católica de El Salvador en la asignatura Gestión de Proyectos
+Informáticos, para Droguería Pragma como cliente y patrocinadora.
 
-1. Confidencialidad.
-   El código fuente y la documentación técnica son información confidencial.
-   No pueden divulgarse, publicarse ni ponerse a disposición de terceros sin
-   autorización expresa y por escrito del titular.
+Los autores cedieron a Droguería Pragma, de forma total, exclusiva,
+irrevocable y a perpetuidad, los derechos patrimoniales sobre la obra,
+conforme al Contrato de Cesión de Derechos Patrimoniales de Autor sobre Obra
+de Software con Especificación de Licenciamiento, suscrito en Santa Ana,
+El Salvador, el 30 de octubre de 2026. A partir de la entrega, la obra es
+software propietario de código cerrado, de titularidad exclusiva de
+Droguería Pragma. Si este archivo contradice ese contrato, prevalece el
+contrato.
 
-2. Acceso restringido.
-   Solo tienen derecho de acceso, uso, modificación y ejecución de este
-   software las personas expresamente autorizadas por el titular: personal
-   contratado por Droguería Pragma y terceros que operen bajo un acuerdo de
-   confidencialidad (NDA) con el titular. Queda prohibida la copia,
-   redistribución, sublicencia, venta o cesión a cualquier otra persona o
-   entidad.
+Los derechos morales de los autores son irrenunciables. Droguería Pragma
+reconocerá su autoría en el manual técnico y en la sección de créditos del
+sistema, mientras esa sección exista.
 
-3. Sin licencia implícita.
-   La entrega del código fuente al titular no constituye una licencia
-   abierta ni de código abierto. No se concede ningún derecho sobre el
-   software a quien no esté cubierto por la sección 2, incluyendo a los
-   propios desarrolladores una vez finalizada su relación con el proyecto o
-   con la universidad.
+1. Titularidad.
+   Droguería Pragma puede reproducir, modificar, adaptar, ampliar, distribuir,
+   poner a disposición, sublicenciar y vender la obra, y ceder los derechos
+   adquiridos, sin autorización ni pago a los autores. Las mejoras que ella o
+   sus contratistas desarrollen le pertenecen.
 
-4. Uso académico.
-   Se reserva a la Universidad Católica de El Salvador y a los estudiantes
-   que desarrollaron el proyecto el derecho de referenciar, describir y
-   documentar la existencia, el alcance y los aprendizajes del proyecto con
-   fines académicos (evaluación de curso, portafolio, tesis), sin que ello
-   implique autorización para divulgar el código fuente, la documentación
-   técnica ni datos del cliente. Cualquier material académico derivado debe
-   preservar la confidencialidad establecida en la sección 1.
+2. Confidencialidad.
+   El código fuente, la documentación técnica, las credenciales, la
+   configuración de seguridad y los datos de Droguería Pragma son información
+   confidencial. No pueden divulgarse, publicarse ni ponerse a disposición de
+   terceros sin autorización expresa y por escrito del titular.
 
-5. Sin garantía.
-   Este software se entrega "tal cual", sin garantía de ningún tipo, expresa
-   o implícita, incluyendo sin limitación garantías de comerciabilidad,
-   idoneidad para un propósito particular o no infracción. En ningún caso los
-   autores o el equipo de desarrollo serán responsables por reclamos, daños u
-   otra responsabilidad derivada del uso del software.
+3. Uso del personal.
+   El personal de Droguería Pragma que use el software recibe un derecho de
+   uso no exclusivo, intransferible y revocable, vinculado a su relación
+   laboral o contractual, que se extingue al terminar esa relación. Las
+   credenciales son nominativas y no pueden compartirse. Nadie puede usar el
+   software en más dispositivos o para más usuarios de los que el titular
+   autorice.
+
+4. Restricciones.
+   Queda prohibido copiar, distribuir, sublicenciar, vender o ceder el
+   software, descompilarlo, aplicarle ingeniería inversa o extraer su código
+   fuente, salvo autorización escrita del titular. Estas restricciones no
+   limitan las facultades del propio titular.
+
+5. Sin licencia implícita.
+   La puesta a disposición del código no constituye una licencia abierta ni
+   de código abierto. No se concede ningún derecho a quien no esté cubierto
+   por las secciones 3 o 6.
+
+6. Licencia académica.
+   Droguería Pragma otorga a los autores y a la Universidad Católica de El
+   Salvador una licencia no exclusiva, gratuita, perpetua, intransferible y
+   no sublicenciable, con el único fin de describir, referenciar, presentar
+   y documentar la existencia, el alcance, la arquitectura y los aprendizajes
+   del proyecto en evaluaciones de curso, defensas, portafolios profesionales,
+   trabajos de graduación y publicaciones académicas.
+
+   Se permite mostrar capturas con datos ficticios, diagramas de arquitectura
+   y de base de datos, y fragmentos breves de código que no contengan
+   credenciales, configuraciones de seguridad ni datos de Droguería Pragma.
+
+   Queda prohibido, aun con fines académicos: publicar o compartir los
+   repositorios o el código fuente completo; mostrar o utilizar datos de
+   Droguería Pragma; hacer uso comercial de la obra o de partes sustanciales
+   de ella; y presentar la obra como propiedad de los autores.
+
+7. Componentes de terceros.
+   Las bibliotecas, marcos y servicios de terceros se rigen por sus propias
+   licencias. Esta licencia no transfiere su titularidad. Al redistribuir la
+   obra deben conservarse los avisos de derechos de autor y los textos de
+   licencia de esos componentes.
+
+8. Garantías.
+   Los autores garantizan que son los autores de la obra y que no habían
+   cedido ni licenciado antes los derechos aquí transferidos; que, según su
+   leal saber y entender, la obra es original y no infringe derechos de
+   terceros; que usaron los componentes de terceros conforme a sus licencias;
+   y que la obra no contiene código malicioso, puertas traseras, bombas
+   lógicas ni mecanismos ocultos de acceso o de desactivación.
+
+   Corregirán sin costo los defectos que impidan cumplir los criterios de
+   aceptación y que Droguería Pragma reporte por escrito hasta el 16 de
+   noviembre de 2026.
+
+   Fuera de esas garantías, la obra se entrega en el estado en que se
+   encuentra, sin garantía de idoneidad para un fin distinto del especificado
+   en el proyecto. Los autores no responden por fallos causados por
+   modificaciones hechas por otras personas después de la entrega, ni por
+   daños indirectos, lucro cesante, pérdida de datos o decisiones comerciales
+   tomadas con base en el software, salvo dolo o culpa grave.
+
+9. Ley aplicable.
+   Esta licencia se rige por las leyes de la República de El Salvador, en
+   especial la Ley de Propiedad Intelectual.
