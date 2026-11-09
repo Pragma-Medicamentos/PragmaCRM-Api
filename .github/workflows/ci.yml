@@ -49,7 +49,7 @@ jobs:
 
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 3.1.0 # CLI 3 changed db push to target local by default; bump on purpose
 
       # Levanta Postgres local via Docker y reaplica TODO el historial de
       # migraciones desde una DB vacia, en orden. Falla si hay una migracion
