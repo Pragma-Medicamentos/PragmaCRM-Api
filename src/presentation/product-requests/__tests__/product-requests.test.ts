@@ -3,7 +3,12 @@ import { AppRoutes } from '../../routes';
 import { Server } from '../../server';
 import { envs } from '../../../config/envs';
 import { CustomError } from '../../../domain/errors/CustomError';
-import { createProductRequest } from '../../../services/product-request.service';
+import {
+  createProductRequest,
+  getOffCatalogDemand,
+  getOffCatalogProductDemand,
+  listDemandedProducts,
+} from '../../../services/product-request.service';
 import { findUserByAuthUserId } from '../../../services/auth.service';
 
 jest.mock('../../../lib/supabaseJwt', () => ({
@@ -23,9 +28,15 @@ jest.mock('../../../lib/prisma', () => ({
 
 jest.mock('../../../services/product-request.service', () => ({
   createProductRequest: jest.fn(),
+  getOffCatalogDemand: jest.fn(),
+  getOffCatalogProductDemand: jest.fn(),
+  listDemandedProducts: jest.fn(),
 }));
 
 const createMock = createProductRequest as jest.Mock;
+const demandMock = getOffCatalogDemand as jest.Mock;
+const demandDetailMock = getOffCatalogProductDemand as jest.Mock;
+const demandedProductsMock = listDemandedProducts as jest.Mock;
 const findUserMock = findUserByAuthUserId as jest.Mock;
 
 const server = new Server({ port: 0, routes: AppRoutes.routes });
@@ -62,6 +73,9 @@ beforeEach(() => {
   jest.clearAllMocks();
   findUserMock.mockResolvedValue(user('Vendedor'));
   createMock.mockResolvedValue({ id: 'request-1' });
+  demandMock.mockResolvedValue({ period: {}, totals: {}, products: [] });
+  demandDetailMock.mockResolvedValue({ period: {}, product: {}, requests: [] });
+  demandedProductsMock.mockResolvedValue([]);
 });
 
 describe('POST /api/v1/product-requests', () => {
@@ -151,5 +165,100 @@ describe('POST /api/v1/product-requests', () => {
     expect(res.body.message).toBe(
       'Confirm the stop before registering an off-catalog product'
     );
+  });
+});
+
+describe('GET /api/v1/product-requests/demand', () => {
+  const DEMAND = `${PATH}/demand`;
+  const PRODUCT_ID = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+
+  beforeEach(() => findUserMock.mockResolvedValue(user('Administrador')));
+
+  it('answers the report to the Administrador with the range from the query', async () => {
+    const res = await request(app)
+      .get(DEMAND)
+      .query({ from: '2026-09-01', to: '2026-09-30' })
+      .set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.products).toEqual([]);
+    expect(demandMock).toHaveBeenCalledWith(expect.anything(), {
+      from: '2026-09-01',
+      to: '2026-09-30',
+    });
+  });
+
+  it('forbids the Vendedor', async () => {
+    findUserMock.mockResolvedValue(user('Vendedor'));
+
+    const res = await request(app).get(DEMAND).set(AUTH);
+
+    expect(res.status).toBe(403);
+    expect(demandMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a malformed date', { from: '01/09/2026' }, 'from'],
+    ['from after to', { from: '2026-10-01', to: '2026-09-01' }, 'from'],
+  ])('rejects %s', async (_label, query, field) => {
+    const res = await request(app).get(DEMAND).query(query).set(AUTH);
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe(field);
+    expect(demandMock).not.toHaveBeenCalled();
+  });
+
+  it('answers the detail of one product', async () => {
+    const res = await request(app).get(`${DEMAND}/${PRODUCT_ID}`).set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(demandDetailMock).toHaveBeenCalledWith(expect.anything(), PRODUCT_ID, {});
+  });
+
+  it('rejects a product id that is not a uuid', async () => {
+    const res = await request(app).get(`${DEMAND}/42`).set(AUTH);
+
+    expect(res.status).toBe(400);
+    expect(demandDetailMock).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 for an unknown product', async () => {
+    demandDetailMock.mockRejectedValue(CustomError.notFound('Off-catalog product not found'));
+
+    const res = await request(app).get(`${DEMAND}/${PRODUCT_ID}`).set(AUTH);
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/v1/product-requests/products', () => {
+  const PRODUCTS = `${PATH}/products`;
+
+  it.each(['Vendedor', 'Administrador'])('answers the %s', async (role) => {
+    findUserMock.mockResolvedValue(user(role));
+
+    const res = await request(app).get(PRODUCTS).query({ search: '  ibu ' }).set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(demandedProductsMock).toHaveBeenCalledWith(expect.anything(), { search: 'ibu', limit: 8 });
+  });
+
+  it('accepts no search and a custom limit', async () => {
+    const res = await request(app).get(PRODUCTS).query({ limit: '20' }).set(AUTH);
+
+    expect(res.status).toBe(200);
+    expect(demandedProductsMock).toHaveBeenCalledWith(expect.anything(), { limit: 20 });
+  });
+
+  it.each([
+    ['a limit over the cap', { limit: '21' }, 'limit'],
+    ['a zero limit', { limit: '0' }, 'limit'],
+    ['a search too long', { search: 'x'.repeat(121) }, 'search'],
+  ])('rejects %s', async (_label, query, field) => {
+    const res = await request(app).get(PRODUCTS).query(query).set(AUTH);
+
+    expect(res.status).toBe(400);
+    expect(res.body.errors[0].field).toBe(field);
+    expect(demandedProductsMock).not.toHaveBeenCalled();
   });
 });
