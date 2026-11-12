@@ -24,8 +24,8 @@ describe('summarizeYesterdaySales', () => {
     const result = summarizeYesterdaySales(fixtureSales, { now });
 
     expect(result).toEqual([
-      { id_producto: 1, nombre: 'Amoxicilina 500mg (nombre actualizado)', cantidad: 24 },
-      { id_producto: 2, nombre: 'Ibuprofeno 400mg', cantidad: 12.5 },
+      { id_producto: 1, nombre: 'Amoxicilina 500mg (nombre actualizado)', um: '', cantidad: 24 },
+      { id_producto: 2, nombre: 'Ibuprofeno 400mg', um: '', cantidad: 12.5 },
     ]);
   });
 
@@ -57,7 +57,7 @@ describe('summarizeYesterdaySales', () => {
     const result = summarizeYesterdaySales(fixtureSales, { now, user: 'david' });
 
     expect(result).toEqual([
-      { id_producto: 6, nombre: 'Otro vendedor, no debería contar', cantidad: 7 },
+      { id_producto: 6, nombre: 'Otro vendedor, no debería contar', um: '', cantidad: 7 },
     ]);
   });
 
@@ -66,6 +66,23 @@ describe('summarizeYesterdaySales', () => {
     const result = summarizeYesterdaySales(fixtureSales, { now, cutoff: '19:00' });
 
     expect(result).toEqual([]);
+  });
+
+  it('keeps the same product sold in different units on separate lines', () => {
+    const sale = (um: string, cantidad: number): ErpSale => ({
+      venta: { estado: 2, created_at: '2026-09-05 11:00:00', usuario: 'IRIS' },
+      detalle: [{ id_producto: 9, nombre: 'ARCIS 50mg', cantidad, um }],
+    });
+
+    const result = summarizeYesterdaySales(
+      [sale('CAJA X108 TAB', 1), sale('BLISTER X4TAB', 3), sale('CAJA X108 TAB', 2)],
+      { now },
+    );
+
+    expect(result).toEqual([
+      { id_producto: 9, nombre: 'ARCIS 50mg', um: 'CAJA X108 TAB', cantidad: 3 },
+      { id_producto: 9, nombre: 'ARCIS 50mg', um: 'BLISTER X4TAB', cantidad: 3 },
+    ]);
   });
 
   it('returns an empty array when nothing qualifies', () => {
@@ -90,14 +107,14 @@ describe('formatWhatsAppMessage', () => {
   it('renders one line per product', () => {
     const message = formatWhatsAppMessage(
       [
-        { id_producto: 1, nombre: 'Amoxicilina 500mg', cantidad: 24 },
-        { id_producto: 2, nombre: 'Ibuprofeno 400mg', cantidad: 12.5 },
+        { id_producto: 1, nombre: 'Amoxicilina 500mg', um: 'CAJA X108 TAB', cantidad: 24 },
+        { id_producto: 2, nombre: 'Ibuprofeno 400mg', um: '', cantidad: 12.5 },
       ],
       '10:00',
     );
 
     expect(message).toBe(
-      '*Ventas de ayer (después de 10:00)*\n\nAmoxicilina 500mg — 24\nIbuprofeno 400mg — 12.5',
+      '*Ventas de ayer (después de 10:00)*\n\nAmoxicilina 500mg — 24 CAJA X108 TAB\nIbuprofeno 400mg — 12.5',
     );
   });
 

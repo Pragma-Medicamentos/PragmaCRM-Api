@@ -12,6 +12,8 @@ export interface ErpSaleDetailLine {
   id_producto: number;
   nombre: string;
   cantidad: string | number;
+  /** Unit of measure the line was sold in, e.g. "CAJA X108 TAB". */
+  um?: string | null;
 }
 
 export interface ErpSale {
@@ -28,6 +30,8 @@ export interface ErpSale {
 export interface ProductAggregate {
   id_producto: number;
   nombre: string;
+  /** Unit of measure, e.g. "CAJA X108 TAB". Empty when Efactsoft sent none. */
+  um: string;
   cantidad: number;
 }
 
@@ -75,7 +79,9 @@ export const summarizeYesterdaySales = (
   const windowStartDate = windowStart.toJSDate();
   const windowEndDate = windowEnd.toJSDate();
 
-  const totals = new Map<number, { nombre: string; cantidad: number }>();
+  // Keyed by product + unit: the same product can be sold by box and by blister,
+  // and adding those quantities together would be meaningless.
+  const totals = new Map<string, ProductAggregate>();
 
   for (const sale of sales) {
     if (sale?.venta?.estado !== 2) continue;
@@ -91,19 +97,19 @@ export const summarizeYesterdaySales = (
       const quantity = Number(line.cantidad);
       if (!Number.isFinite(quantity)) continue;
 
-      const existing = totals.get(line.id_producto);
-      totals.set(line.id_producto, {
+      const um = (line.um ?? '').trim();
+      const key = `${line.id_producto}|${um}`;
+      const existing = totals.get(key);
+      totals.set(key, {
+        id_producto: line.id_producto,
         nombre: line.nombre,
+        um,
         cantidad: (existing?.cantidad ?? 0) + quantity,
       });
     }
   }
 
-  return Array.from(totals, ([id_producto, { nombre, cantidad }]) => ({
-    id_producto,
-    nombre,
-    cantidad,
-  }));
+  return Array.from(totals.values());
 };
 
 /** "24" for a whole number, "12.5" for a fraction — never trailing zeros. */
@@ -122,7 +128,8 @@ export const formatWhatsAppMessage = (
   }
 
   const lines = aggregates.map(
-    (aggregate) => `${aggregate.nombre} — ${formatQuantity(aggregate.cantidad)}`,
+    (aggregate) =>
+      `${aggregate.nombre} — ${formatQuantity(aggregate.cantidad)}${aggregate.um ? ` ${aggregate.um}` : ''}`,
   );
 
   return [`*Ventas de ayer (después de ${cutoff})*`, '', ...lines].join('\n');
