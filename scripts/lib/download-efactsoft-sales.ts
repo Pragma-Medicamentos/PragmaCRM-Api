@@ -11,15 +11,21 @@ const DEFAULT_SALES_URL = 'https://distdemedicamentos.efactsoft.com/iv/sales';
 const resolveEnv = (name: string, fallback: string): string => process.env[name] || fallback;
 
 /**
- * "dd/MM/yyyy - dd/MM/yyyy" for yesterday only, evaluated in
- * America/El_Salvador so the range matches the calendar day the
- * salesperson saw on the invoice, not the host machine's timezone.
+ * "dd/MM/yyyy - dd/MM/yyyy" from yesterday through today, evaluated in
+ * America/El_Salvador.
+ *
+ * Efactsoft's date filter matches `fecha_emision`, which is stamped when the
+ * sale is finalized, not when it was made. IRIS sometimes finalizes the
+ * previous day's sales the next morning (e.g. 17/11 sales finalized on 18/11
+ * at 07:22), so a yesterday-only range drops them. The summarizer still keeps
+ * only sales whose `created_at` falls in yesterday's window.
  */
 export const buildYesterdayDateRangeFilter = (
   now: DateTime = DateTime.now().setZone(ERP_TIMEZONE),
 ): string => {
-  const yesterday = now.setZone(ERP_TIMEZONE).minus({ days: 1 }).toFormat('dd/MM/yyyy');
-  return `${yesterday} - ${yesterday}`;
+  const today = now.setZone(ERP_TIMEZONE);
+  const yesterday = today.minus({ days: 1 }).toFormat('dd/MM/yyyy');
+  return `${yesterday} - ${today.toFormat('dd/MM/yyyy')}`;
 };
 
 export interface DownloadYesterdaySalesOptions {
